@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      # 项目声称跨平台（Windows 实测开发，Linux/macOS 代码就绪），
+      # CI 必须两个平台都跑，否则「跨平台」就只是口号
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      # 测试全部离线：下载器测试用本地假源，tar 测试用系统 GNU tar。
+      # 不设任何代理环境变量，也不断网——避免 CI 环境差异造成假失败
+      - run: npm test
+        env:
+          HTTPS_PROXY: ''
+          HTTP_PROXY: ''
+          https_proxy: ''
+          http_proxy: ''

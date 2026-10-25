@@ -404,4 +404,10 @@ npx tsx src/cli/index.ts install fixtures/closure.mrpack --mods-dir /tmp/mods
 
 ## 许可
 
-MIT
+MIT（见 [LICENSE](LICENSE)）。
+
+使用内置镜像时的第三方义务，代码里已落地的不重复展开：
+
+- **BMCLAPI** 要求在下载界面标明来源——`DownloadSource.credit` 是必填字段，CLI 每次下载后打印「资源来源」
+- **MCIM** 要求登记启动器 UA（[mcim-rust-api#12](https://github.com/mcmod-info-mirror/mcim-rust-api/issues/12)），需要你去提一次
+- **forgecdn** 无公开协议，sha1 校验是唯一防线（ADR-0022）
