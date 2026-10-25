@@ -102,6 +102,7 @@ MCP server 把同一个 core 暴露成工具。开发期直接指向源码：
 | `VERSION_MISMATCH` | 模组不支持这个 MC 版本 |
 | `LOADER_MISMATCH` | 模组不支持这个加载器 |
 | `MISSING_DEPENDENCY` | 缺必需的前置模组（在线模式会附可安装版本） |
+| `DEPENDENCY_VERSION_MISMATCH` | 已装模组或加载器的版本不满足依赖方声明的范围 |
 | `UNSATISFIABLE_DEPENDENCY` | 缺前置，但找不到兼容当前版本与加载器的可用版本 |
 | `DECLARED_INCOMPATIBLE` | 两个模组互相声明不兼容 |
 | `DEPENDENCY_CYCLE` | 需要新装的部分里有闭环依赖 |
@@ -162,6 +163,18 @@ BlockPilot Real Fixture
 ```
 
 服务端专用的文件（`env.client: "unsupported"`）不会装到客户端。细节见 [ADR-0012](docs/adr/0012-deploy-orchestration.md)。
+
+**装完会立刻自检**，而不是等启动时闪退：
+
+```
+部署后检查  BLOCKED
+  ✗ DEPENDENCY_VERSION_MISMATCH  fabric-api 要求 fabricloader >=0.16.10，实际是 0.15.11
+    → 加载器版本太低，换更高的 loader 版本重装
+
+先别启动，上面这些会直接导致崩溃
+```
+
+检查读的是 jar 里的真实元数据，包括 `META-INF/jars/` 下的嵌套模组——Fabric API 的 57 个子模块都在那里。见 [ADR-0013](docs/adr/0013-post-deploy-check.md)。
 
 ## Fabric 加载器
 

@@ -9,6 +9,10 @@ import type { DownloadSource } from './download/types.js'
 import type { Layout } from './layout.js'
 import type { LoaderKind } from './instance.js'
 import { mrpackToInstance, readMrpackIndex } from './preflight/mrpack.js'
+import { checkLocalInstance } from './preflight/local.js'
+import { verdictOf } from './preflight/types.js'
+import type { Finding, Verdict } from './preflight/types.js'
+import { scanInstanceDir } from './instance/scan.js'
 import { createVanillaSetup } from './setup/vanilla.js'
 import { createFabricSetup } from './setup/fabric.js'
 import { buildPackTasks, extractOverrides } from './setup/pack.js'
@@ -32,6 +36,11 @@ export interface DeployResult {
   readonly modsSkipped: number
   readonly overrides: number
   readonly failed: readonly { readonly fileName: string; readonly error: string }[]
+  /** 部署后的自检结果。非 ok 就说明装完也起不来 */
+  readonly check: {
+    readonly verdict: Verdict
+    readonly findings: readonly Finding[]
+  }
 }
 
 export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
@@ -142,6 +151,25 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
       yield Op.log('warn', 'deploy.overrides_failed', { message: String(err) })
     }
 
+    // ---- 5. 部署后自检 ----
+    // 装在完不等于能跑：mod 的版本约束、loader 下限、缺失依赖都要在启动前暴露。
+    // 不做这一步的话，问题要等游戏启动时才在千行日志里报 HARD_DEP。
+    yield Op.log('info', 'deploy.step', { step: 'check' })
+    const scan = scanInstanceDir(opts.layout.gameDir, {
+      fallbackGameVersion: instance.gameVersion,
+      fallbackLoader: instance.loader,
+    })
+    const findings = checkLocalInstance(scan, {
+      gameVersion: instance.gameVersion,
+      loaderVersion: instance.loader.version,
+    })
+    const verdict = verdictOf(findings)
+    yield Op.log('info', 'deploy.check', {
+      verdict,
+      blockers: findings.filter((f) => f.severity === 'blocker').length,
+      findings: findings.length,
+    })
+
     yield Op.result({
       packName: index.name,
       gameVersion: instance.gameVersion,
@@ -153,6 +181,7 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
       modsSkipped: skipped,
       overrides,
       failed,
+      check: { verdict, findings },
     })
     yield Op.done()
   })

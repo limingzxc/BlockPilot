@@ -7,6 +7,7 @@ const FABRIC = 'fabric.mod.json'
 const QUILT = 'quilt.mod.json'
 const NEOFORGE = 'META-INF/neoforge.mods.toml'
 const FORGE = 'META-INF/mods.toml'
+const JIJ_PREFIX = 'META-INF/jars/'
 
 /** 按加载器优先级排列。多加载器 jar 里 fabric 声明通常最准确。 */
 const CANDIDATES = [FABRIC, QUILT, NEOFORGE, FORGE] as const
@@ -70,6 +71,7 @@ function fromFabric(text: string): ModMetadata | null {
     ...(fl?.versionRange === undefined ? {} : { loaderVersionRange: fl.versionRange }),
     dependencies: deps,
     provides,
+    nested: [],
   }
 }
 
@@ -122,6 +124,7 @@ function fromQuilt(text: string): ModMetadata | null {
     ...(mc?.versionRange === undefined ? {} : { mcVersionRange: mc.versionRange }),
     dependencies: deps,
     provides,
+    nested: [],
   }
 }
 
@@ -155,28 +158,59 @@ function fromForgeToml(text: string, loader: ModLoaderKind): ModMetadata | null 
     dependencies: deps,
     // Forge 没有 provides 概念，子模块用 jar-in-jar 解决
     provides: [],
+    nested: [],
   }
+}
+
+/** 读 `META-INF/jars/*.jar` 里的嵌套模组。Fabric API 的 57 个子模块都在这里。 */
+function readNestedJars(entries: Record<string, Uint8Array>): { modId: string; version: string }[] {
+  const out: { modId: string; version: string }[] = []
+  for (const [name, data] of Object.entries(entries)) {
+    if (!name.startsWith(JIJ_PREFIX) || !name.endsWith('.jar')) continue
+    try {
+      const inner = unzipSync(data, { filter: (f) => f.name === FABRIC })
+      const buf = inner[FABRIC]
+      if (buf === undefined) continue
+      const parsed = JSON.parse(strFromU8(buf)) as { id?: unknown; version?: unknown }
+      if (typeof parsed.id !== 'string' || parsed.id === '') continue
+      out.push({
+        modId: parsed.id,
+        version: typeof parsed.version === 'string' ? parsed.version : 'unknown',
+      })
+    } catch {
+      // 嵌套 jar 坏了不影响主 jar 的元数据
+    }
+  }
+  return out
 }
 
 /**
  * 从 jar 的字节里读出模组元数据。
  *
- * 只解压四个候选条目——真实的 mod jar 可能有几千个 class，全解会吃掉时间和内存。
- * 读不出来就返回 null：损坏的 jar、资源包、甚至伪装成 mod 的文件都会走这条路。
+ * 只解压四个候选条目和 `META-INF/jars/*.jar`——真实的 mod jar 可能有几千个 class，
+ * 全解会吃掉时间和内存。读不出来就返回 null：损坏的 jar、资源包、
+ * 甚至伪装成 mod 的文件都会走这条路。
  */
 export function readModMetadata(jar: Uint8Array): ModMetadata | null {
   let entries: Record<string, Uint8Array>
   try {
     entries = unzipSync(jar, {
-      filter: (f) => (CANDIDATES as readonly string[]).includes(f.name),
+      filter: (f) =>
+        (CANDIDATES as readonly string[]).includes(f.name) ||
+        (f.name.startsWith(JIJ_PREFIX) && f.name.endsWith('.jar')),
     })
   } catch {
     return null
   }
 
-  if (entries[FABRIC] !== undefined) return fromFabric(strFromU8(entries[FABRIC]))
-  if (entries[QUILT] !== undefined) return fromQuilt(strFromU8(entries[QUILT]))
-  if (entries[NEOFORGE] !== undefined) return fromForgeToml(strFromU8(entries[NEOFORGE]), 'neoforge')
-  if (entries[FORGE] !== undefined) return fromForgeToml(strFromU8(entries[FORGE]), 'forge')
+  const nested = readNestedJars(entries)
+  const withNested = (meta: ModMetadata | null): ModMetadata | null =>
+    meta === null ? null : { ...meta, nested }
+
+  if (entries[FABRIC] !== undefined) return withNested(fromFabric(strFromU8(entries[FABRIC])))
+  if (entries[QUILT] !== undefined) return withNested(fromQuilt(strFromU8(entries[QUILT])))
+  if (entries[NEOFORGE] !== undefined)
+    return withNested(fromForgeToml(strFromU8(entries[NEOFORGE]), 'neoforge'))
+  if (entries[FORGE] !== undefined) return withNested(fromForgeToml(strFromU8(entries[FORGE]), 'forge'))
   return null
 }

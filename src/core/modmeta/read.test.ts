@@ -131,3 +131,39 @@ test('NON_MOD_DEPENDENCY_IDS 覆盖常见虚拟 id', () => {
     assert.ok(NON_MOD_DEPENDENCY_IDS.has(id), `${id} should be treated as non-mod`)
   }
 })
+
+test('读 jar-in-jar 里的嵌套模组（Fabric API 场景）', () => {
+  const sub = (id: string) =>
+    zipSync({
+      'fabric.mod.json': strToU8(JSON.stringify({ id, version: '0.4.32+1802ada577' })),
+    })
+  const buf = zipSync({
+    'fabric.mod.json': strToU8(
+      JSON.stringify({ id: 'fabric-api', version: '0.92.12+1.20.1', provides: [] }),
+    ),
+    'META-INF/jars/fabric-rendering-fluids-v1.jar': sub('fabric-rendering-fluids-v1'),
+    'META-INF/jars/fabric-rendering-data-attachment-v1.jar': sub(
+      'fabric-rendering-data-attachment-v1',
+    ),
+  })
+
+  const meta = readModMetadata(buf)
+  assert.ok(meta)
+  assert.equal(meta.modId, 'fabric-api')
+  assert.equal(meta.nested.length, 2)
+  assert.ok(meta.nested.some((n) => n.modId === 'fabric-rendering-fluids-v1'))
+  assert.equal(
+    meta.nested.find((n) => n.modId === 'fabric-rendering-fluids-v1')?.version,
+    '0.4.32+1802ada577',
+  )
+})
+
+test('嵌套 jar 损坏时不影响主元数据', () => {
+  const buf = zipSync({
+    'fabric.mod.json': strToU8(JSON.stringify({ id: 'ok-mod', version: '1.0.0' })),
+    'META-INF/jars/broken.jar': strToU8('not a zip'),
+  })
+  const meta = readModMetadata(buf)
+  assert.equal(meta?.modId, 'ok-mod')
+  assert.deepEqual(meta?.nested, [])
+})

@@ -64,3 +64,63 @@ test('多个模组依赖同一个缺失项时合并 requiredBy', () => {
   assert.equal(issues.length, 1)
   assert.deepEqual([...(issues[0]?.requiredBy ?? [])].sort(), ['a', 'b'])
 })
+
+test('loader 版本不够时报告 version 问题', () => {
+  const mo = {
+    modId: 'fabric-api',
+    version: '0.92.12',
+    provides: [],
+    nested: [],
+    dependencies: [{ modId: 'fabricloader', mandatory: true, versionRange: '>=0.16.10' }],
+  }
+  const issues = checkLocalDeps([mo], { loaderVersion: '0.15.11', gameVersion: '1.20.1' })
+  assert.equal(issues.length, 1)
+  assert.equal(issues[0]?.kind, 'version')
+  assert.equal(issues[0]?.modId, 'fabricloader')
+  assert.equal(issues[0]?.requiredRange, '>=0.16.10')
+  assert.equal(issues[0]?.actualVersion, '0.15.11')
+})
+
+test('loader 版本够时通过', () => {
+  const mo = {
+    modId: 'a',
+    version: '1.0.0',
+    provides: [],
+    nested: [],
+    dependencies: [{ modId: 'fabricloader', mandatory: true, versionRange: '>=0.16.10' }],
+  }
+  assert.equal(checkLocalDeps([mo], { loaderVersion: '0.16.14' }).length, 0)
+})
+
+test('nested 里的子模块满足依赖', () => {
+  const api = {
+    modId: 'fabric-api',
+    version: '0.92.12',
+    provides: [],
+    nested: [{ modId: 'fabric-rendering-fluids-v1', version: '0.4.32' }],
+    dependencies: [],
+  }
+  const sodium = {
+    modId: 'sodium',
+    version: '0.5.13',
+    provides: [],
+    nested: [],
+    dependencies: [{ modId: 'fabric-rendering-fluids-v1', mandatory: true }],
+  }
+  assert.equal(checkLocalDeps([api, sodium]).length, 0)
+})
+
+test('已装 mod 版本不满足依赖方要求', () => {
+  const a = { modId: 'lib', version: '1.0.0', provides: [], nested: [], dependencies: [] }
+  const b = {
+    modId: 'user',
+    version: '1.0.0',
+    provides: [],
+    nested: [],
+    dependencies: [{ modId: 'lib', mandatory: true, versionRange: '>=2.0.0' }],
+  }
+  const issues = checkLocalDeps([a, b])
+  assert.equal(issues.length, 1)
+  assert.equal(issues[0]?.kind, 'version')
+  assert.equal(issues[0]?.actualVersion, '1.0.0')
+})

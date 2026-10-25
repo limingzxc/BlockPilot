@@ -839,7 +839,26 @@ async function runDeploy(argv: readonly string[]): Promise<number> {
         process.stdout.write(
           `  ${C.dim}模组 ${r.mods} 个（下载 ${r.modsDownloaded} / 跳过 ${r.modsSkipped} 失败 ${r.failed.length}）· overrides ${r.overrides} 个文件${C.reset}\n`,
         )
-        process.stdout.write(`\n  ${C.bold}启动${C.reset}\n`)
+
+        // 部署后自检：装在完 ≠ 能跑
+        process.stdout.write('\n')
+        process.stdout.write(`  ${C.bold}部署后检查${C.reset}  ${VERDICT_TEXT[r.check.verdict]}\n`)
+        const notable = r.check.findings.filter((f) => f.severity !== 'info')
+        if (notable.length === 0) {
+          process.stdout.write(`    ${C.dim}没有发现阻塞项${C.reset}\n`)
+        } else {
+          for (const f of notable) {
+            process.stdout.write(`    ${SEVERITY_MARK[f.severity]} ${C.bold}${f.code}${C.reset}  ${f.message}\n`)
+            if (f.hint !== undefined) process.stdout.write(`      ${C.dim}→ ${f.hint}${C.reset}\n`)
+          }
+        }
+
+        process.stdout.write('\n')
+        if (r.check.verdict === 'blocked') {
+          process.stdout.write(`  ${C.yellow}先别启动${C.reset}，上面这些会直接导致崩溃\n\n`)
+          return 2
+        }
+        process.stdout.write(`  ${C.bold}启动${C.reset}\n`)
         process.stdout.write(
           `    blockpilot run ${r.playableVersionId} --root ${root} --instance ${instance}\n\n`,
         )

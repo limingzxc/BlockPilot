@@ -9,7 +9,7 @@ import { closureToFindings, computeClosure } from '../deps/closure.js'
 import type { ClosureResult } from '../deps/closure.js'
 import { buildRepairPlan } from '../deps/plan.js'
 import type { RepairPlan } from '../deps/plan.js'
-import { checkLocalDeps } from '../deps/localDeps.js'
+import { checkLocalInstance } from './local.js'
 import { scanInstanceDir } from '../instance/scan.js'
 import type { ScannedMod } from '../instance/scan.js'
 import { mrpackToInstance, readMrpackIndex } from './mrpack.js'
@@ -93,38 +93,15 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
 
     if (isDir) {
       // ---- 离线模式：只有 jar 内的 modId，没有 projectId ----
-      const issues = checkLocalDeps(
-        localMods.map((m) => ({
-          modId: m.meta.modId,
-          dependencies: m.meta.dependencies,
-          provides: m.meta.provides,
-        })),
+      findings.push(
+        ...checkLocalInstance(
+          { instance, mods: localMods, skipped: skippedJars },
+          {
+            gameVersion: instance.gameVersion,
+            loaderVersion: instance.loader.version,
+          },
+        ),
       )
-      for (const issue of issues) {
-        findings.push({
-          severity: 'blocker',
-          code: 'MISSING_DEPENDENCY',
-          message: `${issue.requiredBy.join('、')} 需要前置模组 ${issue.modId}，本地目录里没有`,
-          subject: issue.modId,
-          hint: '本地元数据只提供 modId，没有下载地址；需要联网反查才能给出可安装版本',
-        })
-      }
-      if (skippedJars.length > 0) {
-        findings.push({
-          severity: 'info',
-          code: 'UNREADABLE_JAR',
-          message: `${skippedJars.length} 个 jar 读不出模组元数据，未参与检查`,
-          hint: skippedJars.slice(0, 5).join('、') + (skippedJars.length > 5 ? ' 等' : ''),
-        })
-      }
-      if (instance.gameVersion === 'unknown') {
-        findings.push({
-          severity: 'warning',
-          code: 'UNKNOWN_GAME_VERSION',
-          message: '目录里没有版本信息，无法校验 MC 版本与 Java',
-          hint: 'Prism/MultiMC 实例的 mmc-pack.json 可提供；否则需要显式指定',
-        })
-      }
       mods = localMods.length + skippedJars.length
       resolved = localMods.length
       unresolved = skippedJars.length

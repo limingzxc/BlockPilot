@@ -26,6 +26,13 @@ export interface ModMetadata {
    * 不处理 provides 会导致装了 Fabric API 仍然报「缺 fabric-rendering-fluids-v1」。
    */
   readonly provides: readonly string[]
+  /**
+   * jar-in-jar 里嵌套的模组（`META-INF/jars/*.jar`）。
+   *
+   * Fabric API 0.92+ 把 57 个子模块拆成了嵌套 jar，最外层的 fabric.mod.json
+   * 并不声明 provides。不读这一层，sodium 这类依赖子模块的模组会被误报缺前置。
+   */
+  readonly nested: readonly { readonly modId: string; readonly version: string }[]
 }
 
 /**
