@@ -61,3 +61,30 @@ test('预发布后缀不影响主版本比较', () => {
 test('无法解析的版本返回 unknown 而不是猜', () => {
   assert.equal(satisfiesRange('not-a-version', '>=1.0.0'), 'unknown')
 })
+
+test('~ 锁次版本（Fabulously Optimized 的真实写法）', () => {
+  assert.equal(satisfiesRange('1.21.1', '~1.21'), 'satisfied')
+  assert.equal(satisfiesRange('1.21.9', '~1.21'), 'satisfied')
+  assert.equal(satisfiesRange('1.22', '~1.21'), 'violated')
+  assert.equal(satisfiesRange('1.21.0', '~1.21.1'), 'violated')
+  assert.equal(satisfiesRange('1.21.5', '~1.21.1'), 'satisfied')
+})
+
+test('~ 与显式上界组合', () => {
+  // 真实案例：controlify / zoomify 写的 "~1.21 <1.21.2"
+  assert.equal(satisfiesRange('1.21.1', '~1.21 <1.21.2'), 'satisfied')
+  assert.equal(satisfiesRange('1.21.3', '~1.21 <1.21.2'), 'violated')
+})
+
+test('^ 锁主版本', () => {
+  assert.equal(satisfiesRange('1.21.1', '^1.20'), 'satisfied')
+  assert.equal(satisfiesRange('2.0.0', '^1.20'), 'violated')
+  // 0.x 的约定：锁次版本
+  assert.equal(satisfiesRange('0.5.9', '^0.5.1'), 'satisfied')
+  assert.equal(satisfiesRange('0.6.0', '^0.5.1'), 'violated')
+})
+
+test('看不懂的写法返回 unknown，不当作违规', () => {
+  assert.equal(satisfiesRange('1.21.1', 'next-please'), 'unknown')
+  assert.equal(satisfiesRange('1.21.1', '>1.0.0 next-please'), 'unknown')
+})

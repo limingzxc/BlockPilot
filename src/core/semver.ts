@@ -72,7 +72,50 @@ function satisfiesMaven(version: number[], range: string): RangeVerdict {
 
 const OP_RE = /^(>=|<=|>|<|=)?\s*(.+)$/
 
+/**
+ * `~` 和 `^` 是 npm semver 的简写，Fabric 生态里大量使用：
+ * - `~1.21`   → `>=1.21.0 <1.22.0`（锁次版本）
+ * - `~1.21.1` → `>=1.21.1 <1.22.0`
+ * - `^1.21`   → `>=1.21.0 <2.0.0`（锁主版本）
+ * - `^0.5.1`  → `>=0.5.1 <0.6.0`（0.x 锁次版本，npm 的约定）
+ *
+ * 不支持它们会把真实的整合包判成「版本不兼容」——
+ * Fabulously Optimized 里 controlify / zoomify 用的就是 `~1.21 <1.21.2`。
+ */
+function satisfiesTildeCaret(version: number[], token: string): boolean | null {
+  const marker = token[0]
+  if (marker !== '~' && marker !== '^') return null
+  const rest = token.slice(1)
+  const parts = parseVersion(rest)
+  if (parts === null) return null
+
+  const major = parts[0] ?? 0
+  const minor = parts[1] ?? 0
+  const patch = parts[2] ?? 0
+
+  let lo: number[]
+  let hi: number[]
+  if (marker === '~') {
+    lo = [major, minor, patch]
+    hi = [major, minor + 1, 0]
+  } else if (major > 0) {
+    lo = [major, minor, patch]
+    hi = [major + 1, 0, 0]
+  } else if (minor > 0) {
+    lo = [0, minor, patch]
+    hi = [0, minor + 1, 0]
+  } else {
+    lo = [0, 0, patch]
+    hi = [0, 0, patch + 1]
+  }
+  return compare(version, lo) >= 0 && compare(version, hi) < 0
+}
+
 function satisfiesToken(version: number[], token: string): boolean | null {
+  if (token.startsWith('~') || token.startsWith('^')) {
+    return satisfiesTildeCaret(version, token)
+  }
+
   const m = OP_RE.exec(token)
   if (m === null) return null
   const op = m[1] ?? '='
@@ -80,10 +123,12 @@ function satisfiesToken(version: number[], token: string): boolean | null {
   if (raw === '' || raw === '*' || raw === 'x') return true
 
   // 1.20.x 这种前缀写法：只比较给出的段
-  if (/[xX*]/.test(raw)) {
-    const parts = raw.split('.')
-    for (let i = 0; i < parts.length; i += 1) {
-      const p = parts[i]
+  // 注意必须是「整段等于 x」，不能写成 /[xX*]/ ——那样 'next-please' 里的 x 会被当成通配符
+  const segments = raw.split('.')
+  const hasWildcard = segments.some((s) => s === 'x' || s === 'X' || s === '*')
+  if (hasWildcard) {
+    for (let i = 0; i < segments.length; i += 1) {
+      const p = segments[i]
       if (p === undefined) break
       if (p === 'x' || p === 'X' || p === '*') return true
       if ((version[i] ?? 0) !== Number(p)) return false
@@ -118,23 +163,34 @@ export function satisfiesRange(version: string, range: string): RangeVerdict {
   if (/^[[（(]/.test(trimmed)) return satisfiesMaven(v, trimmed)
 
   // semver：|| 是 OR，空格是 AND
+  let sawUnknownGroup = false
   for (const group of trimmed.split('||')) {
     const tokens = group.trim().split(/\s+/).filter((t) => t !== '')
     if (tokens.length === 0) continue
+
     let allOk = true
-    let anyUnknown = false
+    let unknown = false
     for (const token of tokens) {
       const r = satisfiesToken(v, token)
       if (r === null) {
-        anyUnknown = true
-        break
+        // 看不动的 token 不中断——同组其他 token 可能已经给出明确的「不满足」
+        unknown = true
+        continue
       }
       if (!r) {
         allOk = false
         break
       }
     }
-    if (allOk && !anyUnknown) return 'satisfied'
+    if (!allOk) continue
+    if (unknown) {
+      sawUnknownGroup = true
+      continue
+    }
+    return 'satisfied'
   }
-  return 'violated'
+
+  // 没有任何一组确定满足：全是看不懂的写法就返回 unknown，
+  // 不能当成违规——那会让真实的整合包被误判（这正是 ~1.21 踩过的坑）
+  return sawUnknownGroup ? 'unknown' : 'violated'
 }
