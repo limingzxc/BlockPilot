@@ -3,7 +3,14 @@ import { existsSync } from 'node:fs'
 import type { Layout } from '../layout.js'
 import type { VersionJson } from '../version/types.js'
 import type { LaunchEnv } from './env.js'
-import { buildClasspath, expandArgs, pickLibraries, splitLegacyArgs, substitute } from './command.js'
+import {
+  buildClasspath,
+  expandArgs,
+  pickLibraries,
+  splitLegacyArgs,
+  substitute,
+  usesOwnClasspath,
+} from './command.js'
 
 export interface LaunchPlanOptions {
   /** java 可执行文件 */
@@ -55,8 +62,15 @@ export function buildLaunchPlan(opts: LaunchPlanOptions): LaunchPlan {
   // 加载器版本没有自己的 jar，用根版本的（Fabric profile 也不给 jar 字段）
   const jarId = version.jar ?? opts.rootVersionId
   const clientJar = layout.clientJar(jarId)
+  // Forge 1.17+ 自己管 classpath，塞进原版 jar 会导致模块冲突
+  const omitClientJar = usesOwnClasspath(version)
 
-  const { classpath, entries } = buildClasspath(version, env, librariesDir, clientJar)
+  const { classpath, entries } = buildClasspath(
+    version,
+    env,
+    librariesDir,
+    omitClientJar ? null : clientJar,
+  )
 
   const vars: Record<string, string> = {
     auth_player_name: opts.username,
@@ -101,7 +115,7 @@ export function buildLaunchPlan(opts: LaunchPlanOptions): LaunchPlan {
   // 缺失检查：client jar + 每个 library jar + asset index
   // 用 Set 去重：client jar 也在 entries 里，会重复计一次
   const missing = new Set<string>()
-  if (!existsSync(clientJar)) missing.add(clientJar)
+  if (!omitClientJar && !existsSync(clientJar)) missing.add(clientJar)
   for (const entry of entries) {
     if (!existsSync(entry)) missing.add(entry)
   }

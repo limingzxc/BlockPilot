@@ -801,10 +801,18 @@ async function runDeploy(argv: readonly string[]): Promise<number> {
   process.stdout.write(`  ${C.dim}整合包${C.reset}  ${packPath}\n`)
   process.stdout.write(`  ${C.dim}实例${C.reset}    ${instance} → ${layout.gameDir}\n\n`)
 
+  // Forge 要跑 installer，得有 java。Fabric 用不到，但先检测一次省得后续分支判断
+  let javaPath = argOf(argv, '--java')
+  if (javaPath === undefined) {
+    const scan = await detectJava({ signal: controller.signal })
+    javaPath = [...scan.installs].sort((a, b) => b.major - a.major)[0]?.path
+  }
+
   const op = createDeploy({
     packPath,
     layout,
     sources: pickSources(china),
+    ...(javaPath === undefined ? {} : { java: javaPath }),
   })
 
   for await (const ev of op.run(controller.signal)) {

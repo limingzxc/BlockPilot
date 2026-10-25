@@ -176,6 +176,16 @@ BlockPilot Real Fixture
 
 检查读的是 jar 里的真实元数据，包括 `META-INF/jars/` 下的嵌套模组——Fabric API 的 57 个子模块都在那里。见 [ADR-0013](docs/adr/0013-post-deploy-check.md)。
 
+## 加载器
+
+Fabric 与 Forge 都支持，`deploy` 会按 `.mrpack` 里的 `dependencies` 自动选。
+
+Forge 靠官方 installer 完成安装——它要给 client jar 打二进制补丁，自己复刻那套工具链没有意义。三个坑见 [ADR-0015](docs/adr/0015-forge-installer.md)：
+
+- installer 要求 `launcher_profiles.json`（空壳即可）
+- Forge 的版本目录只有 `.json`，patched client 在 `libraries` 里
+- classpath 里**不能**有原版 jar，否则和 Forge 的 `minecraft` 模块冲突
+
 ## Fabric 加载器
 
 ```bash
@@ -312,7 +322,7 @@ npx tsx src/cli/index.ts install fixtures/closure.mrpack --mods-dir /tmp/mods
 
 **全链路已跑通**：`.mrpack` → 部署 → 启动 → 59 个 mod 加载成功。原版、Fabric 两条路都实测到主菜单。
 
-**未开始**：Forge 安装（需要跑 installer jar）、Java 自动安装、CurseForge 支持、版本求解、日志落盘、GUI。
+**未开始**：Java 自动安装、NeoForge 验证、CurseForge 支持、版本求解、日志落盘、GUI。
 
 ## 许可
 

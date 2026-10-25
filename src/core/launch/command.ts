@@ -82,19 +82,33 @@ export function pickLibraries(
   return { jars, natives }
 }
 
-/** libraries 目录 + client jar，按平台分隔符拼成 -cp 的值。 */
+/**
+ * Forge 1.17+ 用 BootstrapLauncher，自己从 `-DlibraryDirectory` 扫描并组装模块，
+ * 还会用 `-DignoreList` 排除掉 client-extra、forge-* 等 jar。
+ *
+ * 这种版本**不能**把原版 client jar 放进 classpath：它会被当成自动模块
+ * `_1._20._1`，和 Forge 的 patched `minecraft` 模块导出同一个包，
+ * 启动时报 `ResolutionException: Modules ... export package net.minecraft.obfuscate`。
+ */
+export function usesOwnClasspath(version: VersionJson): boolean {
+  if (version.mainClass.includes('bootstraplauncher')) return true
+  const jvm = version.arguments?.jvm ?? []
+  return jvm.some((a) => typeof a === 'string' && a.includes('-DignoreList'))
+}
+
+/** libraries 目录 +（可选的）client jar，按平台分隔符拼成 -cp 的值。 */
 export function buildClasspath(
   version: VersionJson,
   env: LaunchEnv,
   librariesDir: string,
-  clientJar: string,
+  clientJar: string | null,
 ): { readonly classpath: string; readonly entries: readonly string[] } {
   const { jars } = pickLibraries(version, env)
   const entries = jars
     .map((lib) => libraryPath(lib))
     .filter((p): p is string => p !== null)
     .map((p) => join(librariesDir, ...p.split('/')))
-  entries.push(clientJar)
+  if (clientJar !== null) entries.push(clientJar)
   return {
     classpath: entries.join(env.os === 'windows' ? ';' : ':'),
     entries,

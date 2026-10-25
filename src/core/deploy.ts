@@ -15,6 +15,7 @@ import type { Finding, Verdict } from './preflight/types.js'
 import { scanInstanceDir } from './instance/scan.js'
 import { createVanillaSetup } from './setup/vanilla.js'
 import { createFabricSetup } from './setup/fabric.js'
+import { createForgeSetup } from './setup/forge.js'
 import { buildPackTasks, extractOverrides } from './setup/pack.js'
 
 export interface DeployOptions {
@@ -22,6 +23,8 @@ export interface DeployOptions {
   readonly layout: Layout
   readonly sources?: readonly DownloadSource[]
   readonly concurrency?: number
+  /** 跑 Forge installer 用的 java。Fabric 不需要 */
+  readonly java?: string
 }
 
 export interface DeployResult {
@@ -55,11 +58,11 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
       files: index.files.length,
     })
 
-    if (instance.loader.kind !== 'fabric') {
+    if (instance.loader.kind !== 'fabric' && instance.loader.kind !== 'forge') {
       yield Op.failed(
         'UNSUPPORTED_LOADER',
         `这个整合包用的是 ${instance.loader.kind} ${instance.loader.version}`,
-        '目前只支持 Fabric；Forge 需要跑 installer jar，还没实现',
+        '目前支持 Fabric 与 Forge',
       )
       return
     }
@@ -89,21 +92,44 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
 
     // ---- 2. 加载器 ----
     yield Op.log('info', 'deploy.step', { step: 'loader' })
-    let fabricResult: { versionId: string } | undefined
-    for await (const ev of createFabricSetup({
-      layout: opts.layout,
-      gameVersion: instance.gameVersion,
-      loaderVersion: instance.loader.version,
-      sources,
-      concurrency,
-    }).run(signal)) {
-      if (ev.type === 'result') fabricResult = ev.value as { versionId: string }
-      else if (ev.type === 'failed') {
-        yield ev
+    let playableVersionId: string | undefined
+
+    if (instance.loader.kind === 'fabric') {
+      for await (const ev of createFabricSetup({
+        layout: opts.layout,
+        gameVersion: instance.gameVersion,
+        loaderVersion: instance.loader.version,
+        sources,
+        concurrency,
+      }).run(signal)) {
+        if (ev.type === 'result') playableVersionId = (ev.value as { versionId: string }).versionId
+        else if (ev.type === 'failed') {
+          yield ev
+          return
+        } else if (ev.type !== 'done') yield ev
+      }
+    } else {
+      // Forge：靠官方 installer 下载依赖并给 client 打补丁，比自己解析 install_profile 可靠
+      if (opts.java === undefined) {
+        yield Op.failed('NEED_JAVA', 'Forge 需要 java 来跑 installer', '传 --java 或先跑 java 检测')
         return
-      } else if (ev.type !== 'done') yield ev
+      }
+      for await (const ev of createForgeSetup({
+        layout: opts.layout,
+        gameVersion: instance.gameVersion,
+        forgeVersion: instance.loader.version,
+        java: opts.java,
+        sources,
+      }).run(signal)) {
+        if (ev.type === 'result') playableVersionId = (ev.value as { versionId: string }).versionId
+        else if (ev.type === 'failed') {
+          yield ev
+          return
+        } else if (ev.type !== 'done') yield ev
+      }
     }
-    if (fabricResult === undefined) {
+
+    if (playableVersionId === undefined) {
       yield Op.failed('LOADER_FAILED', '加载器没装成')
       return
     }
@@ -175,7 +201,7 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
       gameVersion: instance.gameVersion,
       loaderKind: instance.loader.kind,
       loaderVersion: instance.loader.version,
-      playableVersionId: fabricResult.versionId,
+      playableVersionId,
       mods: tasks.length,
       modsDownloaded: downloaded,
       modsSkipped: skipped,
