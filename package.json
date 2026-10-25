@@ -1,0 +1,29 @@
+{
+  "name": "blockpilot",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "AI-drivable Minecraft launcher core — reference implementation",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/**/*.test.ts",
+    "preflight": "tsx src/cli/index.ts preflight",
+    "mcp": "tsx src/mcp/server.ts",
+    "smoke": "tsx scripts/mcp-smoke.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "fflate": "^0.8.3",
+    "smol-toml": "^1.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

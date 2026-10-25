@@ -1,0 +1,66 @@
+# GLOSSARY
+
+本文件定义 BlockPilot 的领域词汇。写 issue、测试名、重构提案时用这里的词，不要用同义词。
+
+## 领域
+
+**Instance（实例）**
+一个独立的游戏环境：MC 版本 + 加载器 + 模组集合 + 配置。对应磁盘上的一个目录。用 `Instance`，不用「游戏」「客户端」「配置」。
+
+**Loader（加载器）**
+Fabric / Forge / NeoForge / Quilt 之一。用 `Loader`，不用「mod 加载器」「引擎」。
+
+**Modpack（整合包）**
+可分发的 Instance 快照，包含清单和覆盖文件。格式有 `.mrpack`、CurseForge `manifest.json`、MultiMC `mmc-pack.json` 等。用 `Modpack`，不用「整合」「包」。
+
+**Preflight（预检）**
+启动之前的静态检查。不下载、不启动、不登录。产出 `PreflightReport`。用 `Preflight`，不用「检查」「体检」。
+
+**Finding（发现项）**
+预检报告里的一条结论。有 `severity`、稳定的机器码 `code`、默认文案 `message`、可选的 `subject` 和 `hint`。
+
+**Constraint（约束）**
+模组对自身运行条件的声明：支持哪些 MC 版本、哪些 Loader、依赖谁、与谁冲突。
+
+**Dependency closure（依赖闭包）**
+从初始模组集合出发，沿 `required` 依赖递归展开得到的完整集合。第一版只做这个，不做完整求解。
+
+**Mirror（镜像源）**
+官方下载源的替代端点。约定是**路径与官方 100% 兼容、只替换 host 前缀**（BMCLAPI 的规则）。用 `Mirror`，不用「加速源」「CDN」。
+
+**Source（内容源）**
+模组/整合包的元数据来源：Modrinth、CurseForge、本地文件。用 `Source`。
+
+**ProjectId（项目标识）**
+在线内容源侧的稳定 ID，如 Modrinth 的 `AANobbMI`。只在有网络元数据时才有。
+
+**ModId（模组标识）**
+jar 内声明的 ID，如 `sodium`、`fabric-api`。本地 jar 只有这个。**它和 ProjectId 不能互相推导**，见 ADR-0004。
+
+## 架构
+
+**Operation（操作）**
+core 暴露的最小可执行单元。必须可取消、可重入、可观察。唯一入口是 `run(signal): AsyncIterable<OpEvent>`。
+
+**OpEvent（操作事件）**
+Operation 的唯一输出形式。core 内不允许直接写 stdout——所有状态变化必须先成为事件。
+
+**Consumer（消费者）**
+订阅 OpEvent 的外壳。目前有 `cli` 和 `mcp`，未来的 `gui` 是第三个。Consumer 之间不共享代码，只共享 core。
+
+**Capability group（能力组）**
+MCP 暴露的工具分组，六组：`instance` / `package` / `config` / `repository` / `account` / `loader`。
+
+**Forbidden operation（禁区操作）**
+刻意不暴露给 AI 的操作：**启动游戏（run）** 与 **账户授权（OAuth）**。理由：不可幂等、不可回滚。装错模组能删，用你的账号启动一次游戏撤不回来。
+
+## 避免的说法
+
+| 不要用 | 用 |
+|---|---|
+| 游戏客户端 / 客户端 | Instance |
+| 引擎 / mod loader | Loader |
+| 整合 / 包 | Modpack |
+| 检测 / 校验 | Preflight |
+| 加速源 / CDN | Mirror |
+| 插件 / 模块（指 MCP 工具时） | Capability group |

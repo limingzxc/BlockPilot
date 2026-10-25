@@ -1,0 +1,15 @@
+node_modules/
+dist/
+
+# 生成的测试夹具
+fixtures/
+
+# 临时文件与调研抓包
+_tmp/
+.tmp-*
+
+# AI 工作日志（决策结论已落在 docs/adr/）
+.workbuddy/memory/
+
+*.log
+.DS_Store
