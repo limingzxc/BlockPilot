@@ -143,6 +143,26 @@ npx tsx src/cli/index.ts launch 1.20.1 --root D:/mc --instance rlcraft
 
 `setup` 与 `assets` 分开：第一次装原版只下 80 MB 就能验证启动链路，621 MB 的音效可以晚点再补——没有 assets 也能进主界面，只是没声音。见 [ADR-0009](docs/adr/0009-assets-download.md)。
 
+## 一条命令装整合包
+
+```bash
+npx tsx src/cli/index.ts deploy fixtures/real-pack.mrpack --root D:/mc --instance rlcraft
+```
+
+`.mrpack` 里已经写好了该用哪个 MC 版本、哪个 loader 版本。`deploy` 依次完成：原版文件 → 加载器 → 整合包模组 → overrides，最后直接给出启动命令。
+
+```
+BlockPilot Real Fixture
+→ 原版文件（66 个，已存在则跳过）
+→ 加载器（8 个库）
+→ 整合包文件（sodium + fabric-api）
+→ overrides（2 个文件）
+
+装好了 1.20.1 + fabric 0.16.14
+```
+
+服务端专用的文件（`env.client: "unsupported"`）不会装到客户端。细节见 [ADR-0012](docs/adr/0012-deploy-orchestration.md)。
+
 ## Fabric 加载器
 
 ```bash
@@ -277,7 +297,7 @@ npx tsx src/cli/index.ts install fixtures/closure.mrpack --mods-dir /tmp/mods
 
 **已完成**：`.mrpack` 与实例目录解析、jar 元数据读取（fabric/forge/neoforge/quilt，含 `provides` 子模块）、约束检查、递归依赖闭包、可执行修复计划、并发下载（哈希校验 / 多源降级 / 缓存命中）、Java 检测与版本判定、原版安装（client jar + libraries + assetIndex + natives 解压 + assets 对象）、启动命令生成（rules / classpath / 参数模板）、进程启动与日志事件化、Modrinth 元数据源、CLI 与 MCP 两个消费者。
 
-**全链路已跑通**：检查 → 修复计划 → 下载 → 校验 → 安装 → 启动 → 退出。原版 1.20.1 和 Fabric 0.15.11 都实测启动到主菜单。
+**全链路已跑通**：`.mrpack` → 部署 → 启动 → 59 个 mod 加载成功。原版、Fabric 两条路都实测到主菜单。
 
 **未开始**：Forge 安装（需要跑 installer jar）、Java 自动安装、CurseForge 支持、版本求解、日志落盘、GUI。
 
