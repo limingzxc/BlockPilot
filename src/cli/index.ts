@@ -15,6 +15,8 @@ import type { JavaScanResult } from '../core/java/types.js'
 import { createLaunchPlan } from '../core/launch/index.js'
 import { createLauncher } from '../core/launch/run.js'
 import { listLogs } from '../core/launch/logfile.js'
+import { createDiagnose } from '../core/diagnostics/index.js'
+import type { DiagResult } from '../core/diagnostics/index.js'
 import type { RunResult } from '../core/launch/run.js'
 import type { LaunchPlan } from '../core/launch/plan.js'
 import { defaultRoot, resolveLayout } from '../core/layout.js'
@@ -149,6 +151,8 @@ function usage(): void {
             --quiet 只显示 ERROR 级日志
             --stop <秒> 到时自动结束（测试用）
   logs      列出会话日志
+  diag      分析最近的会话日志，把异常归类成可理解的结论
+            --file <path> 指定日志；默认取最新一份
             --quiet 只显示 ERROR 级日志
             --stop <秒> 到时自动结束（测试用）
 
@@ -785,6 +789,7 @@ async function runGame(argv: readonly string[]): Promise<number> {
     }
     process.stdout.write('\n')
     process.stdout.write(`  ${C.bold}下一步${C.reset}\n`)
+    process.stdout.write(`    blockpilot diag --root ${root} --instance ${instance}      ${C.dim}# 分析这份日志${C.reset}\n`)
     process.stdout.write(`    blockpilot preflight "${layout.gameDir}"   ${C.dim}# 扫描实例里的 mods${C.reset}\n\n`)
     return 2
   }
@@ -966,6 +971,94 @@ async function runDeploy(argv: readonly string[]): Promise<number> {
   return 1
 }
 
+function renderDiag(r: DiagResult): string {
+  const lines: string[] = []
+  lines.push('')
+  lines.push(`${C.bold}BlockPilot diag${C.reset}`)
+  lines.push('')
+  lines.push(`  ${C.dim}${r.logPath}${C.reset}  ${C.dim}${r.lineCount} 行${C.reset}`)
+  lines.push('')
+
+  if (r.verdict === 'clean') {
+    lines.push(`  ${C.green}没有在日志里找到异常${C.reset}`)
+    lines.push(`  ${C.dim}如果游戏确实崩了，可能日志没写全——看看进程是不是被外部杀掉${C.reset}`)
+    lines.push('')
+    return lines.join('\n')
+  }
+
+  const others = r.signals.filter((s) => s !== r.primary)
+
+  if (r.primary !== null) {
+    lines.push(`${C.bold}最可能的根因${C.reset}`)
+    lines.push('')
+    lines.push(
+      `  ${C.red}✗${C.reset} ${C.bold}${r.primary.kind}${C.reset}  ${C.dim}第 ${r.primary.line} 行${C.reset}`,
+    )
+    lines.push(`    ${r.primary.message}`)
+    lines.push(`    ${C.cyan}→ ${r.primary.hint}${C.reset}`)
+    lines.push('')
+  }
+
+  if (others.length > 0) {
+    lines.push(`${C.dim}其他线索（可能是连锁反应，别急着一个个修）${C.reset}`)
+    lines.push('')
+    for (const s of others) {
+      lines.push(`  ${C.yellow}?${C.reset} ${s.kind}  ${C.dim}第 ${s.line} 行${C.reset}`)
+      lines.push(`    ${C.dim}${s.hint}${C.reset}`)
+    }
+    lines.push('')
+  }
+
+  if (r.primary !== null && r.primary.excerpt.length > 0) {
+    lines.push(`  ${C.dim}现场（第 ${r.primary.line} 行附近）${C.reset}`)
+    for (const l of r.primary.excerpt.slice(0, 6)) {
+      lines.push(`    ${C.dim}${l.slice(0, 140)}${C.reset}`)
+    }
+    lines.push('')
+  }
+
+  return lines.join('\n')
+}
+
+async function runDiag(argv: readonly string[]): Promise<number> {
+  const root = argOf(argv, '--root') ?? defaultRoot()
+  const instance = argOf(argv, '--instance') ?? 'default'
+  const layout = resolveLayout(root, instance)
+
+  const explicit = argOf(argv, '--file')
+  let logPath = explicit
+  if (logPath === undefined) {
+    const logs = listLogs(join(layout.gameDir, 'logs')).filter((l) => !l.native)
+    const latest = logs[0]
+    if (latest === undefined) {
+      process.stderr.write(
+        `${C.red}没有会话日志${C.reset}：${join(layout.gameDir, 'logs')}\n` +
+          `${C.dim}先跑一次 blockpilot run${C.reset}\n`,
+      )
+      return 1
+    }
+    logPath = latest.path
+  }
+
+  const controller = new AbortController()
+  process.on('SIGINT', () => controller.abort())
+
+  const op = createDiagnose({ logPath })
+  for await (const ev of op.run(controller.signal)) {
+    if (ev.type === 'result') {
+      const r = ev.value as DiagResult
+      process.stdout.write(renderDiag(r))
+      return r.verdict === 'crash' ? 2 : 0
+    }
+    if (ev.type === 'failed') {
+      process.stderr.write(`${C.red}${ev.code}${C.reset}: ${ev.message}\n`)
+      if (ev.hint !== undefined) process.stderr.write(`${C.dim}${ev.hint}${C.reset}\n`)
+      return 1
+    }
+  }
+  return 1
+}
+
 async function runLogs(argv: readonly string[]): Promise<number> {
   const root = argOf(argv, '--root') ?? defaultRoot()
   const instance = argOf(argv, '--instance') ?? 'default'
@@ -1002,6 +1095,7 @@ async function main(): Promise<number> {
   if (cmd === 'launch') return runLaunch(argv.slice(1))
   if (cmd === 'run') return runGame(argv.slice(1))
   if (cmd === 'logs') return runLogs(argv.slice(1))
+  if (cmd === 'diag') return runDiag(argv.slice(1))
   usage()
   return cmd === undefined || cmd === '--help' ? 0 : 1
 }
