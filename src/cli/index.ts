@@ -14,6 +14,7 @@ import { pickJava, requiredJavaMajor } from '../core/java/types.js'
 import type { JavaScanResult } from '../core/java/types.js'
 import { createLaunchPlan } from '../core/launch/index.js'
 import { createLauncher } from '../core/launch/run.js'
+import { listLogs } from '../core/launch/logfile.js'
 import type { RunResult } from '../core/launch/run.js'
 import type { LaunchPlan } from '../core/launch/plan.js'
 import { defaultRoot, resolveLayout } from '../core/layout.js'
@@ -144,7 +145,10 @@ function usage(): void {
   deploy    从 .mrpack 一次装完：原版 → 加载器 → 模组 → overrides
             装完直接给出可用的启动命令
   launch    生成启动命令（只打印，不启动）
-  run       真的启动游戏，转发日志；异常退出后给出诊断入口
+  run       真的启动游戏，转发日志并落盘到 <实例>/logs/
+            --quiet 只显示 ERROR 级日志
+            --stop <秒> 到时自动结束（测试用）
+  logs      列出会话日志
             --quiet 只显示 ERROR 级日志
             --stop <秒> 到时自动结束（测试用）
 
@@ -739,6 +743,7 @@ async function runGame(argv: readonly string[]): Promise<number> {
 
   const op = createLauncher({
     plan,
+    logsDir: join(layout.gameDir, 'logs'),
     ...(stopArg === undefined ? {} : { autoStopSeconds: Number(stopArg) }),
   })
 
@@ -773,14 +778,22 @@ async function runGame(argv: readonly string[]): Promise<number> {
   process.stdout.write('\n')
   if (result.crashed) {
     process.stdout.write(
-      `  ${C.red}异常退出${C.reset}  code=${result.exitCode ?? '-'} signal=${result.signal ?? '-'} · ${secs}s · ${result.lineCount} 行日志\n\n`,
+      `  ${C.red}异常退出${C.reset}  code=${result.exitCode ?? '-'} signal=${result.signal ?? '-'} · ${secs}s · ${result.lineCount} 行日志\n`,
     )
+    if (result.logPath !== undefined) {
+      process.stdout.write(`  ${C.dim}完整日志${C.reset}  ${result.logPath}\n`)
+    }
+    process.stdout.write('\n')
     process.stdout.write(`  ${C.bold}下一步${C.reset}\n`)
     process.stdout.write(`    blockpilot preflight "${layout.gameDir}"   ${C.dim}# 扫描实例里的 mods${C.reset}\n\n`)
     return 2
   }
 
-  process.stdout.write(`  ${C.green}正常退出${C.reset}  ${secs}s · ${result.lineCount} 行日志\n\n`)
+  process.stdout.write(`  ${C.green}正常退出${C.reset}  ${secs}s · ${result.lineCount} 行日志\n`)
+  if (result.logPath !== undefined) {
+    process.stdout.write(`  ${C.dim}日志${C.reset}  ${result.logPath}\n`)
+  }
+  process.stdout.write('\n')
   return 0
 }
 
@@ -953,6 +966,29 @@ async function runDeploy(argv: readonly string[]): Promise<number> {
   return 1
 }
 
+async function runLogs(argv: readonly string[]): Promise<number> {
+  const root = argOf(argv, '--root') ?? defaultRoot()
+  const instance = argOf(argv, '--instance') ?? 'default'
+  const layout = resolveLayout(root, instance)
+  const logsDir = join(layout.gameDir, 'logs')
+  const logs = listLogs(logsDir)
+
+  process.stdout.write('\n')
+  process.stdout.write(`  ${C.dim}${logsDir}${C.reset}\n\n`)
+  if (logs.length === 0) {
+    process.stdout.write(`  ${C.dim}还没有日志。跑一次 run 就会产生。${C.reset}\n\n`)
+    return 0
+  }
+  for (const l of logs) {
+    const ago = Math.round((Date.now() - l.mtime) / 60000)
+    const when = ago < 60 ? `${ago} 分钟前` : `${Math.round(ago / 60)} 小时前`
+    const tag = l.native ? `${C.dim}[游戏原生]${C.reset} ` : ''
+    process.stdout.write(`  ${tag}${l.name}  ${C.dim}${humanBytes(l.size)} · ${when}${C.reset}\n`)
+  }
+  process.stdout.write('\n')
+  return 0
+}
+
 async function main(): Promise<number> {
   const argv = process.argv.slice(2)
   const cmd = argv[0]
@@ -965,6 +1001,7 @@ async function main(): Promise<number> {
   if (cmd === 'deploy') return runDeploy(argv.slice(1))
   if (cmd === 'launch') return runLaunch(argv.slice(1))
   if (cmd === 'run') return runGame(argv.slice(1))
+  if (cmd === 'logs') return runLogs(argv.slice(1))
   usage()
   return cmd === undefined || cmd === '--help' ? 0 : 1
 }

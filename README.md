@@ -214,7 +214,7 @@ Fabric 的 profile 只有 8 个库和主类，其余全靠 `inheritsFrom` 合并
 npx tsx src/cli/index.ts run 1.20.1 --root D:/mc --memory 2048
 ```
 
-日志实时转成事件流（`--quiet` 只显示 ERROR）。异常退出时打印诊断入口：
+日志实时转成事件流（`--quiet` 只显示 ERROR），**同时落盘到 `<实例>/logs/`**。异常退出时打印日志路径和诊断入口：
 
 ```
   异常退出  code=1 · 12.3s · 428 行日志
@@ -329,7 +329,7 @@ npx tsx src/cli/index.ts install fixtures/closure.mrpack --mods-dir /tmp/mods
 
 **全链路已跑通**：`.mrpack` → 部署 → 启动 → 59 个 mod 加载成功。原版、Fabric 两条路都实测到主菜单。
 
-**未开始**：Linux/macOS 的 Java 安装（tar.gz）、NeoForge 实测、CurseForge 支持、版本求解、日志落盘、GUI。
+**未开始**：Linux/macOS 的 Java 安装（tar.gz）、NeoForge 实测、CurseForge 支持、版本求解、日志分析、GUI。
 
 ## 许可
 

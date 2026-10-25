@@ -5,10 +5,13 @@ import type { OpEvent } from '../events.js'
 import { defineOperation } from '../operation.js'
 import type { Operation } from '../operation.js'
 import { AsyncQueue } from '../download/queue.js'
+import { openLogFile } from './logfile.js'
 import type { LaunchPlan } from './plan.js'
 
 export interface RunOptions {
   readonly plan: LaunchPlan
+  /** 会话日志目录。不给就不落盘 */
+  readonly logsDir?: string
   /** 测试用：N 秒后强制结束 */
   readonly autoStopSeconds?: number
 }
@@ -22,6 +25,8 @@ export interface RunResult {
   /** 最后 N 行输出，用于崩溃现场 */
   readonly tail: readonly string[]
   readonly lineCount: number
+  /** 会话日志的落地路径。没开日志时为空 */
+  readonly logPath?: string
 }
 
 const TAIL_SIZE = 40
@@ -62,6 +67,11 @@ export function createLauncher(opts: RunOptions): Operation<RunResult> {
 
     const started = Date.now()
     const queue = new AsyncQueue<OpEvent<never>>()
+    const sink =
+      opts.logsDir === undefined ? null : openLogFile(opts.logsDir, plan.versionId)
+    if (sink !== null) {
+      yield Op.log('info', 'launch.logfile', { path: sink.path })
+    }
     const tail: string[] = []
     let lineCount = 0
 
@@ -69,6 +79,7 @@ export function createLauncher(opts: RunOptions): Operation<RunResult> {
       lineCount += 1
       tail.push(line)
       if (tail.length > TAIL_SIZE) tail.shift()
+      sink?.write(line)
       queue.push(
         Op.log(looksLikeError(line) ? 'error' : 'info', 'game.output', { stream, line }),
       )
@@ -118,7 +129,17 @@ export function createLauncher(opts: RunOptions): Operation<RunResult> {
       yield Op.log('info', 'launch.exited', { code, durationMs })
     }
 
-    yield Op.result({ exitCode: code, signal: sig, durationMs, crashed, tail, lineCount })
+    if (sink !== null) await sink.close()
+
+    yield Op.result({
+      exitCode: code,
+      signal: sig,
+      durationMs,
+      crashed,
+      tail,
+      lineCount,
+      ...(sink === null ? {} : { logPath: sink.path }),
+    })
     yield Op.done()
   })
 }
