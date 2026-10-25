@@ -87,7 +87,7 @@ const RULES: readonly Rule[] = [
 
   // ---- Mixin ----
   {
-    re: /MixinApplyError|InvalidMixinException|Mixin apply failed|MixinTransformerError/i,
+    re: /MixinApplyError|InvalidMixinException|InvalidInjectionException|Mixin apply failed|MixinTransformerError|Mixin transformation of .* failed/i,
     kind: 'mixin',
     severity: 'fatal',
     hint: '模组之间的字节码改写冲突。通常是两个模组改同一个类，试着移除最近加的那个',

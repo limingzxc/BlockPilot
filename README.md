@@ -73,9 +73,16 @@ MCP server 把同一个 core 暴露成工具。开发期直接指向源码：
 
 构建后换成 `{"command": "node", "args": ["D:/BlockPilot/dist/mcp/server.js"]}`。
 
-当前只暴露一个工具 `preflight_modpack`。它的描述里写了一条给模型的行为约束：**看到 `unknown` 不许说「没问题」**——有模组没校验过时，结论就是不可信。
+当前暴露两个工具：
 
-`preflight_modpack` 属于 `diagnose` 组。完整的六组划分见 ADR-0001。
+| 工具 | 作用 | 输入的副作用 |
+|---|---|---|
+| `preflight_modpack` | 检查整合包/实例能否运行 | 只读（`.mrpack` 会联网查 Modrinth） |
+| `diagnose_crash` | 读崩溃日志，指认到具体模组 | 只读 |
+
+两个工具的描述里都写了给模型的行为约束：**看到 `unknown` 不许说「没问题」**；**定位不到模组时不许猜名字**。后者尤其重要——猜错会让用户去删一个无辜的模组，问题依旧，还多了一个新问题。
+
+`preflight_modpack` 与 `diagnose_crash` 都属于 `diagnose` 组。完整的六组划分见 ADR-0001。
 
 **`install` 刻意没有暴露给 AI。** 下载要写磁盘、可能几百 MB、还会覆盖用户已有的文件。参考实现应该展示「AI 诊断、人执行」这条边界，而不是让模型直接动手。报告里的 `plan` 已经足够让上层应用在用户确认后调用后者。
 
@@ -218,12 +225,55 @@ npx tsx src/cli/index.ts run 1.20.1 --root D:/mc --memory 2048
 
 ```
   异常退出  code=1 · 12.3s · 428 行日志
+  完整日志  D:\mc\instances\default\logs\2026-10-25T11-57-12-1.20.1.log
 
   下一步
+    blockpilot diag --root D:\mc --instance default
     blockpilot preflight "D:\mc\instances\default"
 ```
 
+日志文件名带时间戳而不是固定的 `latest.log`——同一实例跑不同版本时，固定名会把上一次的现场冲掉。轮转只删自己的，**不碰游戏写的 `latest.log`**，见 [ADR-0018](docs/adr/0018-session-logs.md)。
+
 `launch` 崩溃后**不会自己调 preflight**——那是 CLI 的策略，不是 core 的能力。分层见 [ADR-0010](docs/adr/0010-launch-process.md)。
+
+## 读日志：`diag`
+
+```bash
+npx tsx src/cli/index.ts logs --root D:/mc    # 列出会话日志
+npx tsx src/cli/index.ts diag --root D:/mc    # 分析最近一份
+```
+
+`diag` 做两件事：把异常归类成可理解的结论，并**尽量指认到具体模组**。
+
+```
+最可能的根因
+
+  ✗ mod-crash  第 9 行
+    java.lang.RuntimeException: Ticking screen
+    → 异常来自 Just Enough Items（jei），文件 jei.jar。先禁用或更新它，看崩溃是否消失
+
+指向的模组（按证据强度排序，越靠前越可能是它）
+
+  ✗ jei · Just Enough Items 15.74.0.229
+    jei.jar · 2 个栈帧
+    · 根因区段最上面的一帧
+    · 包名属于它：mezz.jei.common、mezz.jei.gui
+    at mezz.jei.common.Internal.getLogger(Internal.java:42)
+```
+
+归属只用**事实**，不用猜测。证据按强度排序：
+
+| 强度 | 证据 | 来源 |
+|---|---|---|
+| 100 | 根因区段（最后一条 `Caused by` 之后）最上面那一帧 | 栈帧位置 |
+| 60 | mixin 处理器方法名里嵌的 mod id（`handler$zcb000$sodium$...`） | Fabric 的命名规范 |
+| 50 | 帧尾标注的 jar 名（`~[jei-...jar%23123!/:?]`） | Forge / ModLauncher |
+| 40 | 日志点名 `<modid>.mixins.json` | mixin 报错 |
+| 10 | 包名属于某个 jar 里的类 | 扫 jar 条目 |
+
+**两个模组声明同一个包时不指认任何人**——那说明它是共用库，说「是谁」等于瞎猜。宁可输出「定位不到具体模组」。理由见 [ADR-0020](docs/adr/0020-stack-attribution.md)。
+
+`diag` 同时也是一个 MCP 工具（`diagnose_crash`）：只读文件，符合「AI 诊断、人执行」的边界。
 
 ## 启动命令生成
 
@@ -325,11 +375,21 @@ npx tsx src/cli/index.ts install fixtures/closure.mrpack --mods-dir /tmp/mods
 
 早期，但核心链路已经通了。
 
-**已完成**：`.mrpack` 与实例目录解析、jar 元数据读取（fabric/forge/neoforge/quilt，含 `provides` 子模块）、约束检查、递归依赖闭包、可执行修复计划、并发下载（哈希校验 / 多源降级 / 缓存命中）、Java 检测与版本判定、原版安装（client jar + libraries + assetIndex + natives 解压 + assets 对象）、启动命令生成（rules / classpath / 参数模板）、进程启动与日志事件化、Modrinth 元数据源、CLI 与 MCP 两个消费者。
+**已完成**：`.mrpack` 与实例目录解析、jar 元数据读取（fabric/forge/neoforge/quilt，含 `provides` 与 jar-in-jar）、约束检查（含版本范围）、递归依赖闭包、可执行修复计划、并发下载（哈希校验 / 多源降级 / 缓存命中）、Java 检测与自动安装、原版安装（client jar + libraries + assetIndex + natives + assets）、启动命令生成、进程启动与日志落盘、崩溃日志分析与栈帧归属、Modrinth 元数据源、CLI 与 MCP 两个消费者。
 
-**全链路已跑通**：`.mrpack` → 部署 → 启动 → 59 个 mod 加载成功。原版、Fabric 两条路都实测到主菜单。
+**全链路已跑通**：`.mrpack` → 部署 → 自检 → 启动 → 崩溃 → 日志 → 定位。
 
-**未开始**：Linux/macOS 的 Java 安装（tar.gz）、NeoForge 实测、CurseForge 支持、版本求解、堆栈解析、GUI。
+实测样本：
+
+| 场景 | 结果 |
+|---|---|
+| 原版 1.20.1 | 启动到主菜单 |
+| Fabric 0.15.11 + 1.20.1 | 启动成功 |
+| Fabulously Optimized 6.5.0（50 mod / 1.21.1） | 151 mods loaded，图集全部创建 |
+| Forge 47.3.0 + JEI + AppleSkin | `Launching target 'forgeclient'`，两个 mod 均生效 |
+| NeoForge | 代码就绪，**未实测**（`maven.neoforged.net` 本机不可达） |
+
+**未开始**：Linux/macOS 的 Java 安装（tar.gz）、NeoForge 实测、CurseForge 支持、版本求解、GUI。
 
 ## 许可
 

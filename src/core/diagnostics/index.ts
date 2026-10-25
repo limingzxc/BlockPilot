@@ -3,11 +3,55 @@ import { existsSync, readFileSync } from 'node:fs'
 import { Op } from '../events.js'
 import { defineOperation } from '../operation.js'
 import type { Operation } from '../operation.js'
+import { attributeCulprits, buildModIndex, EMPTY_INDEX } from './attribution.js'
+import type { Culprit } from './attribution.js'
 import { analyzeLog, primarySignal } from './crash.js'
-import type { CrashSignal } from './crash.js'
+import type { CrashSignal, CrashKind } from './crash.js'
+import { parseFrames } from './frames.js'
+
+/** 这些 kind 的结论会因「指向了谁」而变；运行时的（Java/内存/显卡）不会。 */
+const ATTRIBUTABLE: ReadonlySet<CrashKind> = new Set(['mod-crash', 'mod-load-failed', 'mixin'])
+
+/**
+ * 人类可读的模组名。
+ *
+ * `Controlify（controlify）` 这种输出只是把同一个词写了两遍——只有当显示名
+ * 和 modId 明显不同时，才值得把 modId 也带上（用户要在 mods/ 里找文件）。
+ */
+function modLabel(c: Culprit): string {
+  if (c.name === undefined) return c.modId
+  const normalize = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+  if (normalize(c.name) === normalize(c.modId)) return c.name
+  return `${c.name}（${c.modId}）`
+}
+
+/**
+ * 把归属结果并进根因的 hint。
+ *
+ * 原本 `mod-crash` 的 hint 是「看它前面几行的触发点，通常是某个模组」——
+ * 那是**没有归属能力时**能说的话。现在既然知道是谁了，就不该再让用户自己找。
+ *
+ * 只改被归因影响的 kind：显卡驱动报错时把锅推给某个模组是错的。
+ */
+function applyAttribution(primary: CrashSignal, top: Culprit | undefined): CrashSignal {
+  if (top === undefined) return primary
+  if (!ATTRIBUTABLE.has(primary.kind)) return primary
+  // 证据太弱就不改结论。一条「包名看着像」不足以让用户去删模组
+  if (top.score < 40) return primary
+
+  const label = modLabel(top)
+  const hint =
+    primary.kind === 'mod-crash'
+      ? `异常来自 ${label}，文件 ${top.fileName}。先禁用或更新它，看崩溃是否消失`
+      : `${primary.hint}。本次崩在 ${label}`
+
+  return { ...primary, hint }
+}
 
 export interface DiagOptions {
   readonly logPath: string
+  /** 实例的 mods 目录。给了才能把栈帧归到具体模组 */
+  readonly modsDir?: string
 }
 
 export type DiagVerdict = 'crash' | 'inconclusive' | 'clean'
@@ -23,6 +67,12 @@ export interface DiagResult {
    * - clean：日志里没有任何异常
    */
   readonly verdict: DiagVerdict
+  /** 按证据强度排序的嫌疑模组。空数组表示定位不到 */
+  readonly culprits: readonly Culprit[]
+  /** 定位不到时的解释，告诉用户缺了什么信息 */
+  readonly attributionNotes: readonly string[]
+  /** 解析到的栈帧数，用于区分「没崩」和「崩了但没栈」 */
+  readonly frameCount: number
 }
 
 export function createDiagnose(opts: DiagOptions): Operation<DiagResult> {
@@ -36,8 +86,24 @@ export function createDiagnose(opts: DiagOptions): Operation<DiagResult> {
     const lines = text.split(/\r?\n/)
     if (signal.aborted) return
 
-    const signals = analyzeLog(lines)
-    const primary = primarySignal(signals)
+    const rawSignals = analyzeLog(lines)
+    const rawPrimary = primarySignal(rawSignals)
+
+    const frames = parseFrames(lines)
+    const index =
+      opts.modsDir === undefined || !existsSync(opts.modsDir)
+        ? EMPTY_INDEX
+        : buildModIndex(opts.modsDir)
+    const attribution = attributeCulprits({ lines, index, frames })
+
+    // 结论要带着「指向谁」一起说，否则用户读到的是一条没有主语的建议
+    const primary =
+      rawPrimary === null ? null : applyAttribution(rawPrimary, attribution.culprits[0])
+
+    // 把增强过的根因放回数组里。否则消费者按引用去重时，
+    // 原始的那条会被当成「其他线索」再打印一次
+    const signals = rawSignals.map((s) => (s === rawPrimary ? primary ?? s : s))
+
     const verdict: DiagVerdict =
       primary === null ? 'clean' : primary.severity === 'fatal' ? 'crash' : 'inconclusive'
 
@@ -46,6 +112,8 @@ export function createDiagnose(opts: DiagOptions): Operation<DiagResult> {
       signals: signals.length,
       verdict,
       primary: primary?.kind,
+      frames: frames.length,
+      culprits: attribution.culprits.length,
     })
 
     yield Op.result({
@@ -54,6 +122,9 @@ export function createDiagnose(opts: DiagOptions): Operation<DiagResult> {
       signals,
       primary,
       verdict,
+      culprits: attribution.culprits,
+      attributionNotes: attribution.notes,
+      frameCount: frames.length,
     })
     yield Op.done()
   })

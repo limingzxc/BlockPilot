@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { join } from 'node:path'
+import { existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 
 import { createPreflight } from '../core/preflight/index.js'
 import type { Finding, PreflightReport } from '../core/preflight/types.js'
@@ -17,6 +18,7 @@ import { createLauncher } from '../core/launch/run.js'
 import { listLogs } from '../core/launch/logfile.js'
 import { createDiagnose } from '../core/diagnostics/index.js'
 import type { DiagResult } from '../core/diagnostics/index.js'
+import type { Culprit } from '../core/diagnostics/attribution.js'
 import type { RunResult } from '../core/launch/run.js'
 import type { LaunchPlan } from '../core/launch/plan.js'
 import { defaultRoot, resolveLayout } from '../core/layout.js'
@@ -971,6 +973,53 @@ async function runDeploy(argv: readonly string[]): Promise<number> {
   return 1
 }
 
+function renderCulprits(r: DiagResult): string[] {
+  const lines: string[] = []
+  const top = r.culprits.slice(0, 3)
+
+  if (top.length === 0) {
+    if (r.attributionNotes.length > 0) {
+      lines.push(`${C.dim}定位不到具体模组${C.reset}`)
+      for (const n of r.attributionNotes) lines.push(`  ${C.dim}${n}${C.reset}`)
+      lines.push('')
+    }
+    return lines
+  }
+
+  lines.push(
+    `${C.bold}指向的模组${C.reset}` +
+      `${C.dim}（按证据强度排序，越靠前越可能是它）${C.reset}`,
+  )
+  lines.push('')
+
+  for (let i = 0; i < top.length; i += 1) {
+    const c = top[i]
+    if (c === undefined) continue
+    const first = i === 0
+    const mark = first ? `${C.red}✗${C.reset}` : `${C.yellow}?${C.reset}`
+    const label = `${c.modId}${c.name === undefined ? '' : ` · ${c.name}`}${
+      c.version === undefined ? '' : ` ${c.version}`
+    }`
+
+    lines.push(`  ${mark} ${first ? C.bold : ''}${label}${C.reset}`)
+    lines.push(`    ${C.dim}${c.fileName} · ${c.frames} 个栈帧${C.reset}`)
+    for (const reason of c.reasons.slice(0, 3)) {
+      lines.push(`    ${C.dim}· ${reason}${C.reset}`)
+    }
+    lines.push(`    ${C.dim}${c.sampleFrame.slice(0, 130)}${C.reset}`)
+    lines.push('')
+  }
+
+  if (top.length > 1) {
+    lines.push(
+      `  ${C.dim}一个崩溃现场往往牵涉多个模组。先处理第一个，剩下的常常会一起消失。${C.reset}`,
+    )
+    lines.push('')
+  }
+
+  return lines
+}
+
 function renderDiag(r: DiagResult): string {
   const lines: string[] = []
   lines.push('')
@@ -1009,6 +1058,8 @@ function renderDiag(r: DiagResult): string {
     lines.push('')
   }
 
+  lines.push(...renderCulprits(r))
+
   if (r.primary !== null && r.primary.excerpt.length > 0) {
     lines.push(`  ${C.dim}现场（第 ${r.primary.line} 行附近）${C.reset}`)
     for (const l of r.primary.excerpt.slice(0, 6)) {
@@ -1043,7 +1094,12 @@ async function runDiag(argv: readonly string[]): Promise<number> {
   const controller = new AbortController()
   process.on('SIGINT', () => controller.abort())
 
-  const op = createDiagnose({ logPath })
+  // --file 可能指向另一个实例的日志。日志默认在 `<实例>/logs/xxx.log`，
+  // 所以优先用日志旁边那个 mods 目录，否则归属会串到当前实例上
+  const siblingMods = join(dirname(dirname(logPath)), 'mods')
+  const modsDir = existsSync(siblingMods) ? siblingMods : layout.mods
+
+  const op = createDiagnose({ logPath, modsDir })
   for await (const ev of op.run(controller.signal)) {
     if (ev.type === 'result') {
       const r = ev.value as DiagResult
