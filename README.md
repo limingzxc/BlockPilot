@@ -117,8 +117,13 @@ MCP server 把同一个 core 暴露成工具。开发期直接指向源码：
 Java 检查**独立于在线/离线模式**，两条链路都跑。检测方式是起进程读 `-XshowSettings:properties`，不是读注册表——绿色版 JDK 也能发现。见 [ADR-0006](docs/adr/0006-java-detection.md)。
 
 ```bash
-npx tsx src/cli/index.ts java    # 列出本机可用的 Java
+npx tsx src/cli/index.ts java                 # 列出本机可用的 Java
+npx tsx src/cli/index.ts java install 21      # 没装就从 Adoptium 装一个
 ```
+
+`java install` 下载 Temurin JRE（带 sha256 校验）、解压到 `<root>/java`，装完立刻探测验证版本。之后 `run` / `launch` / `deploy` 会**优先用它**，而不是系统里那个——用户明确装的东西不该被别的软件带来的覆盖。见 [ADR-0017](docs/adr/0017-java-auto-install.md)。
+
+目前只支持 Windows（Adoptium 对它给 zip；Linux/macOS 给 tar.gz，还没做）。
 
 ## 目录布局
 
@@ -324,7 +329,7 @@ npx tsx src/cli/index.ts install fixtures/closure.mrpack --mods-dir /tmp/mods
 
 **全链路已跑通**：`.mrpack` → 部署 → 启动 → 59 个 mod 加载成功。原版、Fabric 两条路都实测到主菜单。
 
-**未开始**：Java 自动安装、NeoForge 实测、CurseForge 支持、版本求解、日志落盘、GUI。
+**未开始**：Linux/macOS 的 Java 安装（tar.gz）、NeoForge 实测、CurseForge 支持、版本求解、日志落盘、GUI。
 
 ## 许可
 

@@ -14,11 +14,13 @@ import { dirname } from 'node:path'
 import type { DownloadOutcome, DownloadSource, DownloadTask, SourceAttempt } from './types.js'
 import { USER_AGENT } from '../user-agent.js'
 
-type Algo = 'sha1' | 'sha512'
+type Algo = 'sha1' | 'sha256' | 'sha512'
 
 function pickAlgo(hashes: Readonly<Record<string, string>>): Algo | null {
-  if (typeof hashes['sha1'] === 'string') return 'sha1'
+  // 优先强哈希：sha512 > sha256 > sha1
   if (typeof hashes['sha512'] === 'string') return 'sha512'
+  if (typeof hashes['sha256'] === 'string') return 'sha256'
+  if (typeof hashes['sha1'] === 'string') return 'sha1'
   return null
 }
 

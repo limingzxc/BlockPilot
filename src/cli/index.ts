@@ -7,6 +7,8 @@ import { createInstaller } from '../core/download/index.js'
 import { chinaFirstSources, defaultSources } from '../core/download/sources.js'
 import type { InstallResult } from '../core/download/types.js'
 import { createJavaScan } from '../core/java/index.js'
+import { createJavaInstall } from '../core/java/install.js'
+import type { JavaInstallResult } from '../core/java/install.js'
 import { detectJava } from '../core/java/detect.js'
 import { pickJava, requiredJavaMajor } from '../core/java/types.js'
 import type { JavaScanResult } from '../core/java/types.js'
@@ -130,6 +132,7 @@ function usage(): void {
   preflight --json    输出结构化报告
             --no-host 跳过本机 Java / 内存检测（省 1–3 秒）
   java      列出本机可用的 Java 运行时
+  java install <major> [--root <dir>]   从 Adoptium 下载并解压 JRE 到 <root>/java
 
   --root    数据根目录，默认 ${defaultRoot()}
             用户只需要选这一次；实例目录由 --instance 自动派生
@@ -335,7 +338,65 @@ function renderJava(r: JavaScanResult): string {
   return lines.join('\n')
 }
 
-async function runJava(): Promise<number> {
+async function runJavaInstall(argv: readonly string[]): Promise<number> {
+  const majorArg = argv[0]
+  if (majorArg === undefined || majorArg.startsWith('--')) {
+    usage()
+    return 1
+  }
+  const major = Number(majorArg)
+  if (!Number.isFinite(major) || major < 8) {
+    process.stderr.write(`${C.red}无效的 Java 大版本：${majorArg}${C.reset}\n`)
+    return 1
+  }
+
+  const root = argOf(argv, '--root') ?? defaultRoot()
+  const layout = resolveLayout(root, 'default')
+  const controller = new AbortController()
+  process.on('SIGINT', () => controller.abort())
+
+  process.stdout.write('\n')
+  process.stdout.write(`  ${C.dim}安装 Java${C.reset} ${major} → ${join(layout.root, 'java')}\n\n`)
+
+  const op = createJavaInstall({
+    layout,
+    major,
+    sources: pickSources(argv.includes('--china')),
+  })
+
+  for await (const ev of op.run(controller.signal)) {
+    if (ev.type === 'log') {
+      const d = ev.data as { release?: string; size?: number; bytes?: number; files?: number } | undefined
+      if (ev.code === 'java.download') {
+        process.stderr.write(`${C.dim}· ${d?.release ?? ''} · ${humanBytes(d?.size ?? 0)}${C.reset}\n`)
+      } else if (ev.code === 'java.extract') {
+        process.stderr.write(`${C.dim}· 下载完成 ${humanBytes(d?.bytes ?? 0)}，解压中…${C.reset}\n`)
+      }
+    }
+    if (ev.type === 'progress') {
+      process.stderr.write(`\r${C.dim}${ev.done}/${ev.total}${C.reset}   `)
+      if (ev.done === ev.total) process.stderr.write('\r')
+    }
+    if (ev.type === 'result') {
+      const r = ev.value as JavaInstallResult
+      process.stdout.write(
+        `  ${C.green}${r.skipped ? '已存在' : '装好了'}${C.reset}  Java ${r.java.major} · ${r.java.version}\n`,
+      )
+      process.stdout.write(`  ${C.dim}${r.java.path}${C.reset}\n\n`)
+      return 0
+    }
+    if (ev.type === 'failed') {
+      process.stderr.write(`${C.red}${ev.code}${C.reset}: ${ev.message}\n`)
+      if (ev.hint !== undefined) process.stderr.write(`${C.dim}${ev.hint}${C.reset}\n`)
+      return 1
+    }
+  }
+  return 1
+}
+
+async function runJava(argv: readonly string[]): Promise<number> {
+  if (argv[0] === 'install') return runJavaInstall(argv.slice(1))
+
   const controller = new AbortController()
   process.on('SIGINT', () => controller.abort())
 
@@ -416,7 +477,10 @@ async function runLaunch(argv: readonly string[]): Promise<number> {
   let javaPath = argOf(argv, '--java')
   if (javaPath === undefined) {
     const need = requiredJavaMajor(versionId)
-    const scan = await detectJava({ signal: controller.signal })
+    const scan = await detectJava({
+      signal: controller.signal,
+      managedDir: join(layout.root, 'java'),
+    })
     const picked = pickJava(scan.installs, need)
     if (picked === null) {
       process.stderr.write(
@@ -626,7 +690,10 @@ async function runGame(argv: readonly string[]): Promise<number> {
   let javaPath = argOf(argv, '--java')
   if (javaPath === undefined) {
     const need = requiredJavaMajor(versionId)
-    const scan = await detectJava({ signal: controller.signal })
+    const scan = await detectJava({
+      signal: controller.signal,
+      managedDir: join(layout.root, 'java'),
+    })
     const picked = pickJava(scan.installs, need)
     if (picked === null) {
       process.stderr.write(
@@ -804,7 +871,10 @@ async function runDeploy(argv: readonly string[]): Promise<number> {
   // Forge 要跑 installer，得有 java。Fabric 用不到，但先检测一次省得后续分支判断
   let javaPath = argOf(argv, '--java')
   if (javaPath === undefined) {
-    const scan = await detectJava({ signal: controller.signal })
+    const scan = await detectJava({
+      signal: controller.signal,
+      managedDir: join(layout.root, 'java'),
+    })
     javaPath = [...scan.installs].sort((a, b) => b.major - a.major)[0]?.path
   }
 
@@ -888,7 +958,7 @@ async function main(): Promise<number> {
   const cmd = argv[0]
   if (cmd === 'preflight') return runPreflight(argv.slice(1))
   if (cmd === 'install') return runInstall(argv.slice(1))
-  if (cmd === 'java') return runJava()
+  if (cmd === 'java') return runJava(argv.slice(1))
   if (cmd === 'setup') return runSetup(argv.slice(1))
   if (cmd === 'assets') return runAssets(argv.slice(1))
   if (cmd === 'fabric') return runFabric(argv.slice(1))

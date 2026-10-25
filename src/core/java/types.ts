@@ -34,10 +34,19 @@ export function requiredJavaMajor(gameVersion: string): number {
   return 21
 }
 
-/** 从安装列表里挑一个满足要求大版本的。优先精确匹配，其次更高版本。 */
+/**
+ * 挑一个满足要求大版本的 Java。
+ *
+ * 优先级：精确匹配里优先我们自己装的（managed），其次系统里的；都没有就取最小的更高版本。
+ *
+ * 为什么优先 managed：用户用 `java install` 装的东西是他明确选择的结果，
+ * 而系统里那个 Java 可能是别的软件带来的，不该默认盖过它。
+ */
 export function pickJava(installs: readonly JavaInstall[], needMajor: number): JavaInstall | null {
-  const exact = installs.find((j) => j.major === needMajor)
-  if (exact !== undefined) return exact
+  const exact = installs.filter((j) => j.major === needMajor)
+  if (exact.length > 0) {
+    return exact.find((j) => j.source === 'managed') ?? exact[0] ?? null
+  }
   const newer = installs.filter((j) => j.major > needMajor).sort((a, b) => a.major - b.major)
   return newer[0] ?? null
 }
