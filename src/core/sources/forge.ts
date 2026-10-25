@@ -1,23 +1,55 @@
 import { USER_AGENT } from '../user-agent.js'
 
 const FORGE_MAVEN = 'https://maven.minecraftforge.net/net/minecraftforge/forge'
+const NEOFORGE_MAVEN = 'https://maven.neoforged.net/releases/net/neoforged/neoforge'
 const PROMOTIONS = 'https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json'
 const TIMEOUT_MS = 20_000
 
-/** Forge 的版本目录名，形如 `1.20.1-forge-47.2.0` */
-export function forgeVersionId(gameVersion: string, forgeVersion: string): string {
-  return `${gameVersion}-forge-${forgeVersion}`
+export type InstallerKind = 'forge' | 'neoforge'
+
+export interface InstallerSpec {
+  readonly url: string
+  /** 安装后 versions/ 下的目录名 */
+  readonly versionId: string
 }
 
 /**
- * installer 的 maven 坐标：`{mc}-{forge}/forge-{mc}-{forge}-installer.jar`
+ * Forge 与 NeoForge 的坐标规则不同，不能混用：
  *
- * 注意 Forge 的版本号不带 MC 前缀（如 `47.2.0`），而目录名带（`1.20.1-47.2.0`）。
- * 这是两套写法，混用会 404。
+ * | | maven 路径 | 版本目录名 |
+ * |---|---|---|
+ * | Forge | `{mc}-{forge}/forge-{mc}-{forge}-installer.jar` | `{mc}-forge-{forge}` |
+ * | NeoForge | `{neo}/neoforge-{neo}-installer.jar` | `neoforge-{neo}` |
+ *
+ * 注意 NeoForge 的版本号**不带 MC 前缀**（`21.1.66` 对应 MC 1.21.1），
+ * 而 Forge 的目录名**带**（`1.20.1-47.2.0`）。
  */
+export function installerSpec(
+  kind: InstallerKind,
+  gameVersion: string,
+  loaderVersion: string,
+): InstallerSpec {
+  if (kind === 'neoforge') {
+    return {
+      url: `${NEOFORGE_MAVEN}/${loaderVersion}/neoforge-${loaderVersion}-installer.jar`,
+      versionId: `neoforge-${loaderVersion}`,
+    }
+  }
+  const full = `${gameVersion}-${loaderVersion}`
+  return {
+    url: `${FORGE_MAVEN}/${full}/forge-${full}-installer.jar`,
+    versionId: `${gameVersion}-forge-${loaderVersion}`,
+  }
+}
+
+/** 兼容旧调用 */
+export function forgeVersionId(gameVersion: string, forgeVersion: string): string {
+  return installerSpec('forge', gameVersion, forgeVersion).versionId
+}
+
+/** 兼容旧调用 */
 export function installerUrl(gameVersion: string, forgeVersion: string): string {
-  const full = `${gameVersion}-${forgeVersion}`
-  return `${FORGE_MAVEN}/${full}/forge-${full}-installer.jar`
+  return installerSpec('forge', gameVersion, forgeVersion).url
 }
 
 export interface ForgePromotions {

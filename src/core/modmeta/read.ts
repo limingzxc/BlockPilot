@@ -7,7 +7,12 @@ const FABRIC = 'fabric.mod.json'
 const QUILT = 'quilt.mod.json'
 const NEOFORGE = 'META-INF/neoforge.mods.toml'
 const FORGE = 'META-INF/mods.toml'
-const JIJ_PREFIX = 'META-INF/jars/'
+/** Fabric 用 JiJ（jars/），Forge 用 JarJar（jarjar/）。两套前缀都要扫。 */
+const JIJ_PREFIXES = ['META-INF/jars/', 'META-INF/jarjar/'] as const
+
+function isNestedJar(name: string): boolean {
+  return JIJ_PREFIXES.some((p) => name.startsWith(p)) && name.endsWith('.jar')
+}
 
 /** 按加载器优先级排列。多加载器 jar 里 fabric 声明通常最准确。 */
 const CANDIDATES = [FABRIC, QUILT, NEOFORGE, FORGE] as const
@@ -166,17 +171,36 @@ function fromForgeToml(text: string, loader: ModLoaderKind): ModMetadata | null 
 function readNestedJars(entries: Record<string, Uint8Array>): { modId: string; version: string }[] {
   const out: { modId: string; version: string }[] = []
   for (const [name, data] of Object.entries(entries)) {
-    if (!name.startsWith(JIJ_PREFIX) || !name.endsWith('.jar')) continue
+    if (!isNestedJar(name)) continue
     try {
-      const inner = unzipSync(data, { filter: (f) => f.name === FABRIC })
-      const buf = inner[FABRIC]
-      if (buf === undefined) continue
-      const parsed = JSON.parse(strFromU8(buf)) as { id?: unknown; version?: unknown }
-      if (typeof parsed.id !== 'string' || parsed.id === '') continue
-      out.push({
-        modId: parsed.id,
-        version: typeof parsed.version === 'string' ? parsed.version : 'unknown',
+      // 嵌套 jar 可能是 Fabric 风格（fabric.mod.json）或 Forge 风格（mods.toml）
+      const inner = unzipSync(data, {
+        filter: (f) => f.name === FABRIC || f.name === FORGE,
       })
+
+      const fabricBuf = inner[FABRIC]
+      if (fabricBuf !== undefined) {
+        const parsed = JSON.parse(strFromU8(fabricBuf)) as { id?: unknown; version?: unknown }
+        if (typeof parsed.id === 'string' && parsed.id !== '') {
+          out.push({
+            modId: parsed.id,
+            version: typeof parsed.version === 'string' ? parsed.version : 'unknown',
+          })
+        }
+        continue
+      }
+
+      const forgeBuf = inner[FORGE]
+      if (forgeBuf !== undefined) {
+        const parsed = parseToml(strFromU8(forgeBuf)) as TomlShape
+        const first = parsed.mods?.[0]
+        if (first?.modId !== undefined && first.modId !== '') {
+          out.push({
+            modId: first.modId,
+            version: typeof first.version === 'string' ? first.version : 'unknown',
+          })
+        }
+      }
     } catch {
       // 嵌套 jar 坏了不影响主 jar 的元数据
     }
@@ -197,7 +221,7 @@ export function readModMetadata(jar: Uint8Array): ModMetadata | null {
     entries = unzipSync(jar, {
       filter: (f) =>
         (CANDIDATES as readonly string[]).includes(f.name) ||
-        (f.name.startsWith(JIJ_PREFIX) && f.name.endsWith('.jar')),
+        isNestedJar(f.name),
     })
   } catch {
     return null

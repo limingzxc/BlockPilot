@@ -178,13 +178,15 @@ BlockPilot Real Fixture
 
 ## 加载器
 
-Fabric 与 Forge 都支持，`deploy` 会按 `.mrpack` 里的 `dependencies` 自动选。
+Fabric、Forge、NeoForge 都支持，`deploy` 会按 `.mrpack` 里的 `dependencies` 自动选。
 
 Forge 靠官方 installer 完成安装——它要给 client jar 打二进制补丁，自己复刻那套工具链没有意义。三个坑见 [ADR-0015](docs/adr/0015-forge-installer.md)：
 
 - installer 要求 `launcher_profiles.json`（空壳即可）
 - Forge 的版本目录只有 `.json`，patched client 在 `libraries` 里
 - classpath 里**不能**有原版 jar，否则和 Forge 的 `minecraft` 模块冲突
+
+NeoForge 与 Forge 共用 installer 流程，只是坐标不同（版本号不带 MC 前缀）。**但未实测**：`maven.neoforged.net` 在本机 DNS 可解析、TCP 连不上，且 BMCLAPI 没有镜像它。见 [ADR-0016](docs/adr/0016-neoforge.md)。
 
 ## Fabric 加载器
 
@@ -322,7 +324,7 @@ npx tsx src/cli/index.ts install fixtures/closure.mrpack --mods-dir /tmp/mods
 
 **全链路已跑通**：`.mrpack` → 部署 → 启动 → 59 个 mod 加载成功。原版、Fabric 两条路都实测到主菜单。
 
-**未开始**：Java 自动安装、NeoForge 验证、CurseForge 支持、版本求解、日志落盘、GUI。
+**未开始**：Java 自动安装、NeoForge 实测、CurseForge 支持、版本求解、日志落盘、GUI。
 
 ## 许可
 

@@ -10,12 +10,15 @@ import { defaultSources } from '../download/sources.js'
 import type { DownloadSource } from '../download/types.js'
 import type { Layout } from '../layout.js'
 import { fetchMavenSha1 } from '../sources/fabric.js'
-import { forgeVersionId, installerUrl, recommendedForge } from '../sources/forge.js'
+import { installerSpec, recommendedForge } from '../sources/forge.js'
+import type { InstallerKind } from '../sources/forge.js'
 
 export interface ForgeSetupOptions {
   readonly layout: Layout
   readonly gameVersion: string
-  /** 不填则查 recommended */
+  /** forge 或 neoforge */
+  readonly kind?: InstallerKind
+  /** 不填则查 recommended（仅 Forge 支持） */
   readonly forgeVersion?: string
   /** 跑 installer 用的 java */
   readonly java: string
@@ -99,18 +102,20 @@ function runInstaller(
 
 export function createForgeSetup(opts: ForgeSetupOptions): Operation<ForgeSetupResult> {
   return defineOperation<ForgeSetupResult>('forge-setup', async function* (signal) {
+    const kind: InstallerKind = opts.kind ?? 'forge'
     const forgeVersion =
       opts.forgeVersion ?? (await recommendedForge(opts.gameVersion, signal))
     if (forgeVersion === null || forgeVersion === undefined) {
       yield Op.failed(
-        'NO_FORGE_VERSION',
-        `查不到 MC ${opts.gameVersion} 推荐的 Forge 版本`,
+        'NO_INSTALLER_VERSION',
+        `查不到 MC ${opts.gameVersion} 推荐的 ${kind} 版本`,
         '用 --loader 显式指定',
       )
       return
     }
 
-    const versionId = forgeVersionId(opts.gameVersion, forgeVersion)
+    const spec = installerSpec(kind, opts.gameVersion, forgeVersion)
+    const versionId = spec.versionId
     const jsonPath = opts.layout.versionJson(versionId)
 
     // 已经装过就直接返回，installer 很慢且会重写文件
@@ -121,7 +126,7 @@ export function createForgeSetup(opts: ForgeSetupOptions): Operation<ForgeSetupR
       return
     }
 
-    const url = installerUrl(opts.gameVersion, forgeVersion)
+    const url = spec.url
     yield Op.log('info', 'forge.installer_url', { url })
 
     const sha1 = await fetchMavenSha1(url, signal)

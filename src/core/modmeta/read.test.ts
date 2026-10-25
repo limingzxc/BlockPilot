@@ -167,3 +167,40 @@ test('嵌套 jar 损坏时不影响主元数据', () => {
   assert.equal(meta?.modId, 'ok-mod')
   assert.deepEqual(meta?.nested, [])
 })
+
+test('读 Forge 的 JarJar（META-INF/jarjar/）', () => {
+  const nestedToml = '[[mods]]\nmodId="mezz_config"\nversion="0.6.6"\n'
+  const nested = zipSync({ 'META-INF/mods.toml': strToU8(nestedToml) })
+  const buf = zipSync({
+    'META-INF/mods.toml': strToU8(
+      'modLoader="javafml"\n[[mods]]\nmodId="jei"\nversion="15.74.0"\n',
+    ),
+    'META-INF/jarjar/mezz_config-0.6.6.jar': nested,
+  })
+
+  const meta = readModMetadata(buf)
+  assert.ok(meta)
+  assert.equal(meta.modId, 'jei')
+  assert.equal(meta.nested.length, 1)
+  assert.equal(meta.nested[0]?.modId, 'mezz_config')
+  assert.equal(meta.nested[0]?.version, '0.6.6')
+})
+
+test('Fabric 与 Forge 两种嵌套路径互不干扰', () => {
+  const fabricSub = zipSync({
+    'fabric.mod.json': strToU8(JSON.stringify({ id: 'fab-sub', version: '1.0.0' })),
+  })
+  const forgeSub = zipSync({
+    'META-INF/mods.toml': strToU8('[[mods]]\nmodId="forge-sub"\nversion="2.0.0"\n'),
+  })
+  const buf = zipSync({
+    'fabric.mod.json': strToU8(JSON.stringify({ id: 'main', version: '1.0.0' })),
+    'META-INF/jars/fab-sub.jar': fabricSub,
+    'META-INF/jarjar/forge-sub.jar': forgeSub,
+  })
+
+  const meta = readModMetadata(buf)
+  assert.equal(meta?.nested.length, 2)
+  assert.ok(meta?.nested.some((n) => n.modId === 'fab-sub'))
+  assert.ok(meta?.nested.some((n) => n.modId === 'forge-sub'))
+})

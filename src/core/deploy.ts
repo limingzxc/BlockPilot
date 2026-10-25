@@ -58,11 +58,12 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
       files: index.files.length,
     })
 
-    if (instance.loader.kind !== 'fabric' && instance.loader.kind !== 'forge') {
+    const supported = new Set(['fabric', 'forge', 'neoforge'])
+    if (!supported.has(instance.loader.kind)) {
       yield Op.failed(
         'UNSUPPORTED_LOADER',
         `这个整合包用的是 ${instance.loader.kind} ${instance.loader.version}`,
-        '目前支持 Fabric 与 Forge',
+        '目前支持 Fabric、Forge 与 NeoForge',
       )
       return
     }
@@ -117,6 +118,7 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
       for await (const ev of createForgeSetup({
         layout: opts.layout,
         gameVersion: instance.gameVersion,
+        kind: instance.loader.kind === 'neoforge' ? 'neoforge' : 'forge',
         forgeVersion: instance.loader.version,
         java: opts.java,
         sources,
