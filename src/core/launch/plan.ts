@@ -10,6 +10,8 @@ export interface LaunchPlanOptions {
   readonly java: string
   readonly layout: Layout
   readonly version: VersionJson
+  /** 最底层原版版本 id。加载器版本靠它找 client jar */
+  readonly rootVersionId: string
   readonly env: LaunchEnv
   /** 离线模式的玩家名 */
   readonly username: string
@@ -46,8 +48,13 @@ export function buildLaunchPlan(opts: LaunchPlanOptions): LaunchPlan {
   const gameDir = layout.gameDir
   const librariesDir = layout.libraries
   const assetsDir = layout.assets
-  const nativesDir = layout.nativesDir(version.id)
-  const clientJar = layout.clientJar(version.id)
+  // natives 是按**原版版本**解压的（setup 时用的是 1.20.1），
+  // 加载器版本必须复用同一个目录。用 version.id 会拿到一个空目录，
+  // LWJGL 的原生库加载不到，表现为 `NoClassDefFoundError: org/lwjgl/system/MemoryUtil`
+  const nativesDir = layout.nativesDir(opts.rootVersionId)
+  // 加载器版本没有自己的 jar，用根版本的（Fabric profile 也不给 jar 字段）
+  const jarId = version.jar ?? opts.rootVersionId
+  const clientJar = layout.clientJar(jarId)
 
   const { classpath, entries } = buildClasspath(version, env, librariesDir, clientJar)
 
@@ -92,15 +99,17 @@ export function buildLaunchPlan(opts: LaunchPlanOptions): LaunchPlan {
   const args = [...jvm, version.mainClass, ...game]
 
   // 缺失检查：client jar + 每个 library jar + asset index
-  const missing: string[] = []
-  if (!existsSync(clientJar)) missing.push(clientJar)
+  // 用 Set 去重：client jar 也在 entries 里，会重复计一次
+  const missing = new Set<string>()
+  if (!existsSync(clientJar)) missing.add(clientJar)
   for (const entry of entries) {
-    if (!existsSync(entry)) missing.push(entry)
+    if (!existsSync(entry)) missing.add(entry)
   }
   if (version.assetIndex !== undefined) {
     const indexPath = layout.assetIndex(version.assetIndex.id)
-    if (!existsSync(indexPath)) missing.push(indexPath)
+    if (!existsSync(indexPath)) missing.add(indexPath)
   }
+  const missingList = [...missing]
 
   const commandLine = [opts.java, ...args.map(quote)].join(' ')
 
@@ -111,7 +120,7 @@ export function buildLaunchPlan(opts: LaunchPlanOptions): LaunchPlan {
     args,
     cwd: gameDir,
     classpath: entries,
-    missing,
+    missing: missingList,
     commandLine,
   }
 }

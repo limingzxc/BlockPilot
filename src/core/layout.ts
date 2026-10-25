@@ -28,6 +28,8 @@ export interface Layout {
   nativesDir(versionId: string): string
   clientJar(versionId: string): string
   assetIndex(indexId: string): string
+  /** 本地版本 JSON。加载器装完后写在这里，启动时优先读它 */
+  versionJson(versionId: string): string
 }
 
 export function resolveLayout(root: string, instanceId = 'default'): Layout {
@@ -45,6 +47,7 @@ export function resolveLayout(root: string, instanceId = 'default'): Layout {
     nativesDir: (versionId) => join(base, 'instances', instanceId, 'natives', versionId),
     clientJar: (versionId) => join(base, 'versions', versionId, `${versionId}.jar`),
     assetIndex: (indexId) => join(base, 'assets', 'indexes', `${indexId}.json`),
+    versionJson: (versionId) => join(base, 'versions', versionId, `${versionId}.json`),
   }
 }
 

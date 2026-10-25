@@ -17,6 +17,8 @@ import type { LaunchPlan } from '../core/launch/plan.js'
 import { defaultRoot, resolveLayout } from '../core/layout.js'
 import { createVanillaSetup, pickSources } from '../core/setup/vanilla.js'
 import { createAssetsSetup } from '../core/setup/assets.js'
+import { createFabricSetup } from '../core/setup/fabric.js'
+import type { FabricSetupResult } from '../core/setup/fabric.js'
 import { detectHost } from '../core/host.js'
 import { ModrinthSource } from '../sources/modrinth.js'
 
@@ -112,6 +114,7 @@ function usage(): void {
   blockpilot java
   blockpilot setup  <version> [--root <dir>] [--instance <name>] [--china] [--dry-run]
   blockpilot assets <version> [--root <dir>] [--china] [--dry-run] [--concurrency <n>]
+  blockpilot fabric <gameVersion> [--root <dir>] [--loader <ver>] [--china]
   blockpilot launch <version> [--root <dir>] [--instance <name>] [--java <path>] [--memory <MB>] [--raw]
   blockpilot run    <version> [--root <dir>] [--instance <name>] [--memory <MB>] [--quiet] [--stop <秒>]
 
@@ -130,6 +133,8 @@ function usage(): void {
   setup     安装原版：client jar + libraries + assetIndex + 解压 natives
   assets    下载 assets 对象（音效/语言/字体，约 600 MB、3000+ 文件）
             不装也能启动，但没有声音和部分字体
+  fabric    安装 Fabric 加载器：取 profile → 写版本 JSON → 下载 loader 库
+            之后用 launch / run 加 fabric-loader-<ver>-<mc> 启动
   launch    生成启动命令（只打印，不启动）
   run       真的启动游戏，转发日志；异常退出后给出诊断入口
             --quiet 只显示 ERROR 级日志
@@ -707,6 +712,73 @@ async function runGame(argv: readonly string[]): Promise<number> {
   return 0
 }
 
+async function runFabric(argv: readonly string[]): Promise<number> {
+  const gameVersion = argv[0]
+  if (gameVersion === undefined || gameVersion.startsWith('--')) {
+    usage()
+    return 1
+  }
+  const root = argOf(argv, '--root') ?? defaultRoot()
+  const layout = resolveLayout(root, 'default')
+  const loader = argOf(argv, '--loader')
+  const china = argv.includes('--china')
+  const controller = new AbortController()
+  process.on('SIGINT', () => controller.abort())
+
+  process.stdout.write('\n')
+  process.stdout.write(`  ${C.dim}root${C.reset}  ${layout.root}\n`)
+  process.stdout.write(`  ${C.dim}游戏版本${C.reset}  ${gameVersion}\n\n`)
+
+  const op = createFabricSetup({
+    layout,
+    gameVersion,
+    ...(loader === undefined ? {} : { loaderVersion: loader }),
+    sources: pickSources(china),
+  })
+
+  for await (const ev of op.run(controller.signal)) {
+    switch (ev.type) {
+      case 'progress':
+        process.stderr.write(`\r${C.dim}下载 ${ev.done}/${ev.total}  ${ev.label}${C.reset}          `)
+        if (ev.done === ev.total) process.stderr.write('\r')
+        break
+      case 'log': {
+        const d = ev.data as { file?: string; source?: string; error?: string; id?: string } | undefined
+        if (ev.code === 'fabric.profile' && d?.id !== undefined) {
+          process.stderr.write(`${C.dim}· profile ${d.id}${C.reset}\n`)
+        } else if (ev.code === 'fabric.ok' && d?.file !== undefined) {
+          process.stderr.write(`\r${C.green}↓${C.reset} ${d.file}  ${C.dim}${d.source ?? ''}${C.reset}\n`)
+        } else if (ev.code === 'fabric.failed') {
+          process.stderr.write(`\r${C.red}✗${C.reset} ${d?.file ?? ''}  ${d?.error ?? ''}\n`)
+        } else if (ev.code === 'fabric.no_hash') {
+          const n = ev.data as { count: number; libs: string[] } | undefined
+          process.stderr.write(
+            `${C.yellow}!${C.reset} ${n?.count ?? 0} 个库拿不到 sha1，跳过不下载：${(n?.libs ?? []).join(', ')}\n`,
+          )
+        }
+        break
+      }
+      case 'result': {
+        const r = ev.value as FabricSetupResult
+        process.stdout.write('\n')
+        process.stdout.write(
+          `  ${C.green}完成${C.reset} loader ${r.loaderVersion} · ${r.libraries} 个库 · ` +
+            `下载 ${r.downloaded} · 跳过 ${r.skipped} · 失败 ${r.failed.length}\n`,
+        )
+        process.stdout.write(`  ${C.dim}版本 JSON${C.reset}  ${r.versionJsonPath}\n`)
+        process.stdout.write(`\n  ${C.bold}启动${C.reset}  blockpilot run ${r.versionId} --root ${root}\n\n`)
+        return r.failed.length > 0 ? 2 : 0
+      }
+      case 'failed':
+        process.stderr.write(`${C.red}${ev.code}${C.reset}: ${ev.message}\n`)
+        return 1
+      default:
+        break
+    }
+  }
+  return 1
+}
+
 async function main(): Promise<number> {
   const argv = process.argv.slice(2)
   const cmd = argv[0]
@@ -715,6 +787,7 @@ async function main(): Promise<number> {
   if (cmd === 'java') return runJava()
   if (cmd === 'setup') return runSetup(argv.slice(1))
   if (cmd === 'assets') return runAssets(argv.slice(1))
+  if (cmd === 'fabric') return runFabric(argv.slice(1))
   if (cmd === 'launch') return runLaunch(argv.slice(1))
   if (cmd === 'run') return runGame(argv.slice(1))
   usage()

@@ -1,5 +1,6 @@
 import { join } from 'node:path'
 
+import { mavenCoordToPath } from '../version/maven.js'
 import type { ArgEntry, Library, VersionJson } from '../version/types.js'
 import type { LaunchEnv } from './env.js'
 import { rulesAllow } from './env.js'
@@ -32,15 +33,25 @@ export function splitLegacyArgs(raw: string | undefined): string[] {
 }
 
 /**
+ * 库在 libraries 目录下的相对路径。
+ *
+ * 两种来源：
+ * - Mojang：`downloads.artifact.path` 现成的
+ * - Fabric 等：只有 `name` + `url`，按 maven 坐标算
+ */
+export function libraryPath(lib: Library): string | null {
+  const artifact = lib.downloads?.artifact
+  if (artifact !== undefined) return artifact.path
+  if (lib.url !== undefined) return mavenCoordToPath(lib.name)
+  return null
+}
+
+/**
  * 判断一个 library 是「要进 classpath 的普通 jar」还是「要解压的原生库」。
  *
  * 两种时代两种写法：
  * - 1.12 及更早：`"natives": { "windows": "natives-windows" }` + downloads.classifiers
- * - 1.19+：classifier 直接写在 name 里，如 `org.lwjgl:lwjgl:3.3.1:natives-windows`，
- *   downloads.artifact 是存在的
- *
- * 之前只看 `downloads.artifact === undefined` 来判断，导致 1.19+ 的 natives jar
- * 被当成普通库塞进了 classpath——能跑，但多加载了几个无用的 jar。
+ * - 1.19+：classifier 直接写在 name 里，如 `org.lwjgl:lwjgl:3.3.1:natives-windows`
  */
 function isNativeLibrary(lib: Library): boolean {
   if (lib.natives !== undefined) return true
@@ -66,7 +77,7 @@ export function pickLibraries(
       natives.push(lib)
       continue
     }
-    if (lib.downloads?.artifact !== undefined) jars.push(lib)
+    if (libraryPath(lib) !== null) jars.push(lib)
   }
   return { jars, natives }
 }
@@ -80,8 +91,8 @@ export function buildClasspath(
 ): { readonly classpath: string; readonly entries: readonly string[] } {
   const { jars } = pickLibraries(version, env)
   const entries = jars
-    .map((lib) => lib.downloads?.artifact?.path)
-    .filter((p): p is string => p !== undefined)
+    .map((lib) => libraryPath(lib))
+    .filter((p): p is string => p !== null)
     .map((p) => join(librariesDir, ...p.split('/')))
   entries.push(clientJar)
   return {

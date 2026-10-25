@@ -105,6 +105,7 @@ test('buildLaunchPlan 只把当前平台需要的 jar 放进 classpath', () => {
     java: 'java',
     layout: resolveLayout('/tmp/mc', 'test'),
     version: fakeVersion(),
+    rootVersionId: '1.20.1',
     env: win,
     username: 'Steve',
   })
@@ -119,6 +120,7 @@ test('buildLaunchPlan 替换所有已知占位符，不留下 ${...}', () => {
     java: 'java',
     layout: resolveLayout('/tmp/mc', 'test'),
     version: fakeVersion(),
+    rootVersionId: '1.20.1',
     env: win,
     username: 'Steve',
   })
@@ -133,6 +135,7 @@ test('缺失文件包含 client jar、libraries 与 assetIndex', () => {
     java: 'java',
     layout: resolveLayout('/tmp/bp-definitely-missing-dir', 'test'),
     version: fakeVersion(),
+    rootVersionId: '1.20.1',
     env: win,
     username: 'Steve',
   })

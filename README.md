@@ -143,6 +143,21 @@ npx tsx src/cli/index.ts launch 1.20.1 --root D:/mc --instance rlcraft
 
 `setup` 与 `assets` 分开：第一次装原版只下 80 MB 就能验证启动链路，621 MB 的音效可以晚点再补——没有 assets 也能进主界面，只是没声音。见 [ADR-0009](docs/adr/0009-assets-download.md)。
 
+## Fabric 加载器
+
+```bash
+npx tsx src/cli/index.ts fabric 1.20.1 --root D:/mc              # 取最新 stable loader
+npx tsx src/cli/index.ts fabric 1.20.1 --root D:/mc --loader 0.15.11
+npx tsx src/cli/index.ts run fabric-loader-0.15.11-1.20.1 --root D:/mc
+```
+
+Fabric 的 profile 只有 8 个库和主类，其余全靠 `inheritsFrom` 合并父版本。三个坑见 [ADR-0011](docs/adr/0011-loader-version-merge.md)：
+
+- `libraryKey` 必须含 classifier，否则 `org.lwjgl:lwjgl` 和它的 `natives-windows` 变体会互相覆盖
+- natives 目录与 client jar 都要用 **rootId**，加载器版本没有自己的
+
+**默认取最新 loader 不一定对**：0.20.1 跑 1.20.1 会崩在 `RenderSystem`，换同期 0.15.11 正常。`--loader` 是必要的逃生口。
+
 ## 真的启动
 
 ```bash
@@ -262,9 +277,9 @@ npx tsx src/cli/index.ts install fixtures/closure.mrpack --mods-dir /tmp/mods
 
 **已完成**：`.mrpack` 与实例目录解析、jar 元数据读取（fabric/forge/neoforge/quilt，含 `provides` 子模块）、约束检查、递归依赖闭包、可执行修复计划、并发下载（哈希校验 / 多源降级 / 缓存命中）、Java 检测与版本判定、原版安装（client jar + libraries + assetIndex + natives 解压 + assets 对象）、启动命令生成（rules / classpath / 参数模板）、进程启动与日志事件化、Modrinth 元数据源、CLI 与 MCP 两个消费者。
 
-**全链路已跑通**：检查 → 修复计划 → 下载 → 校验 → 安装 → 启动 → 退出。
+**全链路已跑通**：检查 → 修复计划 → 下载 → 校验 → 安装 → 启动 → 退出。原版 1.20.1 和 Fabric 0.15.11 都实测启动到主菜单。
 
-**未开始**：加载器（Forge/Fabric）安装与合并、Java 自动安装、CurseForge 支持、版本求解、日志落盘、GUI。
+**未开始**：Forge 安装（需要跑 installer jar）、Java 自动安装、CurseForge 支持、版本求解、日志落盘、GUI。
 
 ## 许可
 
