@@ -19,7 +19,6 @@ import { createLauncher } from '../core/launch/run.js'
 import { listLogs } from '../core/launch/logfile.js'
 import { createDiagnose } from '../core/diagnostics/index.js'
 import type { DiagResult } from '../core/diagnostics/index.js'
-import type { Culprit } from '../core/diagnostics/attribution.js'
 import type { RunResult } from '../core/launch/run.js'
 import type { LaunchPlan } from '../core/launch/plan.js'
 import { defaultRoot, resolveLayout } from '../core/layout.js'
@@ -31,16 +30,7 @@ import { createDeploy } from '../core/deploy.js'
 import type { DeployResult } from '../core/deploy.js'
 import { detectHost } from '../core/host.js'
 import { ModrinthSource } from '../sources/modrinth.js'
-
-const C = {
-  reset: '\u001b[0m',
-  dim: '\u001b[2m',
-  red: '\u001b[31m',
-  yellow: '\u001b[33m',
-  green: '\u001b[32m',
-  cyan: '\u001b[36m',
-  bold: '\u001b[1m',
-}
+import { C, consume, createInterrupt, humanBytes } from './ui.js'
 
 const SEVERITY_MARK: Record<Finding['severity'], string> = {
   blocker: `${C.red}✗${C.reset}`,
@@ -53,12 +43,6 @@ const VERDICT_TEXT: Record<PreflightReport['verdict'], string> = {
   warn: `${C.yellow}WARN${C.reset}`,
   blocked: `${C.red}BLOCKED${C.reset}`,
   unknown: `${C.yellow}UNKNOWN${C.reset}`,
-}
-
-function humanBytes(n: number): string {
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`
-  return `${(n / 1024 / 1024).toFixed(1)} MB`
 }
 
 function renderHuman(r: PreflightReport): string {
@@ -160,8 +144,6 @@ function usage(): void {
   logs      列出会话日志
   diag      分析最近的会话日志，把异常归类成可理解的结论
             --file <path> 指定日志；默认取最新一份
-            --quiet 只显示 ERROR 级日志
-            --stop <秒> 到时自动结束（测试用）
 
 `)
 }
@@ -178,8 +160,7 @@ async function runPreflight(argv: readonly string[]): Promise<number> {
     return 1
   }
   const asJson = argv.includes('--json')
-  const controller = new AbortController()
-  process.on('SIGINT', () => controller.abort())
+  const signal = createInterrupt().signal
 
   const host = argv.includes('--no-host') ? undefined : await detectHost()
   const op = createPreflight({
@@ -188,32 +169,18 @@ async function runPreflight(argv: readonly string[]): Promise<number> {
     ...(host === undefined ? {} : { host }),
   })
 
-  for await (const ev of op.run(controller.signal)) {
-    switch (ev.type) {
-      case 'progress':
-        if (!asJson) {
-          process.stderr.write(`\r${C.dim}${ev.label} ${ev.done}/${ev.total}${C.reset}   `)
-          if (ev.done === ev.total) process.stderr.write('\r')
-        }
-        break
-      case 'log':
-        if (!asJson) process.stderr.write(`${C.dim}· ${ev.code}${C.reset}\n`)
-        break
-      case 'result': {
-        const report = ev.value as PreflightReport
+  return consume(
+    op,
+    {
+      ...(asJson ? { progress: () => {}, log: () => {} } : {}),
+      result: (report) => {
         if (asJson) process.stdout.write(`${JSON.stringify(report, null, 2)}\n`)
         else process.stdout.write(renderHuman(report))
         return report.verdict === 'blocked' ? 2 : 0
-      }
-      case 'failed':
-        process.stderr.write(`${C.red}${ev.code}${C.reset}: ${ev.message}\n`)
-        if (ev.hint !== undefined) process.stderr.write(`${C.dim}${ev.hint}${C.reset}\n`)
-        return 1
-      default:
-        break
-    }
-  }
-  return 1
+      },
+    },
+    signal,
+  )
 }
 
 async function runInstall(argv: readonly string[]): Promise<number> {
@@ -224,8 +191,7 @@ async function runInstall(argv: readonly string[]): Promise<number> {
     return 1
   }
   const dryRun = argv.includes('--dry-run')
-  const controller = new AbortController()
-  process.on('SIGINT', () => controller.abort())
+  const signal = createInterrupt().signal
 
   process.stderr.write(`${C.dim}· preflight${C.reset}\n`)
   const host = argv.includes('--no-host') ? undefined : await detectHost()
@@ -235,14 +201,19 @@ async function runInstall(argv: readonly string[]): Promise<number> {
     ...(host === undefined ? {} : { host }),
   })
   let report: PreflightReport | undefined
-  for await (const ev of preflight.run(controller.signal)) {
-    if (ev.type === 'result') report = ev.value as PreflightReport
-    if (ev.type === 'failed') {
-      process.stderr.write(`${C.red}${ev.code}${C.reset}: ${ev.message}\n`)
-      return 1
-    }
-  }
-  if (report === undefined) return 1
+  const preflightCode = await consume(
+    preflight,
+    {
+      progress: () => {},
+      log: () => {},
+      result: (value) => {
+        report = value
+        return 0
+      },
+    },
+    signal,
+  )
+  if (preflightCode !== 0 || report === undefined) return 1
 
   process.stdout.write(renderHuman(report))
 
@@ -268,15 +239,15 @@ async function runInstall(argv: readonly string[]): Promise<number> {
     modsDir,
     sources: argv.includes('--china') ? chinaFirstSources() : defaultSources(),
   })
-  let result: InstallResult | undefined
 
-  for await (const ev of installer.run(controller.signal)) {
-    switch (ev.type) {
-      case 'progress':
+  const installCode = await consume(
+    installer,
+    {
+      progress: (ev) => {
         process.stderr.write(`\r${C.dim}下载 ${ev.done}/${ev.total}  ${ev.label}${C.reset}      `)
         if (ev.done === ev.total) process.stderr.write('\r')
-        break
-      case 'log': {
+      },
+      log: (ev) => {
         const data = ev.data as { file?: string; bytes?: number; source?: string; error?: string } | undefined
         if (ev.code === 'download.ok' && data?.file !== undefined) {
           process.stderr.write(
@@ -287,38 +258,30 @@ async function runInstall(argv: readonly string[]): Promise<number> {
         } else if (ev.code === 'download.failed') {
           process.stderr.write(`\r${C.red}✗${C.reset} ${data?.file ?? ''}  ${C.dim}${data?.error ?? ''}${C.reset}\n`)
         }
-        break
-      }
-      case 'result':
-        result = ev.value as InstallResult
-        break
-      default:
-        break
-    }
-  }
+      },
+      result: (result) => {
+        process.stdout.write('\n')
+        process.stdout.write(
+          `  ${C.green}完成${C.reset} ${result.downloaded.length} 个，` +
+            `${result.failed.length > 0 ? C.red : C.dim}失败 ${result.failed.length} 个${C.reset}，` +
+            `共 ${humanBytes(result.totalBytes)}\n`,
+        )
+        for (const f of result.failed) {
+          process.stdout.write(`  ${C.red}✗${C.reset} ${f.fileName}  ${C.dim}${f.error}${C.reset}\n`)
+        }
 
-  if (result === undefined) {
-    process.stderr.write(`${C.red}安装没有返回结果${C.reset}\n`)
-    return 1
-  }
-
-  process.stdout.write('\n')
-  process.stdout.write(
-    `  ${C.green}完成${C.reset} ${result.downloaded.length} 个，` +
-      `${result.failed.length > 0 ? C.red : C.dim}失败 ${result.failed.length} 个${C.reset}，` +
-      `共 ${humanBytes(result.totalBytes)}\n`,
+        // BMCLAPI 的协议要求在可视部分标明来源，所以这一行不是可选装饰。
+        const credits = [...new Set(result.downloaded.map((d) => d.credit).filter((c) => c !== undefined))]
+        if (credits.length > 0) {
+          process.stdout.write(`  ${C.dim}资源来源：${credits.join('、')}${C.reset}\n`)
+        }
+        process.stdout.write('\n')
+        return result.failed.length > 0 ? 2 : 0
+      },
+    },
+    signal,
   )
-  for (const f of result.failed) {
-    process.stdout.write(`  ${C.red}✗${C.reset} ${f.fileName}  ${C.dim}${f.error}${C.reset}\n`)
-  }
-
-  // BMCLAPI 的协议要求在可视部分标明来源，所以这一行不是可选装饰。
-  const credits = [...new Set(result.downloaded.map((d) => d.credit).filter((c) => c !== undefined))]
-  if (credits.length > 0) {
-    process.stdout.write(`  ${C.dim}资源来源：${credits.join('、')}${C.reset}\n`)
-  }
-  process.stdout.write('\n')
-  return result.failed.length > 0 ? 2 : 0
+  return installCode === 1 ? 1 : installCode
 }
 
 function renderJava(r: JavaScanResult): string {
@@ -367,8 +330,7 @@ async function runJavaInstall(argv: readonly string[]): Promise<number> {
 
   const root = argOf(argv, '--root') ?? defaultRoot()
   const layout = resolveLayout(root, 'default')
-  const controller = new AbortController()
-  process.on('SIGINT', () => controller.abort())
+  const signal = createInterrupt().signal
 
   process.stdout.write('\n')
   process.stdout.write(`  ${C.dim}安装 Java${C.reset} ${major} → ${join(layout.root, 'java')}\n\n`)
@@ -379,54 +341,44 @@ async function runJavaInstall(argv: readonly string[]): Promise<number> {
     sources: pickSources(argv.includes('--china')),
   })
 
-  for await (const ev of op.run(controller.signal)) {
-    if (ev.type === 'log') {
-      const d = ev.data as { release?: string; size?: number; bytes?: number; files?: number } | undefined
-      if (ev.code === 'java.download') {
-        process.stderr.write(`${C.dim}· ${d?.release ?? ''} · ${humanBytes(d?.size ?? 0)}${C.reset}\n`)
-      } else if (ev.code === 'java.extract') {
-        process.stderr.write(`${C.dim}· 下载完成 ${humanBytes(d?.bytes ?? 0)}，解压中…${C.reset}\n`)
-      }
-    }
-    if (ev.type === 'progress') {
-      process.stderr.write(`\r${C.dim}${ev.done}/${ev.total}${C.reset}   `)
-      if (ev.done === ev.total) process.stderr.write('\r')
-    }
-    if (ev.type === 'result') {
-      const r = ev.value as JavaInstallResult
-      process.stdout.write(
-        `  ${C.green}${r.skipped ? '已存在' : '装好了'}${C.reset}  Java ${r.java.major} · ${r.java.version}\n`,
-      )
-      process.stdout.write(`  ${C.dim}${r.java.path}${C.reset}\n\n`)
-      return 0
-    }
-    if (ev.type === 'failed') {
-      process.stderr.write(`${C.red}${ev.code}${C.reset}: ${ev.message}\n`)
-      if (ev.hint !== undefined) process.stderr.write(`${C.dim}${ev.hint}${C.reset}\n`)
-      return 1
-    }
-  }
-  return 1
+  return consume(
+    op,
+    {
+      log: (ev) => {
+        const d = ev.data as { release?: string; size?: number; bytes?: number } | undefined
+        if (ev.code === 'java.download') {
+          process.stderr.write(`${C.dim}· ${d?.release ?? ''} · ${humanBytes(d?.size ?? 0)}${C.reset}\n`)
+        } else if (ev.code === 'java.extract') {
+          process.stderr.write(`${C.dim}· 下载完成 ${humanBytes(d?.bytes ?? 0)}，解压中…${C.reset}\n`)
+        }
+      },
+      result: (r) => {
+        process.stdout.write(
+          `  ${C.green}${r.skipped ? '已存在' : '装好了'}${C.reset}  Java ${r.java.major} · ${r.java.version}\n`,
+        )
+        process.stdout.write(`  ${C.dim}${r.java.path}${C.reset}\n\n`)
+        return 0
+      },
+    },
+    signal,
+  )
 }
 
 async function runJava(argv: readonly string[]): Promise<number> {
   if (argv[0] === 'install') return runJavaInstall(argv.slice(1))
 
-  const controller = new AbortController()
-  process.on('SIGINT', () => controller.abort())
-
-  const op = createJavaScan()
-  for await (const ev of op.run(controller.signal)) {
-    if (ev.type === 'result') {
-      process.stdout.write(renderJava(ev.value as JavaScanResult))
-      return 0
-    }
-    if (ev.type === 'failed') {
-      process.stderr.write(`${C.red}${ev.code}${C.reset}: ${ev.message}\n`)
-      return 1
-    }
-  }
-  return 1
+  const signal = createInterrupt().signal
+  return consume(
+    createJavaScan(),
+    {
+      log: () => {},
+      result: (r) => {
+        process.stdout.write(renderJava(r))
+        return 0
+      },
+    },
+    signal,
+  )
 }
 
 /** 命令可能长达几千字符，classpath 折叠成一个占位符。 */
@@ -476,6 +428,33 @@ function renderLaunch(plan: LaunchPlan, raw: boolean): string {
   return lines.join('\n')
 }
 
+/**
+ * 「按版本挑 Java + 人话报错」的用例，三个子命令共用。
+ * 架构评审候选 4：此前在 runLaunch / runGame 各复制 17 行、runDeploy 又一个变体。
+ */
+async function pickJavaOrReport(
+  versionId: string | undefined,
+  layoutRoot: string,
+  signal: AbortSignal,
+  explicit: string | undefined,
+): Promise<string | undefined> {
+  if (explicit !== undefined) return explicit
+  const need = versionId === undefined ? undefined : requiredJavaMajor(versionId)
+  const scan = await detectJava({ signal, managedDir: join(layoutRoot, 'java') })
+  const picked =
+    need === undefined
+      ? ([...scan.installs].sort((a, b) => b.major - a.major)[0] ?? null)
+      : pickJava(scan.installs, need)
+  if (picked === null) {
+    const needText = need === undefined ? '' : ` Java ${need}`
+    process.stderr.write(
+      `${C.red}没有找到可用的 Java${needText}${C.reset}（本机：${scan.installs.map((j) => j.major).join(', ') || '无'}）\n`,
+    )
+    return undefined
+  }
+  return picked.path
+}
+
 async function runLaunch(argv: readonly string[]): Promise<number> {
   const versionId = argv[0]
   if (versionId === undefined || versionId.startsWith('--')) {
@@ -486,25 +465,10 @@ async function runLaunch(argv: readonly string[]): Promise<number> {
   const instance = argOf(argv, '--instance') ?? 'default'
   const layout = resolveLayout(root, instance)
   const raw = argv.includes('--raw')
-  const controller = new AbortController()
-  process.on('SIGINT', () => controller.abort())
+  const signal = createInterrupt().signal
 
-  let javaPath = argOf(argv, '--java')
-  if (javaPath === undefined) {
-    const need = requiredJavaMajor(versionId)
-    const scan = await detectJava({
-      signal: controller.signal,
-      managedDir: join(layout.root, 'java'),
-    })
-    const picked = pickJava(scan.installs, need)
-    if (picked === null) {
-      process.stderr.write(
-        `${C.red}没有找到 Java ${need}${C.reset}（本机：${scan.installs.map((j) => j.major).join(', ') || '无'}）\n`,
-      )
-      return 1
-    }
-    javaPath = picked.path
-  }
+  const javaPath = await pickJavaOrReport(versionId, layout.root, signal, argOf(argv, '--java'))
+  if (javaPath === undefined) return 1
 
   const memArg = argOf(argv, '--memory')
   const op = createLaunchPlan({
@@ -516,18 +480,16 @@ async function runLaunch(argv: readonly string[]): Promise<number> {
     mirror: argv.includes('--china'),
   })
 
-  for await (const ev of op.run(controller.signal)) {
-    if (ev.type === 'log') process.stderr.write(`${C.dim}· ${ev.code}${C.reset}\n`)
-    if (ev.type === 'result') {
-      process.stdout.write(renderLaunch(ev.value as LaunchPlan, raw))
-      return 0
-    }
-    if (ev.type === 'failed') {
-      process.stderr.write(`${C.red}${ev.code}${C.reset}: ${ev.message}\n`)
-      return 1
-    }
-  }
-  return 1
+  return consume(
+    op,
+    {
+      result: (plan) => {
+        process.stdout.write(renderLaunch(plan, raw))
+        return 0
+      },
+    },
+    signal,
+  )
 }
 
 async function runSetup(argv: readonly string[]): Promise<number> {
@@ -541,8 +503,7 @@ async function runSetup(argv: readonly string[]): Promise<number> {
   const layout = resolveLayout(root, instance)
   const dryRun = argv.includes('--dry-run')
   const china = argv.includes('--china')
-  const controller = new AbortController()
-  process.on('SIGINT', () => controller.abort())
+  const signal = createInterrupt().signal
 
   process.stdout.write('\n')
   process.stdout.write(`  ${C.dim}根目录${C.reset}  ${layout.root}\n`)
@@ -557,13 +518,14 @@ async function runSetup(argv: readonly string[]): Promise<number> {
     mirror: china,
   })
 
-  for await (const ev of op.run(controller.signal)) {
-    switch (ev.type) {
-      case 'progress':
+  return consume(
+    op,
+    {
+      progress: (ev) => {
         process.stderr.write(`\r${C.dim}下载 ${ev.done}/${ev.total}  ${ev.label}${C.reset}          `)
         if (ev.done === ev.total) process.stderr.write('\r')
-        break
-      case 'log': {
+      },
+      log: (ev) => {
         const data = ev.data as { file?: string; source?: string; error?: string } | undefined
         if (ev.code === 'setup.ok' && data?.file !== undefined) {
           process.stderr.write(`\r${C.green}↓${C.reset} ${data.file}  ${C.dim}${data.source ?? ''}${C.reset}\n`)
@@ -571,23 +533,14 @@ async function runSetup(argv: readonly string[]): Promise<number> {
           process.stderr.write(`\r${C.cyan}=${C.reset} ${data.file}\n`)
         } else if (ev.code === 'setup.failed') {
           process.stderr.write(`\r${C.red}✗${C.reset} ${data?.file ?? ''}  ${data?.error ?? ''}\n`)
-        } else if (ev.code === 'setup.tasks' ) {
+        } else if (ev.code === 'setup.tasks') {
           const t = ev.data as { tasks: number; totalBytes: number } | undefined
           if (t !== undefined) {
             process.stderr.write(`${C.dim}· ${t.tasks} 个文件 · ${humanBytes(t.totalBytes)}${C.reset}\n`)
           }
         }
-        break
-      }
-      case 'result': {
-        const r = ev.value as {
-          total: number
-          downloaded: number
-          skipped: number
-          failed: readonly { fileName: string; error: string }[]
-          nativesExtracted: number
-          totalBytes: number
-        }
+      },
+      result: (r) => {
         process.stdout.write('\n')
         if (dryRun) {
           process.stdout.write(`  ${C.yellow}--dry-run${C.reset}：${r.total} 个文件需要下载\n\n`)
@@ -602,15 +555,10 @@ async function runSetup(argv: readonly string[]): Promise<number> {
         }
         process.stdout.write('\n')
         return r.failed.length > 0 ? 2 : 0
-      }
-      case 'failed':
-        process.stderr.write(`${C.red}${ev.code}${C.reset}: ${ev.message}\n`)
-        return 1
-      default:
-        break
-    }
-  }
-  return 1
+      },
+    },
+    signal,
+  )
 }
 
 async function runAssets(argv: readonly string[]): Promise<number> {
@@ -624,8 +572,7 @@ async function runAssets(argv: readonly string[]): Promise<number> {
   const dryRun = argv.includes('--dry-run')
   const china = argv.includes('--china')
   const conc = argOf(argv, '--concurrency')
-  const controller = new AbortController()
-  process.on('SIGINT', () => controller.abort())
+  const signal = createInterrupt().signal
 
   process.stdout.write('\n')
   process.stdout.write(`  ${C.dim}root${C.reset}  ${layout.root}\n\n`)
@@ -639,13 +586,14 @@ async function runAssets(argv: readonly string[]): Promise<number> {
     ...(conc === undefined ? {} : { concurrency: Number(conc) }),
   })
 
-  for await (const ev of op.run(controller.signal)) {
-    switch (ev.type) {
-      case 'progress':
+  return consume(
+    op,
+    {
+      progress: (ev) => {
         process.stderr.write(`\r${C.dim}下载 ${ev.done}/${ev.total}${C.reset}                    `)
         if (ev.done === ev.total) process.stderr.write('\r')
-        break
-      case 'log': {
+      },
+      log: (ev) => {
         if (ev.code === 'assets.tasks') {
           const t = ev.data as { keys: number; unique: number; totalBytes: number } | undefined
           if (t !== undefined) {
@@ -657,17 +605,8 @@ async function runAssets(argv: readonly string[]): Promise<number> {
           const d = ev.data as { file?: string; error?: string } | undefined
           process.stderr.write(`\r${C.red}✗${C.reset} ${d?.file ?? ''}  ${d?.error ?? ''}\n`)
         }
-        break
-      }
-      case 'result': {
-        const r = ev.value as {
-          total: number
-          unique: number
-          downloaded: number
-          skipped: number
-          failed: readonly unknown[]
-          totalBytes: number
-        }
+      },
+      result: (r) => {
         process.stdout.write('\n')
         if (dryRun) {
           process.stdout.write(`  ${C.yellow}--dry-run${C.reset}：${r.unique} 个对象需要下载\n\n`)
@@ -677,15 +616,10 @@ async function runAssets(argv: readonly string[]): Promise<number> {
           `  ${C.green}完成${C.reset} 下载 ${r.downloaded} · 跳过 ${r.skipped} · 失败 ${r.failed.length} · ${humanBytes(r.totalBytes)}\n\n`,
         )
         return r.failed.length > 0 ? 2 : 0
-      }
-      case 'failed':
-        process.stderr.write(`${C.red}${ev.code}${C.reset}: ${ev.message}\n`)
-        return 1
-      default:
-        break
-    }
-  }
-  return 1
+      },
+    },
+    signal,
+  )
 }
 
 async function runGame(argv: readonly string[]): Promise<number> {
@@ -699,25 +633,10 @@ async function runGame(argv: readonly string[]): Promise<number> {
   const layout = resolveLayout(root, instance)
   const quiet = argv.includes('--quiet')
   const stopArg = argOf(argv, '--stop')
-  const controller = new AbortController()
-  process.on('SIGINT', () => controller.abort())
+  const signal = createInterrupt().signal
 
-  let javaPath = argOf(argv, '--java')
-  if (javaPath === undefined) {
-    const need = requiredJavaMajor(versionId)
-    const scan = await detectJava({
-      signal: controller.signal,
-      managedDir: join(layout.root, 'java'),
-    })
-    const picked = pickJava(scan.installs, need)
-    if (picked === null) {
-      process.stderr.write(
-        `${C.red}没有找到 Java ${need}${C.reset}（本机：${scan.installs.map((j) => j.major).join(', ') || '无'}）\n`,
-      )
-      return 1
-    }
-    javaPath = picked.path
-  }
+  const javaPath = await pickJavaOrReport(versionId, layout.root, signal, argOf(argv, '--java'))
+  if (javaPath === undefined) return 1
 
   const memArg = argOf(argv, '--memory')
   const planOp = createLaunchPlan({
@@ -730,14 +649,19 @@ async function runGame(argv: readonly string[]): Promise<number> {
   })
 
   let plan: LaunchPlan | undefined
-  for await (const ev of planOp.run(controller.signal)) {
-    if (ev.type === 'result') plan = ev.value as LaunchPlan
-    if (ev.type === 'failed') {
-      process.stderr.write(`${C.red}${ev.code}${C.reset}: ${ev.message}\n`)
-      return 1
-    }
-  }
-  if (plan === undefined) return 1
+  const planCode = await consume(
+    planOp,
+    {
+      progress: () => {},
+      log: () => {},
+      result: (value) => {
+        plan = value
+        return 0
+      },
+    },
+    signal,
+  )
+  if (planCode !== 0 || plan === undefined) return 1
 
   if (plan.missing.length > 0) {
     process.stderr.write(
@@ -758,55 +682,50 @@ async function runGame(argv: readonly string[]): Promise<number> {
     ...(stopArg === undefined ? {} : { autoStopSeconds: Number(stopArg) }),
   })
 
-  let result: RunResult | undefined
-  for await (const ev of op.run(controller.signal)) {
-    if (ev.type === 'log') {
-      const data = ev.data as { line?: string; message?: string } | undefined
-      if (ev.code === 'game.output' && data?.line !== undefined) {
-        if (quiet && ev.level !== 'error') continue
-        process.stderr.write(
-          ev.level === 'error' ? `${C.red}${data.line}${C.reset}\n` : `${C.dim}${data.line}${C.reset}\n`,
-        )
-      } else if (ev.code === 'launch.spawn_failed') {
-        process.stderr.write(`${C.red}启动失败${C.reset}: ${data?.message ?? ''}\n`)
-      } else if (ev.code === 'launch.autostop') {
-        process.stderr.write(`\n${C.yellow}到达 --stop 时限，正在结束游戏${C.reset}\n`)
-      }
-    }
-    if (ev.type === 'result') result = ev.value as RunResult
-    if (ev.type === 'failed') {
-      process.stderr.write(`${C.red}${ev.code}${C.reset}: ${ev.message}\n`)
-      return 1
-    }
-  }
+  return consume(
+    op,
+    {
+      progress: () => {},
+      log: (ev) => {
+        const data = ev.data as { line?: string; message?: string } | undefined
+        if (ev.code === 'game.output' && data?.line !== undefined) {
+          if (quiet && ev.level !== 'error') return
+          process.stderr.write(
+            ev.level === 'error' ? `${C.red}${data.line}${C.reset}\n` : `${C.dim}${data.line}${C.reset}\n`,
+          )
+        } else if (ev.code === 'launch.spawn_failed') {
+          process.stderr.write(`${C.red}启动失败${C.reset}: ${data?.message ?? ''}\n`)
+        } else if (ev.code === 'launch.autostop') {
+          process.stderr.write(`\n${C.yellow}到达 --stop 时限，正在结束游戏${C.reset}\n`)
+        }
+      },
+      result: (result) => {
+        const secs = (result.durationMs / 1000).toFixed(1)
+        process.stdout.write('\n')
+        if (result.crashed) {
+          process.stdout.write(
+            `  ${C.red}异常退出${C.reset}  code=${result.exitCode ?? '-'} signal=${result.signal ?? '-'} · ${secs}s · ${result.lineCount} 行日志\n`,
+          )
+          if (result.logPath !== undefined) {
+            process.stdout.write(`  ${C.dim}完整日志${C.reset}  ${result.logPath}\n`)
+          }
+          process.stdout.write('\n')
+          process.stdout.write(`  ${C.bold}下一步${C.reset}\n`)
+          process.stdout.write(`    blockpilot diag --root ${root} --instance ${instance}      ${C.dim}# 分析这份日志${C.reset}\n`)
+          process.stdout.write(`    blockpilot preflight "${layout.gameDir}"   ${C.dim}# 扫描实例里的 mods${C.reset}\n\n`)
+          return 2
+        }
 
-  if (result === undefined) {
-    process.stderr.write(`${C.red}没有拿到运行结果${C.reset}\n`)
-    return 1
-  }
-
-  const secs = (result.durationMs / 1000).toFixed(1)
-  process.stdout.write('\n')
-  if (result.crashed) {
-    process.stdout.write(
-      `  ${C.red}异常退出${C.reset}  code=${result.exitCode ?? '-'} signal=${result.signal ?? '-'} · ${secs}s · ${result.lineCount} 行日志\n`,
-    )
-    if (result.logPath !== undefined) {
-      process.stdout.write(`  ${C.dim}完整日志${C.reset}  ${result.logPath}\n`)
-    }
-    process.stdout.write('\n')
-    process.stdout.write(`  ${C.bold}下一步${C.reset}\n`)
-    process.stdout.write(`    blockpilot diag --root ${root} --instance ${instance}      ${C.dim}# 分析这份日志${C.reset}\n`)
-    process.stdout.write(`    blockpilot preflight "${layout.gameDir}"   ${C.dim}# 扫描实例里的 mods${C.reset}\n\n`)
-    return 2
-  }
-
-  process.stdout.write(`  ${C.green}正常退出${C.reset}  ${secs}s · ${result.lineCount} 行日志\n`)
-  if (result.logPath !== undefined) {
-    process.stdout.write(`  ${C.dim}日志${C.reset}  ${result.logPath}\n`)
-  }
-  process.stdout.write('\n')
-  return 0
+        process.stdout.write(`  ${C.green}正常退出${C.reset}  ${secs}s · ${result.lineCount} 行日志\n`)
+        if (result.logPath !== undefined) {
+          process.stdout.write(`  ${C.dim}日志${C.reset}  ${result.logPath}\n`)
+        }
+        process.stdout.write('\n')
+        return 0
+      },
+    },
+    signal,
+  )
 }
 
 async function runFabric(argv: readonly string[]): Promise<number> {
@@ -819,8 +738,7 @@ async function runFabric(argv: readonly string[]): Promise<number> {
   const layout = resolveLayout(root, 'default')
   const loader = argOf(argv, '--loader')
   const china = argv.includes('--china')
-  const controller = new AbortController()
-  process.on('SIGINT', () => controller.abort())
+  const signal = createInterrupt().signal
 
   process.stdout.write('\n')
   process.stdout.write(`  ${C.dim}root${C.reset}  ${layout.root}\n`)
@@ -833,13 +751,14 @@ async function runFabric(argv: readonly string[]): Promise<number> {
     sources: pickSources(china),
   })
 
-  for await (const ev of op.run(controller.signal)) {
-    switch (ev.type) {
-      case 'progress':
+  return consume(
+    op,
+    {
+      progress: (ev) => {
         process.stderr.write(`\r${C.dim}下载 ${ev.done}/${ev.total}  ${ev.label}${C.reset}          `)
         if (ev.done === ev.total) process.stderr.write('\r')
-        break
-      case 'log': {
+      },
+      log: (ev) => {
         const d = ev.data as { file?: string; source?: string; error?: string; id?: string } | undefined
         if (ev.code === 'fabric.profile' && d?.id !== undefined) {
           process.stderr.write(`${C.dim}· profile ${d.id}${C.reset}\n`)
@@ -853,10 +772,8 @@ async function runFabric(argv: readonly string[]): Promise<number> {
             `${C.yellow}!${C.reset} ${n?.count ?? 0} 个库拿不到 sha1，跳过不下载：${(n?.libs ?? []).join(', ')}\n`,
           )
         }
-        break
-      }
-      case 'result': {
-        const r = ev.value as FabricSetupResult
+      },
+      result: (r) => {
         process.stdout.write('\n')
         process.stdout.write(
           `  ${C.green}完成${C.reset} loader ${r.loaderVersion} · ${r.libraries} 个库 · ` +
@@ -865,15 +782,10 @@ async function runFabric(argv: readonly string[]): Promise<number> {
         process.stdout.write(`  ${C.dim}版本 JSON${C.reset}  ${r.versionJsonPath}\n`)
         process.stdout.write(`\n  ${C.bold}启动${C.reset}  blockpilot run ${r.versionId} --root ${root}\n\n`)
         return r.failed.length > 0 ? 2 : 0
-      }
-      case 'failed':
-        process.stderr.write(`${C.red}${ev.code}${C.reset}: ${ev.message}\n`)
-        return 1
-      default:
-        break
-    }
-  }
-  return 1
+      },
+    },
+    signal,
+  )
 }
 
 async function runDeploy(argv: readonly string[]): Promise<number> {
@@ -886,22 +798,14 @@ async function runDeploy(argv: readonly string[]): Promise<number> {
   const instance = argOf(argv, '--instance') ?? 'default'
   const layout = resolveLayout(root, instance)
   const china = argv.includes('--china')
-  const controller = new AbortController()
-  process.on('SIGINT', () => controller.abort())
+  const signal = createInterrupt().signal
 
   process.stdout.write('\n')
   process.stdout.write(`  ${C.dim}整合包${C.reset}  ${packPath}\n`)
   process.stdout.write(`  ${C.dim}实例${C.reset}    ${instance} → ${layout.gameDir}\n\n`)
 
   // Forge 要跑 installer，得有 java。Fabric 用不到，但先检测一次省得后续分支判断
-  let javaPath = argOf(argv, '--java')
-  if (javaPath === undefined) {
-    const scan = await detectJava({
-      signal: controller.signal,
-      managedDir: join(layout.root, 'java'),
-    })
-    javaPath = [...scan.installs].sort((a, b) => b.major - a.major)[0]?.path
-  }
+  const javaPath = await pickJavaOrReport(undefined, layout.root, signal, argOf(argv, '--java'))
 
   const op = createDeploy({
     packPath,
@@ -911,13 +815,14 @@ async function runDeploy(argv: readonly string[]): Promise<number> {
     ...(proxyUrl === undefined ? {} : { proxy: proxyUrl }),
   })
 
-  for await (const ev of op.run(controller.signal)) {
-    switch (ev.type) {
-      case 'progress':
+  return consume(
+    op,
+    {
+      progress: (ev) => {
         process.stderr.write(`\r${C.dim}${ev.done}/${ev.total}  ${ev.label}${C.reset}          `)
         if (ev.done === ev.total) process.stderr.write('\r')
-        break
-      case 'log': {
+      },
+      log: (ev) => {
         const d = ev.data as
           | { step?: string; name?: string; file?: string; source?: string; error?: string }
           | undefined
@@ -932,10 +837,8 @@ async function runDeploy(argv: readonly string[]): Promise<number> {
         } else if (ev.code === 'deploy.failed') {
           process.stderr.write(`  ${C.red}✗${C.reset} ${d?.file ?? ''}  ${d?.error ?? ''}\n`)
         }
-        break
-      }
-      case 'result': {
-        const r = ev.value as DeployResult
+      },
+      result: (r) => {
         process.stdout.write('\n')
         process.stdout.write(
           `  ${C.green}装好了${C.reset}  ${r.gameVersion} + ${r.loaderKind} ${r.loaderVersion}\n`,
@@ -967,16 +870,14 @@ async function runDeploy(argv: readonly string[]): Promise<number> {
           `    blockpilot run ${r.playableVersionId} --root ${root} --instance ${instance}\n\n`,
         )
         return r.failed.length > 0 ? 2 : 0
-      }
-      case 'failed':
+      },
+      failed: (ev) => {
         process.stderr.write(`\n${C.red}${ev.code}${C.reset}: ${ev.message}\n`)
         if (ev.hint !== undefined) process.stderr.write(`${C.dim}${ev.hint}${C.reset}\n`)
-        return 1
-      default:
-        break
-    }
-  }
-  return 1
+      },
+    },
+    signal,
+  )
 }
 
 function renderCulprits(r: DiagResult): string[] {
@@ -1097,8 +998,7 @@ async function runDiag(argv: readonly string[]): Promise<number> {
     logPath = latest.path
   }
 
-  const controller = new AbortController()
-  process.on('SIGINT', () => controller.abort())
+  const signal = createInterrupt().signal
 
   // --file 可能指向另一个实例的日志。日志默认在 `<实例>/logs/xxx.log`，
   // 所以优先用日志旁边那个 mods 目录，否则归属会串到当前实例上
@@ -1106,19 +1006,18 @@ async function runDiag(argv: readonly string[]): Promise<number> {
   const modsDir = existsSync(siblingMods) ? siblingMods : layout.mods
 
   const op = createDiagnose({ logPath, modsDir })
-  for await (const ev of op.run(controller.signal)) {
-    if (ev.type === 'result') {
-      const r = ev.value as DiagResult
-      process.stdout.write(renderDiag(r))
-      return r.verdict === 'crash' ? 2 : 0
-    }
-    if (ev.type === 'failed') {
-      process.stderr.write(`${C.red}${ev.code}${C.reset}: ${ev.message}\n`)
-      if (ev.hint !== undefined) process.stderr.write(`${C.dim}${ev.hint}${C.reset}\n`)
-      return 1
-    }
-  }
-  return 1
+  return consume(
+    op,
+    {
+      progress: () => {},
+      log: () => {},
+      result: (r) => {
+        process.stdout.write(renderDiag(r))
+        return r.verdict === 'crash' ? 2 : 0
+      },
+    },
+    signal,
+  )
 }
 
 async function runLogs(argv: readonly string[]): Promise<number> {
