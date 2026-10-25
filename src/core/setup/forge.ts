@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import { join } from 'node:path'
 
 import { Op } from '../events.js'
@@ -36,6 +37,41 @@ export interface ForgeSetupResult {
 }
 
 const INSTALLER_TIMEOUT_MS = 15 * 60 * 1000
+
+/**
+ * NeoForge 被墙时的镜像（出处：MC百科 论坛的应对帖，2025-08 仓库下线/被墙时）。
+ * forgecdn 与官方 maven 路径完全兼容，只换域名——installer 内部的下载 URL
+ * 硬编码在 install_profile.json / version.json 里，替换文本即可生效。
+ */
+const NEOFORGE_MIRROR = {
+  from: 'maven.neoforged.net',
+  to: 'neoforged.forgecdn.net',
+}
+
+/**
+ * 把 installer 里的下载地址换成镜像。
+ *
+ * 三个已知入口：install_profile.json（51 处）、version.json（31 处）、
+ * SimpleInstaller.class 里的一个字符串常量。**class 不动**——「maven.neoforged.net」
+ * 19 字节换成「neoforged.forgecdn.net」21 字节会破坏常量池的长度前缀，
+ * 整个类文件就废了。而下载 URL 由两个 JSON 提供，class 里那个常量不参与下载，
+ * 所以只改 JSON 就够（社区的重打包做法也只改这两个文件）。
+ *
+ * 只在 kind=neoforge 且没配代理时用：有代理时直连官方保真度更高。
+ * 替换发生在 sha1 校验之后——先证明下载的字节是对的，再动它。
+ */
+export function mirrorNeoForgeInstaller(jar: Uint8Array): Uint8Array {
+  const entries = unzipSync(jar)
+  const out: Record<string, Uint8Array> = {}
+  for (const [name, data] of Object.entries(entries)) {
+    if (name === 'install_profile.json' || name === 'version.json') {
+      out[name] = strToU8(strFromU8(data).replaceAll(NEOFORGE_MIRROR.from, NEOFORGE_MIRROR.to))
+    } else {
+      out[name] = data
+    }
+  }
+  return zipSync(out)
+}
 
 /**
  * installer 会检查 `launcher_profiles.json`，没有就拒绝安装：
@@ -133,7 +169,12 @@ export function createForgeSetup(opts: ForgeSetupOptions): Operation<ForgeSetupR
     const url = spec.url
     yield Op.log('info', 'forge.installer_url', { url })
 
-    const sha1 = await fetchMavenSha1(url, signal)
+    // sha1 与下载走同一套镜像规则，否则会出现「下载有镜像、校验没镜像」的断裂
+    const sha1Url = new URL(`${url}.sha1`)
+    const sha1Candidates = (opts.sources ?? defaultSources())
+      .map((src) => src.rewrite(sha1Url))
+      .filter((u): u is string => u !== null)
+    const sha1 = await fetchMavenSha1(url, { ...(signal === undefined ? {} : { signal }), candidates: sha1Candidates })
     if (sha1 === null) {
       yield Op.failed('NO_HASH', `取不到 installer 的 sha1：${url}`, '没有哈希的文件不下载')
       return
@@ -153,6 +194,21 @@ export function createForgeSetup(opts: ForgeSetupOptions): Operation<ForgeSetupR
       signal,
     )
     yield Op.log('info', 'forge.installer_downloaded', { bytes: outcome.bytes })
+
+    // 没配代理时把 installer 内部的下载地址换成 forgecdn 镜像。
+    // 有代理时保持原包直连官方——保真度更高。
+    if (kind === 'neoforge' && opts.proxy === undefined) {
+      try {
+        writeFileSync(tmpJar, mirrorNeoForgeInstaller(new Uint8Array(readFileSync(tmpJar))))
+        yield Op.log('info', 'forge.installer_mirrored', {
+          from: NEOFORGE_MIRROR.from,
+          to: NEOFORGE_MIRROR.to,
+        })
+      } catch (err) {
+        // 镜像化失败不拦流程：installer 也许本来就直连得通（比如已设系统代理）
+        yield Op.log('warn', 'forge.installer_mirror_failed', { error: String(err) })
+      }
+    }
 
     ensureLauncherProfiles(opts.layout.root)
 

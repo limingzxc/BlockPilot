@@ -20,32 +20,35 @@ import { ProxyAgent, setGlobalDispatcher } from 'undici'
 
 let applied = false
 
-/** 环境变量的优先级：专用的 BLOCKPILOT_PROXY 最高，然后是通用约定 */
+/**
+ * 环境变量的优先级：专用的 BLOCKPILOT_PROXY 最高，然后是通用约定。
+ *
+ * **空字符串视为未设置**。沙箱和 CI 常把 HTTPS_PROXY 设成空值来「关闭」代理，
+ * `??` 不会跳过空串，不处理的话会走到「URL 无法解析」的报错里。
+ */
 export function proxyFromEnv(): string | undefined {
-  return (
-    process.env.BLOCKPILOT_PROXY ??
-    process.env.HTTPS_PROXY ??
-    process.env.https_proxy ??
-    process.env.HTTP_PROXY ??
-    process.env.http_proxy ??
-    process.env.ALL_PROXY ??
-    process.env.all_proxy ??
-    undefined
-  )
+  const vars = [
+    process.env.BLOCKPILOT_PROXY,
+    process.env.HTTPS_PROXY,
+    process.env.https_proxy,
+    process.env.HTTP_PROXY,
+    process.env.http_proxy,
+    process.env.ALL_PROXY,
+    process.env.all_proxy,
+  ]
+  return vars.find((v) => v !== undefined && v !== '')
 }
 
 /**
- * 应用代理。返回实际生效的 URL（可能来自环境变量）。
+ * 应用代理。返回实际生效的 URL；没有配置任何代理时返回 undefined（直连是合法状态）。
  *
  * 已应用过就跳过——dispatcher 是全局的，换两次没有意义。
- * URL 非法时抛错，调用方应把它当成启动失败而不是静默直连：
+ * URL 非法时抛错：用户显式给了代理却用不了，必须大声失败——
  * 静默直连的结果是「用户以为开了代理，实际还在裸连」。
  */
-export function applyProxy(url?: string): string {
+export function applyProxy(url?: string): string | undefined {
   const target = url ?? proxyFromEnv()
-  if (target === undefined || target === '') {
-    throw new Error('没有可用的代理：传 --proxy 或设置 HTTPS_PROXY 环境变量')
-  }
+  if (target === undefined || target === '') return undefined
 
   let u: URL
   try {

@@ -80,12 +80,14 @@ ADR-0013 只处理了前者。现在两个前缀都扫，两种元数据都能�
 
 修复后同一份实例：`BLOCKED` → `WARN`。
 
-## 顺带发现
+## 顺带发现（已被 ADR-0022 部分推翻）
 
-**NeoForge 的 maven 在国内很难访问**，而 BMCLAPI 只镜像了 `maven.minecraftforge.net`，没有 `maven.neoforged.net`。这意味着：
+**NeoForge 的 maven 在国内被墙。** 当时的结论是「BMCLAPI 不镜像它、必须走代理」——两个判断都要修正：
 
-- 国内用户装 NeoForge 整合包需要代理：`blockpilot deploy ... --proxy http://127.0.0.1:1081`
-- CLI 会把同一个代理同时传给 Node 的 fetch（元数据、installer 下载）和 installer 的 JVM
+- BMCLAPI 对 neoforged **有路由但缓存为空**（302 后无内容），事实上不可用
+- `neoforged.forgecdn.net` 是可用的官方兼容镜像，配合 installer 重打包，**无代理也能装**
+
+见 ADR-0022。代理路径仍然保留，保真度更高。
 
 ## Consequences
 

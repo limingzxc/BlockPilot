@@ -53,6 +53,8 @@ export async function buildFabricTasks(
   profile: FabricProfile,
   layout: Layout,
   signal?: AbortSignal,
+  /** sha1 探测与下载共用同一套镜像规则 */
+  sources: readonly DownloadSource[] = defaultSources(),
 ): Promise<BuiltTasks> {
   const tasks: DownloadTask[] = []
   const noHash: string[] = []
@@ -77,7 +79,11 @@ export async function buildFabricTasks(
     }
     const base = lib.url.replace(/\/+$/, '')
     const url = `${base}/${path}`
-    const sha1 = await fetchMavenSha1(url, signal)
+    const sha1Url = new URL(`${url}.sha1`)
+    const sha1Candidates = sources
+      .map((src) => src.rewrite(sha1Url))
+      .filter((u): u is string => u !== null)
+    const sha1 = await fetchMavenSha1(url, { ...(signal === undefined ? {} : { signal }), candidates: sha1Candidates })
     if (sha1 === null) {
       noHash.push(lib.name)
       continue
@@ -104,7 +110,8 @@ export function createFabricSetup(opts: FabricSetupOptions): Operation<FabricSet
     const profile = await fetchProfile(opts.gameVersion, loaderVersion, signal)
     yield Op.log('info', 'fabric.profile', { id: profile.id, libraries: profile.libraries.length })
 
-    const { tasks, noHash } = await buildFabricTasks(profile, opts.layout, signal)
+    const sources = opts.sources ?? defaultSources()
+    const { tasks, noHash } = await buildFabricTasks(profile, opts.layout, signal, sources)
     if (noHash.length > 0) {
       yield Op.log('warn', 'fabric.no_hash', { count: noHash.length, libs: noHash.slice(0, 5) })
     }
@@ -115,7 +122,6 @@ export function createFabricSetup(opts: FabricSetupOptions): Operation<FabricSet
     writeFileSync(jsonPath, JSON.stringify(profile, null, 2))
     yield Op.log('info', 'fabric.version_json', { path: jsonPath })
 
-    const sources = opts.sources ?? defaultSources()
     const concurrency = opts.concurrency ?? 4
     const queue = new AsyncQueue<OpEvent<never>>()
     const failed: { fileName: string; error: string }[] = []

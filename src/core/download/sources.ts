@@ -10,7 +10,9 @@ export const directSource: DownloadSource = {
 /**
  * BMCLAPI —— 「前缀替换，路径与官方 100% 兼容」。
  *
- * 覆盖 Mojang 的版本清单、资源、库，以及 Forge/NeoForge/Fabric 的 maven。
+ * 覆盖 Mojang 的版本清单、资源、库，以及 Forge/Fabric 的 maven。
+ * **NeoForge 的 maven 有路由但缓存为空**（/maven/net/neoforged/... 302 后无内容，
+ * 2026-10-25 实测）——所以 NeoForge 要靠下面的 forgecdn 源。
  * **不覆盖 Modrinth / CurseForge 的 CDN。**
  *
  * 协议要求（bmclapidoc.bangbang93.com）：所有使用 BMCLAPI 的程序
@@ -71,6 +73,24 @@ export const mcimSource: DownloadSource = {
   },
 }
 
+/**
+ * NeoForge 官方 maven 的镜像。
+ *
+ * `maven.neoforged.net` 在国内被墙，BMCLAPI 的路由是空壳（见上）。
+ * `neoforged.forgecdn.net` 是 NeoForged 社区在用的镜像，与官方 maven
+ * **路径完全兼容**（/releases/... 不变，只换域名），2026-10-25 实测：
+ * maven-metadata.xml、installer.jar、.sha1 全部 200，sha1 与官方一致，
+ * 直连速度约 180 KB/s。出处是 MC百科 论坛的应对帖（2025-08 仓库被墙时）。
+ *
+ * 它只覆盖这一个域，对其他 URL 返回 null——放进默认列表没有副作用。
+ */
+export const neoforgeCdnSource: DownloadSource = createMirrorSource({
+  name: 'neoforge-cdn',
+  from: 'maven.neoforged.net',
+  to: 'https://neoforged.forgecdn.net',
+  credit: 'NeoForge CDN · neoforged.forgecdn.net',
+})
+
 export interface MirrorConfig {
   readonly name: string
   /** 要替换的原始 host，如 maven.minecraftforge.net */
@@ -104,15 +124,14 @@ export function createMirrorSource(cfg: MirrorConfig): DownloadSource {
 }
 
 /**
- * 默认源列表：国内可用但求稳，把 MCIM 放在直连之后。
- *
- * 理由见 mcimSource 的注释——官方自己都说「下载失败后再用镜像」。
+ * 默认源列表：BMCLAPI 管 Mojang 域，forgecdn 管 NeoForge 域，
+ * MCIM 排在直连之后（理由见 mcimSource 注释——官方自己都说「下载失败后再用镜像」）。
  */
 export function defaultSources(): readonly DownloadSource[] {
-  return [bmclapiSource, directSource, mcimSource]
+  return [bmclapiSource, neoforgeCdnSource, directSource, mcimSource]
 }
 
 /** 国内网络优先：镜像先上，直连兜底。 */
 export function chinaFirstSources(): readonly DownloadSource[] {
-  return [bmclapiSource, mcimSource, directSource]
+  return [bmclapiSource, neoforgeCdnSource, mcimSource, directSource]
 }

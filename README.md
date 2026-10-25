@@ -203,7 +203,7 @@ Forge 靠官方 installer 完成安装——它要给 client jar 打二进制补
 NeoForge 与 Forge 共用 installer 流程，只是坐标不同（版本号不带 MC 前缀）。**已实测**：1.21.1 + NeoForge 21.1.264 经代理启动成功（ModLauncher 11.0.5、OpenAL、全部图集）。注意两点：
 
 - **NeoForge 没有 1.20.1 版本**，从 1.20.2 起步
-- `maven.neoforged.net` 国内直连不通，BMCLAPI 也不镜像它，需要 `--proxy http://127.0.0.1:1081` 这样的 HTTP 代理
+- `maven.neoforged.net` 国内被墙，内置了 `neoforged.forgecdn.net` 镜像（含 installer 重打包），**无代理可装**；有代理时用 `--proxy` 走官方保真度更高。见 [ADR-0022](docs/adr/0022-neoforge-mirror.md)
 
 见 [ADR-0016](docs/adr/0016-neoforge.md)。
 
@@ -394,7 +394,7 @@ npx tsx src/cli/index.ts install fixtures/closure.mrpack --mods-dir /tmp/mods
 | Fabric 0.15.11 + 1.20.1 | 启动成功 |
 | Fabulously Optimized 6.5.0（50 mod / 1.21.1） | 151 mods loaded，图集全部创建 |
 | Forge 47.3.0 + JEI + AppleSkin | `Launching target 'forgeclient'`，两个 mod 均生效 |
-| NeoForge 21.1.264 + 1.21.1（经代理） | ModLauncher 11.0.5，OpenAL 与全部图集成功 |
+| NeoForge 21.1.264（经代理）/ 21.1.265（无代理走镜像） | ModLauncher 11.0.5，OpenAL 与全部图集成功 |
 
 **未开始 / 刻意不做**：
 

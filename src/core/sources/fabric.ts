@@ -72,19 +72,37 @@ export async function fetchProfile(
 // 已移到 core/version/maven.ts，这里保留 re-export 兼容
 export { mavenCoordToPath } from '../version/maven.js'
 /** 从仓库的 .sha1 文件取哈希。取不到就返回 null——没有哈希的文件不允许下载。 */
-export async function fetchMavenSha1(url: string, signal?: AbortSignal): Promise<string | null> {
-  try {
-    const res = await fetch(`${url}.sha1`, {
-      headers: { 'User-Agent': USER_AGENT },
-      signal: AbortSignal.any([
-        ...(signal === undefined ? [] : [signal]),
-        AbortSignal.timeout(TIMEOUT_MS),
-      ]),
-    })
-    if (!res.ok) return null
-    const text = (await res.text()).trim().split(/\s+/)[0] ?? ''
-    return /^[0-9a-f]{40}$/i.test(text) ? text.toLowerCase() : null
-  } catch {
-    return null
+/**
+ * 取仓库侧的 .sha1。
+ *
+ * `candidates` 是「这个文件的候选地址列表」——与下载器同源的镜像规则
+ * （direct 永远在最后兜底）。此前只试官方地址，结果 NeoForge 被墙时
+ * sha1 探测先死，镜像还没机会上场：下载器走 forgecdn，探测却卡在官方域。
+ */
+export async function fetchMavenSha1(
+  url: string,
+  opts?: {
+    readonly signal?: AbortSignal
+    /** 候选地址。缺省就只试官方 */
+    readonly candidates?: readonly string[]
+  },
+): Promise<string | null> {
+  const candidates = opts?.candidates ?? [`${url}.sha1`]
+  const timeoutSignal = AbortSignal.timeout(TIMEOUT_MS)
+  const signal = AbortSignal.any([
+    ...(opts?.signal === undefined ? [] : [opts.signal]),
+    timeoutSignal,
+  ])
+
+  for (const candidate of candidates) {
+    try {
+      const res = await fetch(candidate, { headers: { 'User-Agent': USER_AGENT }, signal })
+      if (!res.ok) continue
+      const text = (await res.text()).trim().split(/\s+/)[0] ?? ''
+      if (/^[0-9a-f]{40}$/i.test(text)) return text.toLowerCase()
+    } catch {
+      // 换下一个候选
+    }
   }
+  return null
 }

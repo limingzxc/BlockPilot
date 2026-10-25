@@ -8,6 +8,7 @@ import {
   defaultSources,
   directSource,
   mcimSource,
+  neoforgeCdnSource,
 } from './sources.js'
 
 const u = (s: string): URL => new URL(s)
@@ -56,13 +57,13 @@ test('直连源原样返回，永不返回 null', () => {
 
 test('默认源列表里 BMCLAPI 在 Modrinth 之前，MCIM 在直连之后', () => {
   const names = defaultSources().map((s) => s.name)
-  assert.deepEqual(names, ['bmclapi', 'direct', 'mcim'])
+  assert.deepEqual(names, ['bmclapi', 'neoforge-cdn', 'direct', 'mcim'])
 })
 
 test('国内优先列表把 MCIM 提到直连之前', () => {
   assert.deepEqual(
     chinaFirstSources().map((s) => s.name),
-    ['bmclapi', 'mcim', 'direct'],
+    ['bmclapi', 'neoforge-cdn', 'mcim', 'direct'],
   )
 })
 
@@ -79,4 +80,18 @@ test('createMirrorSource 支持自定义镜像', () => {
     'https://example.com/repo/maven/net/minecraftforge/forge/1.20.1/x.jar',
   )
   assert.equal(m.rewrite(u('https://cdn.modrinth.com/a.jar')), null)
+})
+
+test('neoforge-cdn 只换域名，路径原样（实测 200 的规则）', () => {
+  const url = new URL('https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.264/neoforge-21.1.264-installer.jar')
+  assert.equal(
+    neoforgeCdnSource.rewrite(url),
+    'https://neoforged.forgecdn.net/releases/net/neoforged/neoforge/21.1.264/neoforge-21.1.264-installer.jar',
+  )
+  // 对其他域不参与，不影响现有源
+  assert.equal(neoforgeCdnSource.rewrite(new URL('https://libraries.minecraft.net/a/b.jar')), null)
+  assert.equal(
+    neoforgeCdnSource.rewrite(new URL('https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml')),
+    'https://neoforged.forgecdn.net/releases/net/neoforged/neoforge/maven-metadata.xml',
+  )
 })
