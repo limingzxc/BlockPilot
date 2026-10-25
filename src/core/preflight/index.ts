@@ -13,6 +13,7 @@ import { checkLocalInstance } from './local.js'
 import { scanInstanceDir } from '../instance/scan.js'
 import type { ScannedMod } from '../instance/scan.js'
 import { mrpackToInstance, readMrpackIndex } from './mrpack.js'
+import { isCurseforgeZip, readCurseforgePack } from './curseforge.js'
 import { checkInstance, checkJava } from './check.js'
 import { verdictOf } from './types.js'
 import type { Finding, PreflightReport } from './types.js'
@@ -45,6 +46,8 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
     let instance: Instance
     let localMods: ScannedMod[] = []
     let skippedJars: string[] = []
+    /** CurseForge 包没有 API key 时，mod 级校验整个跳过 */
+    let cfGated = false
 
     if (isDir) {
       const scan = scanInstanceDir(opts.target, {
@@ -61,13 +64,29 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
         mods: localMods.length,
         skipped: skippedJars.length,
       })
+    } else if (isCurseforgeZip(opts.target)) {
+      // CF 的 files 只有 projectID/fileID，下载与校验都要 API key。
+      // 这里只解析 manifest：MC 版本、加载器、文件数——Java 判定仍然有效
+      const pack = readCurseforgePack(opts.target)
+      instance = pack.instance
+      cfGated = true
+      yield Op.log('info', 'modpack.curseforge', {
+        name: instance.name,
+        gameVersion: instance.gameVersion,
+        loader: instance.loader,
+        files: pack.manifest.files.length,
+      })
     } else {
       yield Op.log('info', 'modpack.reading', { path: opts.target })
       try {
         const index = readMrpackIndex(opts.target)
         instance = mrpackToInstance(index)
       } catch (err) {
-        yield Op.failed('BAD_MODPACK', `无法解析整合包：${String(err)}`, '目前支持 .mrpack 和实例目录')
+        yield Op.failed(
+          'BAD_MODPACK',
+          `无法解析整合包：${String(err)}`,
+          '目前支持 .mrpack、CurseForge 的 .zip（带 manifest.json）和实例目录',
+        )
         return
       }
       yield Op.log('info', 'modpack.parsed', {
@@ -86,7 +105,7 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
     let resolved = 0
     let unresolved = 0
 
-    // Java 与在线/离线无关，两条链路都要跑。
+    // Java 与在线/离线无关，三条链路都要跑。
     if (opts.host !== undefined) {
       findings.push(...checkJava(instance, opts.host))
     }
@@ -105,6 +124,17 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
       mods = localMods.length + skippedJars.length
       resolved = localMods.length
       unresolved = skippedJars.length
+    } else if (cfGated) {
+      // ---- CurseForge 模式：没有 key，mod 级校验整个做不了 ----
+      // 把 N 个文件全算成 unresolved，verdict 自然落到 unknown——
+      // 这正是契约里「有东西没校验过，结论不可信」的那一档
+      unresolved = instance.mods.length
+      findings.push({
+        severity: 'warning',
+        code: 'CF_API_REQUIRED',
+        message: `整合包声明了 ${instance.mods.length} 个 CurseForge 文件，但没有 API key 无法解析名称与兼容性`,
+        hint: '到 console.curseforge.com 申请 key 后才能做 mod 级校验；Java 与加载器版本仍然可参考',
+      })
     } else {
       // ---- 在线模式：有 projectId，可以查元数据和递归闭包 ----
       const withVersion = instance.mods

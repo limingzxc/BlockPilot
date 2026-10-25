@@ -9,6 +9,7 @@ import type { DownloadSource } from './download/types.js'
 import type { Layout } from './layout.js'
 import type { LoaderKind } from './instance.js'
 import { mrpackToInstance, readMrpackIndex } from './preflight/mrpack.js'
+import { isCurseforgeZip } from './preflight/curseforge.js'
 import { checkLocalInstance } from './preflight/local.js'
 import { verdictOf } from './preflight/types.js'
 import type { Finding, Verdict } from './preflight/types.js'
@@ -48,6 +49,18 @@ export interface DeployResult {
 
 export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
   return defineOperation<DeployResult>('deploy', async function* (signal) {
+    // CurseForge 的 zip 提前拦下：fileID → 下载 URL 必须查 CF 的 API（要 key），
+    // 走到 mrpack 解析那一步只会得到一个含糊的 BAD_MODPACK
+    if (isCurseforgeZip(opts.packPath)) {
+      yield Op.failed(
+        'CF_API_KEY_REQUIRED',
+        '这是 CurseForge 整合包，下载它的文件需要 CurseForge API key',
+        '文件清单只有 projectID/fileID，要拿到 URL 与校验值必须调 API；' +
+          '可以先跑 preflight 看 MC 版本与加载器',
+      )
+      return
+    }
+
     const index = readMrpackIndex(opts.packPath)
     const instance = mrpackToInstance(index)
 

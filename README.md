@@ -90,15 +90,17 @@ MCP server 把同一个 core 暴露成工具。开发期直接指向源码：
 
 在启动之前判断一套模组跑不跑得起来——不下载、不启动、不登录。
 
-**支持两种输入，两条链路：**
+**支持三种输入，三条链路：**
 
-| | `.mrpack` 文件 | 实例目录 |
-|---|---|---|
-| 身份 | Modrinth `projectId` | jar 内 `modId` |
-| 元数据 | Modrinth API | `fabric.mod.json` / `mods.toml` / `neoforge.mods.toml` / `quilt.mod.json` |
-| 依赖 | 递归闭包 | 单层检查 |
-| 网络 | 需要 | **不需要** |
-| 能给出下载地址 | 是（`plan.installs`） | 否（`plan.manual`） |
+| | `.mrpack` 文件 | CurseForge zip | 实例目录 |
+|---|---|---|---|
+| 身份 | Modrinth `projectId` | `projectID`/`fileID`（数字） | jar 内 `modId` |
+| 元数据 | Modrinth API | **需要 CF API key** | `fabric.mod.json` / `mods.toml` 等 |
+| 依赖 | 递归闭包 | 无法检查 | 单层检查 |
+| 网络 | 需要 | 预检不需要 | **不需要** |
+| 能给出下载地址 | 是（`plan.installs`） | 否（没有 URL，只有 id） | 否（`plan.manual`） |
+
+CF 的 manifest 只有 id 没有下载地址——所以预检只承诺能承诺的：MC 版本、加载器、Java 判定可靠，mod 级兼容性明确报 `CF_API_REQUIRED` 而不是装懂。见 [ADR-0021](docs/adr/0021-curseforge-boundary.md)。
 
 同一个模组有 `projectId`（`AANobbMI`）和 `modId`（`sodium`）两套身份，它们不能互相推导——这是 ADR-0004 的全部内容。
 
@@ -130,7 +132,7 @@ npx tsx src/cli/index.ts java install 21      # 没装就从 Adoptium 装一个
 
 `java install` 下载 Temurin JRE（带 sha256 校验）、解压到 `<root>/java`，装完立刻探测验证版本。之后 `run` / `launch` / `deploy` 会**优先用它**，而不是系统里那个——用户明确装的东西不该被别的软件带来的覆盖。见 [ADR-0017](docs/adr/0017-java-auto-install.md)。
 
-目前只支持 Windows（Adoptium 对它给 zip；Linux/macOS 给 tar.gz，还没做）。
+Windows 走 zip（实测）；Linux/macOS 走 tar.gz——内置了一个 ~150 行的 tar 读取器，与系统 GNU tar 互通，但端到端没在 Linux/macOS 上跑过。
 
 ## 目录布局
 
@@ -375,7 +377,7 @@ npx tsx src/cli/index.ts install fixtures/closure.mrpack --mods-dir /tmp/mods
 
 早期，但核心链路已经通了。
 
-**已完成**：`.mrpack` 与实例目录解析、jar 元数据读取（fabric/forge/neoforge/quilt，含 `provides` 与 jar-in-jar）、约束检查（含版本范围）、递归依赖闭包、可执行修复计划、并发下载（哈希校验 / 多源降级 / 缓存命中）、Java 检测与自动安装、原版安装（client jar + libraries + assetIndex + natives + assets）、启动命令生成、进程启动与日志落盘、崩溃日志分析与栈帧归属、Modrinth 元数据源、CLI 与 MCP 两个消费者。
+**已完成**：`.mrpack` / CurseForge zip / 实例目录三种输入解析、jar 元数据读取（fabric/forge/neoforge/quilt，含 `provides` 与 jar-in-jar）、约束检查（含版本范围）、递归依赖闭包、可执行修复计划、并发下载（哈希校验 / 多源降级 / 缓存命中）、Java 检测与自动安装、原版安装（client jar + libraries + assetIndex + natives + assets）、启动命令生成、进程启动与日志落盘、崩溃日志分析与栈帧归属、Java 的 tar.gz 安装（Linux/macOS 代码就绪）、Modrinth 元数据源、CLI 与 MCP 两个消费者。
 
 **全链路已跑通**：`.mrpack` → 部署 → 自检 → 启动 → 崩溃 → 日志 → 定位。
 
@@ -389,7 +391,12 @@ npx tsx src/cli/index.ts install fixtures/closure.mrpack --mods-dir /tmp/mods
 | Forge 47.3.0 + JEI + AppleSkin | `Launching target 'forgeclient'`，两个 mod 均生效 |
 | NeoForge | 代码就绪，**未实测**（`maven.neoforged.net` 本机不可达） |
 
-**未开始**：Linux/macOS 的 Java 安装（tar.gz）、NeoForge 实测、CurseForge 支持、版本求解、GUI。
+**未开始 / 刻意不做**：
+
+- **CurseForge 下载**——要 API key 才能实测，没实测的不发布（预检已支持，见 ADR-0021）
+- **NeoForge 安装**——代码就绪，`maven.neoforged.net` 在本机网络不可达，无法实测
+- **版本求解**——ADR-0003 刻意不做：Modrinth 元数据没有版本范围，硬做等于用假精度骗自己
+- **GUI**——参考实现的价值在协议与分层，GUI 会把依赖和复杂度翻倍
 
 ## 许可
 

@@ -128,8 +128,9 @@ function usage(): void {
   blockpilot launch <version> [--root <dir>] [--instance <name>] [--java <path>] [--memory <MB>] [--raw]
   blockpilot run    <version> [--root <dir>] [--instance <name>] [--memory <MB>] [--quiet] [--stop <秒>]
 
-  <target>  .mrpack 文件，或实例目录
+  <target>  .mrpack / CurseForge 的 zip（带 manifest.json），或实例目录
             （MultiMC/Prism 实例、裸 .minecraft、任何带 mods/ 的目录）
+            CF 包只能预检版本与 Java；mod 级校验要 API key，见 ADR-0021
 
   install   先预检，再把 plan.installs 里的文件下载到 --mods-dir
             --dry-run 只打印计划，不下载

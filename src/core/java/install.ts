@@ -11,6 +11,7 @@ import type { DownloadSource } from '../download/types.js'
 import type { Layout } from '../layout.js'
 import { fetchJavaBinary } from '../sources/adoptium.js'
 import type { JavaOs } from '../sources/adoptium.js'
+import { readTarGz, writeTarEntries } from './tar.js'
 import { probeJava } from './probe.js'
 import type { JavaInstall } from './types.js'
 
@@ -65,6 +66,11 @@ function extractZip(zipPath: string, destDir: string): number {
   return count
 }
 
+/** 解压 tar.gz。可执行位与 slip 防护都在 tar.ts 里。 */
+function extractTarGz(tarPath: string, destDir: string): { files: number; symlinks: number } {
+  return writeTarEntries(readTarGz(new Uint8Array(readFileSync(tarPath))), destDir)
+}
+
 export function createJavaInstall(opts: JavaInstallOptions): Operation<JavaInstallResult> {
   return defineOperation<JavaInstallResult>('java-install', async function* (signal) {
     const javaRoot = join(opts.layout.root, 'java')
@@ -90,15 +96,6 @@ export function createJavaInstall(opts: JavaInstallOptions): Operation<JavaInsta
       return
     }
 
-    if (binary.archive === 'tar.gz') {
-      yield Op.failed(
-        'ARCHIVE_UNSUPPORTED',
-        '目前只支持 zip 解压（Windows 的 Adoptium 构建）',
-        `拿到的文件是 ${binary.fileName}，需要在 Linux/macOS 上补 tar.gz 支持`,
-      )
-      return
-    }
-
     yield Op.log('info', 'java.download', {
       release: binary.release,
       size: binary.size,
@@ -107,13 +104,13 @@ export function createJavaInstall(opts: JavaInstallOptions): Operation<JavaInsta
 
     const cacheDir = join(javaRoot, '.cache')
     mkdirSync(cacheDir, { recursive: true })
-    const zipPath = join(cacheDir, binary.fileName)
+    const archivePath = join(cacheDir, binary.fileName)
 
     const outcome = await downloadOne(
       {
         url: binary.url,
         fileName: binary.fileName,
-        destPath: zipPath,
+        destPath: archivePath,
         expectedSize: binary.size,
         hashes: { sha256: binary.checksum },
       },
@@ -122,8 +119,14 @@ export function createJavaInstall(opts: JavaInstallOptions): Operation<JavaInsta
     )
 
     yield Op.log('info', 'java.extract', { bytes: outcome.bytes })
-    const entries = extractZip(zipPath, javaRoot)
-    yield Op.log('info', 'java.extracted', { files: entries })
+    const entries =
+      binary.archive === 'tar.gz'
+        ? extractTarGz(archivePath, javaRoot)
+        : { files: extractZip(archivePath, javaRoot), symlinks: 0 }
+    yield Op.log('info', 'java.extracted', {
+      files: entries.files,
+      ...(entries.symlinks > 0 ? { symlinks: entries.symlinks } : {}),
+    })
 
     const javaPath = findJavaExecutable(javaRoot)
     if (javaPath === null) {

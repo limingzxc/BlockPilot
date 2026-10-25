@@ -72,7 +72,7 @@ ARCHIVE_UNSUPPORTED  目前只支持 zip 解压（Windows 的 Adoptium 构建）
 
 **Negative**
 
-- **只支持 Windows**（zip）。Linux/macOS 要等 tar.gz 支持。
+- Linux/macOS 走 tar.gz（见下方更新）。
 - **46.7 MB 单次下载，没有断点续传**。网慢的时候只能重来。
 - 没有校验 `java.home` 之类的完整性，只验证了能启动。
 - 下载源是 GitHub Releases（Adoptium 的 link 指向那里），国内速度不稳定，且 BMCLAPI 不镜像它。
@@ -91,3 +91,31 @@ $ blockpilot java install 21 --root fixtures/mcroot
 ```
 
 第二次执行会直接命中 `already_installed`，不重复下载。
+
+## 更新（2026-10-25 晚）：tar.gz 支持
+
+Linux/macOS 的 Adoptium 构建是 tar.gz。fflate 只认 zip，而 Node 内置的 zlib 只解 gunzip——中间缺的是 tar。
+
+**决定：手写一个 ~150 行的 tar 读取器**（`core/java/tar.ts`），不引第三方依赖。理由与别处一致：参考实现的价值在「能被读懂」，而且我们只需要按顺序读条目，不需要随机访问、追加写、稀疏文件那一整套。
+
+必须处理三种真实格式，缺一不可：
+
+| 格式 | 谁在产 | 超长路径怎么办 |
+|---|---|---|
+| ustar（POSIX） | 老脚本 | 345 字节的 prefix 字段 |
+| GNU | Adoptium（GNU tar 打包） | typeflag `L` 的前导条目 |
+| PAX | macOS bsdtar | typeflag `x` 的 `path=` 记录 |
+
+只支持一种的后果很具体：bsdtar（Windows 自带、macOS 默认）产出 PAX，GNU tar 长路径产出 `L` 条目——漏掉任何一个，Adoptium 的包在某条路径上就解不开。
+
+**可执行位照搬 tar 里的 mode**。`bin/java` 没有执行位，装完就是跑不起来——这类错误要到 probe 才暴露，中间隔着几十 MB 的解压。
+
+**符号链接跳过**。JRE 的关键路径（bin/java、lib/modules）都是真实文件；跨平台伪造一个链接不值得。
+
+**tar slip 与 zip slip 是同一个坑**：`../` 与绝对路径一律跳过。
+
+### 测试与验证的边界
+
+- 读取器与**系统真 GNU tar 互通**（tar 打包 → 读回 → 内容一致），并有 PAX / GNU 长名 / prefix 字段的手工构造用例
+- Windows 上 `tar -C C://...` 会报 `Cannot connect to C:`（GNU tar 把盘符当远程主机），测试必须用 cwd + 相对路径
+- **端到端的 Linux/macOS 安装没跑过**——本机是 Windows，解出来的 ELF 跑不了。诚实标注：代码就绪，未在目标平台实测
