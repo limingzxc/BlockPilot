@@ -15,6 +15,8 @@ import {
 import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
+import { applyProxy } from '../core/proxy.js'
+
 import { createDiagnose } from '../core/diagnostics/index.js'
 import type { DiagResult } from '../core/diagnostics/index.js'
 import { createPreflight } from '../core/preflight/index.js'
@@ -23,6 +25,14 @@ import { ModrinthSource } from '../sources/modrinth.js'
 
 const PREFLIGHT_TOOL = 'preflight_modpack'
 const DIAG_TOOL = 'diagnose_crash'
+
+// 环境变量里有代理就应用。失败不退出——没有代理 MCP 仍然可用
+try {
+  const applied = applyProxy()
+  if (applied !== undefined) process.stderr.write(`[blockpilot] proxy ${applied}\n`)
+} catch (err) {
+  process.stderr.write(`[blockpilot] proxy ignored: ${String(err)}\n`)
+}
 
 const tools: Tool[] = [
   {

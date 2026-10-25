@@ -192,7 +192,7 @@ BlockPilot Real Fixture
 
 ## 加载器
 
-Fabric、Forge、NeoForge 都支持，`deploy` 会按 `.mrpack` 里的 `dependencies` 自动选。
+Fabric、Forge、NeoForge 都支持，`deploy` 会按 `.mrpack` 里的 `dependencies` 自动选。所有子命令支持 `--proxy <url>`（或 `HTTPS_PROXY` 环境变量）——它同时作用于 Node 的下载与 installer 的 JVM 下载。
 
 Forge 靠官方 installer 完成安装——它要给 client jar 打二进制补丁，自己复刻那套工具链没有意义。三个坑见 [ADR-0015](docs/adr/0015-forge-installer.md)：
 
@@ -200,7 +200,12 @@ Forge 靠官方 installer 完成安装——它要给 client jar 打二进制补
 - Forge 的版本目录只有 `.json`，patched client 在 `libraries` 里
 - classpath 里**不能**有原版 jar，否则和 Forge 的 `minecraft` 模块冲突
 
-NeoForge 与 Forge 共用 installer 流程，只是坐标不同（版本号不带 MC 前缀）。**但未实测**：`maven.neoforged.net` 在本机 DNS 可解析、TCP 连不上，且 BMCLAPI 没有镜像它。见 [ADR-0016](docs/adr/0016-neoforge.md)。
+NeoForge 与 Forge 共用 installer 流程，只是坐标不同（版本号不带 MC 前缀）。**已实测**：1.21.1 + NeoForge 21.1.264 经代理启动成功（ModLauncher 11.0.5、OpenAL、全部图集）。注意两点：
+
+- **NeoForge 没有 1.20.1 版本**，从 1.20.2 起步
+- `maven.neoforged.net` 国内直连不通，BMCLAPI 也不镜像它，需要 `--proxy http://127.0.0.1:1081` 这样的 HTTP 代理
+
+见 [ADR-0016](docs/adr/0016-neoforge.md)。
 
 ## Fabric 加载器
 
@@ -389,12 +394,11 @@ npx tsx src/cli/index.ts install fixtures/closure.mrpack --mods-dir /tmp/mods
 | Fabric 0.15.11 + 1.20.1 | 启动成功 |
 | Fabulously Optimized 6.5.0（50 mod / 1.21.1） | 151 mods loaded，图集全部创建 |
 | Forge 47.3.0 + JEI + AppleSkin | `Launching target 'forgeclient'`，两个 mod 均生效 |
-| NeoForge | 代码就绪，**未实测**（`maven.neoforged.net` 本机不可达） |
+| NeoForge 21.1.264 + 1.21.1（经代理） | ModLauncher 11.0.5，OpenAL 与全部图集成功 |
 
 **未开始 / 刻意不做**：
 
 - **CurseForge 下载**——要 API key 才能实测，没实测的不发布（预检已支持，见 ADR-0021）
-- **NeoForge 安装**——代码就绪，`maven.neoforged.net` 在本机网络不可达，无法实测
 - **版本求解**——ADR-0003 刻意不做：Modrinth 元数据没有版本范围，硬做等于用假精度骗自己
 - **GUI**——参考实现的价值在协议与分层，GUI 会把依赖和复杂度翻倍
 

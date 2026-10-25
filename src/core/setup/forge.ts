@@ -10,6 +10,7 @@ import { defaultSources } from '../download/sources.js'
 import type { DownloadSource } from '../download/types.js'
 import type { Layout } from '../layout.js'
 import { fetchMavenSha1 } from '../sources/fabric.js'
+import { javaProxyArgs } from '../proxy.js'
 import { installerSpec, recommendedForge } from '../sources/forge.js'
 import type { InstallerKind } from '../sources/forge.js'
 
@@ -22,6 +23,8 @@ export interface ForgeSetupOptions {
   readonly forgeVersion?: string
   /** 跑 installer 用的 java */
   readonly java: string
+  /** installer 是独立 JVM，有自己的下载栈，要显式传代理 */
+  readonly proxy?: string
   readonly sources?: readonly DownloadSource[]
 }
 
@@ -56,10 +59,11 @@ function runInstaller(
   jarPath: string,
   root: string,
   signal: AbortSignal,
+  proxy?: string,
 ): Promise<InstallerRun> {
   return new Promise((resolve, reject) => {
     // installer 无 GUI 时靠这两个参数走命令行模式
-    const child = spawn(java, ['-jar', jarPath, '--installClient', root], {
+    const child = spawn(java, [...javaProxyArgs(proxy), '-jar', jarPath, '--installClient', root], {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
@@ -153,13 +157,21 @@ export function createForgeSetup(opts: ForgeSetupOptions): Operation<ForgeSetupR
     ensureLauncherProfiles(opts.layout.root)
 
     yield Op.log('info', 'forge.installer_run', { note: '下载依赖并给 client 打补丁，通常 1–3 分钟' })
-    const run = await runInstaller(opts.java, tmpJar, opts.layout.root, signal)
+
+    // installer 下载几百 MB 的库，网络抖一下就整个失败。它自己有缓存，
+    // 重跑会跳过已下载的部分，所以失败重试一次代价很小、收益很大——
+    // 实测走代理时装 NeoForge 第一次就挂在 net.neoforged:bus:8.0.5，重试直接过
+    let run = await runInstaller(opts.java, tmpJar, opts.layout.root, signal, opts.proxy)
+    if (run.code !== 0) {
+      yield Op.log('warn', 'forge.installer_retry', { code: run.code, tail: run.tail.slice(-1) })
+      run = await runInstaller(opts.java, tmpJar, opts.layout.root, signal, opts.proxy)
+    }
 
     if (run.code !== 0) {
       yield Op.log('error', 'forge.installer_failed', { code: run.code, tail: run.tail })
       yield Op.failed(
         'INSTALLER_FAILED',
-        `Forge installer 退出码 ${run.code ?? '-'}`,
+        `Forge installer 退出码 ${run.code ?? '-'}（已重试一次）`,
         run.tail.slice(-3).join(' / '),
       )
       return

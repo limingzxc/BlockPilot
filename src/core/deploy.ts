@@ -26,6 +26,8 @@ export interface DeployOptions {
   readonly concurrency?: number
   /** 跑 Forge installer 用的 java。Fabric 不需要 */
   readonly java?: string
+  /** installer 的下载走这个代理。不填用环境变量 */
+  readonly proxy?: string
 }
 
 export interface DeployResult {
@@ -134,6 +136,7 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
         kind: instance.loader.kind === 'neoforge' ? 'neoforge' : 'forge',
         forgeVersion: instance.loader.version,
         java: opts.java,
+        ...(opts.proxy === undefined ? {} : { proxy: opts.proxy }),
         sources,
       }).run(signal)) {
         if (ev.type === 'result') playableVersionId = (ev.value as { versionId: string }).versionId

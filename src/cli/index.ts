@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { existsSync } from 'node:fs'
+import { applyProxy } from '../core/proxy.js'
 import { dirname, join } from 'node:path'
 
 import { createPreflight } from '../core/preflight/index.js'
@@ -127,6 +128,9 @@ function usage(): void {
   blockpilot deploy <pack.mrpack> [--root <dir>] [--instance <name>] [--china]
   blockpilot launch <version> [--root <dir>] [--instance <name>] [--java <path>] [--memory <MB>] [--raw]
   blockpilot run    <version> [--root <dir>] [--instance <name>] [--memory <MB>] [--quiet] [--stop <秒>]
+
+  所有子命令通用：  --proxy <url>   走 HTTP 代理（也读 HTTPS_PROXY 环境变量）
+                    影响元数据、下载与 installer；如 http://127.0.0.1:1081
 
   <target>  .mrpack / CurseForge 的 zip（带 manifest.json），或实例目录
             （MultiMC/Prism 实例、裸 .minecraft、任何带 mods/ 的目录）
@@ -904,6 +908,7 @@ async function runDeploy(argv: readonly string[]): Promise<number> {
     layout,
     sources: pickSources(china),
     ...(javaPath === undefined ? {} : { java: javaPath }),
+    ...(proxyUrl === undefined ? {} : { proxy: proxyUrl }),
   })
 
   for await (const ev of op.run(controller.signal)) {
@@ -1139,8 +1144,37 @@ async function runLogs(argv: readonly string[]): Promise<number> {
   return 0
 }
 
+/** main() 解析出的代理 URL，子命令从这里读。CLI 是单命令进程，这样最简单 */
+let proxyUrl: string | undefined
+
+/** 全局的 `--proxy <url>`。放在子命令前后都行。 */
+function takeProxyArg(argv: readonly string[]): string | undefined {
+  const i = argv.indexOf('--proxy')
+  if (i === -1) return undefined
+  const value = argv[i + 1]
+  if (value === undefined) {
+    process.stderr.write(`${C.red}--proxy 需要一个 URL，如 http://127.0.0.1:1081${C.reset}\n`)
+    process.exit(1)
+  }
+  // 从 argv 里摘掉，免得子命令把它当成自己的参数。argv 是 slice(2) 的拷贝，可以直接改
+  ;(argv as string[]).splice(i, 2)
+  return value
+}
+
 async function main(): Promise<number> {
   const argv = process.argv.slice(2)
+  // 代理要在任何 fetch 之前应用。取不到 --proxy 时也试环境变量
+  try {
+    const applied = applyProxy(takeProxyArg(argv))
+    if (applied !== undefined) {
+      proxyUrl = applied
+      process.stderr.write(`${C.dim}· 走代理 ${applied}${C.reset}\n`)
+    }
+  } catch (err) {
+    process.stderr.write(`${C.red}代理配置无效${C.reset}: ${String(err)}\n`)
+    return 1
+  }
+
   const cmd = argv[0]
   if (cmd === 'preflight') return runPreflight(argv.slice(1))
   if (cmd === 'install') return runInstall(argv.slice(1))
