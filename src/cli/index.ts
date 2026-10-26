@@ -11,8 +11,7 @@ import type { InstallResult } from '../core/download/types.js'
 import { createJavaScan } from '../core/java/index.js'
 import { createJavaInstall } from '../core/java/install.js'
 import type { JavaInstallResult } from '../core/java/install.js'
-import { detectJava } from '../core/java/detect.js'
-import { pickJava, requiredJavaMajor } from '../core/java/types.js'
+import { selectJava } from '../core/java/select.js'
 import type { JavaScanResult } from '../core/java/types.js'
 import { createLaunchPlan } from '../core/launch/index.js'
 import { createLauncher } from '../core/launch/run.js'
@@ -428,31 +427,22 @@ function renderLaunch(plan: LaunchPlan, raw: boolean): string {
   return lines.join('\n')
 }
 
-/**
- * 「按版本挑 Java + 人话报错」的用例，三个子命令共用。
- * 架构评审候选 4：此前在 runLaunch / runGame 各复制 17 行、runDeploy 又一个变体。
- */
+/** 三个子命令共用「挑 Java」用例；core 负责选，这里只渲染结局。 */
 async function pickJavaOrReport(
   versionId: string | undefined,
   layoutRoot: string,
   signal: AbortSignal,
   explicit: string | undefined,
 ): Promise<string | undefined> {
-  if (explicit !== undefined) return explicit
-  const need = versionId === undefined ? undefined : requiredJavaMajor(versionId)
-  const scan = await detectJava({ signal, managedDir: join(layoutRoot, 'java') })
-  const picked =
-    need === undefined
-      ? ([...scan.installs].sort((a, b) => b.major - a.major)[0] ?? null)
-      : pickJava(scan.installs, need)
-  if (picked === null) {
-    const needText = need === undefined ? '' : ` Java ${need}`
-    process.stderr.write(
-      `${C.red}没有找到可用的 Java${needText}${C.reset}（本机：${scan.installs.map((j) => j.major).join(', ') || '无'}）\n`,
-    )
-    return undefined
-  }
-  return picked.path
+  const outcome = await selectJava({
+    ...(versionId === undefined ? {} : { versionId }),
+    layoutRoot,
+    signal,
+    ...(explicit === undefined ? {} : { explicit }),
+  })
+  if (outcome.ok) return outcome.path
+  process.stderr.write(`${C.red}${outcome.message}${C.reset}\n`)
+  return undefined
 }
 
 async function runLaunch(argv: readonly string[]): Promise<number> {

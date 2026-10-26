@@ -92,3 +92,29 @@ test('没有 mods 目录：仍然给出结论，并解释为什么定位不到',
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('index 生命周期是参数：注入的索引优先，不再扫 mods 目录', async () => {
+  const { buildModIndex } = await import('./attribution.js')
+  const dir = mkdtempSync(join(tmpdir(), 'bp-diag-index-'))
+  try {
+    // 磁盘上的 mods 目录里没有 demo-mod；注入的索引里有
+    mkdirSync(join(dir, 'mods'), { recursive: true })
+    const indexPath = join(dir, 'index-src', 'mods')
+    mkdirSync(indexPath, { recursive: true })
+    writeFileSync(
+      join(indexPath, 'demo-mod.jar'),
+      zipSync({
+        'fabric.mod.json': strToU8(JSON.stringify({ id: 'demo-mod', version: '1.0.0' })),
+        'com/demo/mod/Main.class': strToU8('x'),
+      }),
+    )
+    const index = buildModIndex(indexPath)
+
+    const logPath = join(dir, 'x.log')
+    writeFileSync(logPath, LOG)
+    const r = await collect(createDiagnose({ logPath, modsDir: join(dir, 'mods'), index }))
+    assert.equal(r.culprits[0]?.modId, 'demo-mod')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

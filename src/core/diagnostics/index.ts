@@ -4,7 +4,7 @@ import { Op } from '../events.js'
 import { defineOperation } from '../operation.js'
 import type { Operation } from '../operation.js'
 import { attributeCulprits, buildModIndex, EMPTY_INDEX } from './attribution.js'
-import type { Culprit } from './attribution.js'
+import type { Culprit, ModIndex } from './attribution.js'
 import { analyzeLog, primarySignal } from './crash.js'
 import type { CrashSignal, CrashKind } from './crash.js'
 import { parseFrames } from './frames.js'
@@ -52,6 +52,14 @@ export interface DiagOptions {
   readonly logPath: string
   /** 实例的 mods 目录。给了才能把栈帧归到具体模组 */
   readonly modsDir?: string
+  /**
+   * 预建的包名索引。给了就不扫 mods 目录。
+   *
+   * 索引的生命周期是调用方的事，不是调用链内部细节——MCP 高频调用时可以
+   * 自己缓存（按 mtime 失效），同一旅程的 preflight 也能复用同一份 jar 读取。
+   * 不给就走缺省：每次全量扫（46 模组约 635ms）。
+   */
+  readonly index?: ModIndex
 }
 
 export type DiagVerdict = 'crash' | 'inconclusive' | 'clean'
@@ -91,9 +99,10 @@ export function createDiagnose(opts: DiagOptions): Operation<DiagResult> {
 
     const frames = parseFrames(lines)
     const index =
-      opts.modsDir === undefined || !existsSync(opts.modsDir)
+      opts.index ??
+      (opts.modsDir === undefined || !existsSync(opts.modsDir)
         ? EMPTY_INDEX
-        : buildModIndex(opts.modsDir)
+        : buildModIndex(opts.modsDir))
     const attribution = attributeCulprits({ lines, index, frames })
 
     // 结论要带着「指向谁」一起说，否则用户读到的是一条没有主语的建议

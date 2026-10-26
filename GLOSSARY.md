@@ -48,6 +48,18 @@ Operation 的唯一输出形式。core 内不允许直接写 stdout——所有�
 **Consumer（消费者）**
 订阅 OpEvent 的外壳。目前有 `cli` 和 `mcp`，未来的 `gui` 是第三个。Consumer 之间不共享代码，只共享 core。
 
+**Renderer（渲染器）**
+Consumer 内部的 module：接收 `OpEvent` 流，产出人类/AI 可读的输出，并把它映射成退出码。缺省渲染（进度单行刷新、failed 红字）在这里实现一次，子命令只声明差异。见 `cli/ui.ts` 的 `consume`。
+
+**Operation forward（步骤转发）**
+把一个子 Operation 的事件接进父 Operation 的契约：log/progress 原样转发、`result` 交给回调、`done` 丢弃、`failed` 转发并中止整体。见 `deploy.ts` 的 `forwardStep`。
+
+**Download batch（下载批）**
+一组 `DownloadTask` 的并发执行 module：输入 task 流与事件码前缀，产出计数、ok/cached/failed 事件、进度，结束返回汇总。见 `download/batch.ts`。
+
+**Pack reader（整合包读取）**
+「路径 → Instance + 这个格式能做什么」的 module。能力声明用 `givesDownloadUrls` / `checksMods` 表达，消费者据此决定能做什么检查，而不是各自判断格式。见 `preflight/read-pack.ts`。
+
 **Capability group（能力组）**
 MCP 暴露的工具分组，六组：`instance` / `package` / `config` / `repository` / `account` / `loader`。
 
