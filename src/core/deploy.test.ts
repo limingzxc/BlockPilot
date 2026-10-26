@@ -195,7 +195,7 @@ test('CurseForge 包：明确拒绝而不是含糊的 BAD_MODPACK', async () => 
     )
     const op = createDeploy({ packPath, layout: resolveLayout(dir, 'test') })
     const { failed } = await collectEvents(op.run(new AbortController().signal))
-    assert.equal(failed?.code, 'CF_API_KEY_REQUIRED')
+    assert.equal(failed?.code, 'CF_API_REQUIRED')
   })
 })
 

@@ -106,3 +106,46 @@ test('zip 里没有 manifest.json 时给出明确的错', () => {
     assert.throws(() => readCurseforgePack(p), /manifest\.json/)
   })
 })
+
+test('readPackFile：一个入口同时认 mrpack 与 CF，并声明能力', async () => {
+  const { readPackFile } = await import('./read-pack.js')
+  const dir = mkdtempSync(join(tmpdir(), 'bp-readpack-'))
+  try {
+    const cfPath = join(dir, 'cf.zip')
+    writeFileSync(cfPath, zipSync({ 'manifest.json': strToU8(JSON.stringify(SAMPLE)) }))
+    const cf = readPackFile(cfPath)
+    assert.equal(cf.kind, 'curseforge')
+    assert.equal(cf.ability.givesDownloadUrls, false)
+    assert.equal(cf.ability.checksMods, false)
+    assert.equal(cf.instance.gameVersion, '1.20.1')
+    assert.equal(cf.mrpackIndex, undefined)
+
+    const mrPath = join(dir, 'pack.mrpack')
+    writeFileSync(
+      mrPath,
+      zipSync({
+        'modrinth.index.json': strToU8(
+          JSON.stringify({
+            formatVersion: 1,
+            game: 'minecraft',
+            versionId: '1.0.0',
+            name: 'P',
+            files: [],
+            dependencies: { minecraft: '1.20.1', 'fabric-loader': '0.16.14' },
+          }),
+        ),
+      }),
+    )
+    const mr = readPackFile(mrPath)
+    assert.equal(mr.kind, 'mrpack')
+    assert.equal(mr.ability.givesDownloadUrls, true)
+    assert.ok(mr.mrpackIndex !== undefined)
+
+    // 两种都不是 → 抛错，由调用方转成 BAD_MODPACK
+    const bogus = join(dir, 'x.zip')
+    writeFileSync(bogus, zipSync({ 'readme.txt': strToU8('hi') }))
+    assert.throws(() => readPackFile(bogus), /无法解析整合包/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

@@ -35,7 +35,9 @@ CF 的 manifest 是公开格式，字段在多个启动器的文档里一致：
 
 ### 2. deploy 明确拒绝，而不是含糊报错
 
-对 CF zip，deploy 直接返回 `CF_API_KEY_REQUIRED`，说明为什么装不了。否则它会在 mrpack 解析那一步报一个含糊的 `BAD_MODPACK`——用户会以为是包坏了。
+对 CF zip，deploy 直接返回 `CF_API_REQUIRED`，说明为什么装不了。否则它会在 mrpack 解析那一步报一个含糊的 `BAD_MODPACK`——用户会以为是包坏了。
+
+（原先 deploy 用的是 `CF_API_KEY_REQUIRED`，与 preflight 的 `CF_API_REQUIRED` 是两个码。ADR-0022 之后的架构评审把格式判断收进 `readPackFile`，两个消费者共用同一个码。）
 
 ### 3. 没有实现「带 key 的 CF 支持」
 

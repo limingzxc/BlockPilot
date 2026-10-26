@@ -7,8 +7,7 @@ import { defaultSources } from './download/sources.js'
 import type { DownloadSource } from './download/types.js'
 import type { Layout } from './layout.js'
 import type { LoaderKind } from './instance.js'
-import { mrpackToInstance, readMrpackIndex } from './preflight/mrpack.js'
-import { isCurseforgeZip } from './preflight/curseforge.js'
+import { readPackFile } from './preflight/read-pack.js'
 import { checkLocalInstance } from './preflight/local.js'
 import { verdictOf } from './preflight/types.js'
 import type { Finding, Verdict } from './preflight/types.js'
@@ -114,20 +113,31 @@ export interface DeployResult {
 
 export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
   return defineOperation<DeployResult>('deploy', async function* (signal) {
-    // CurseForge 的 zip 提前拦下：fileID → 下载 URL 必须查 CF 的 API（要 key），
-    // 走到 mrpack 解析那一步只会得到一个含糊的 BAD_MODPACK
-    if (isCurseforgeZip(opts.packPath)) {
+    let pack
+    try {
+      pack = readPackFile(opts.packPath)
+    } catch (err) {
       yield Op.failed(
-        'CF_API_KEY_REQUIRED',
+        'BAD_MODPACK',
+        String(err instanceof Error ? err.message : err),
+        '目前支持 .mrpack、CurseForge 的 .zip（带 manifest.json）',
+      )
+      return
+    }
+    const instance = pack.instance
+
+    // CurseForge：fileID → 下载 URL 必须查 CF 的 API（要 key）。
+    // 事件码与 preflight 统一为 CF_API_REQUIRED，消费者可一处匹配
+    if (pack.mrpackIndex === undefined || !pack.ability.givesDownloadUrls) {
+      yield Op.failed(
+        'CF_API_REQUIRED',
         '这是 CurseForge 整合包，下载它的文件需要 CurseForge API key',
         '文件清单只有 projectID/fileID，要拿到 URL 与校验值必须调 API；' +
           '可以先跑 preflight 看 MC 版本与加载器',
       )
       return
     }
-
-    const index = readMrpackIndex(opts.packPath)
-    const instance = mrpackToInstance(index)
+    const index = pack.mrpackIndex
 
     yield Op.log('info', 'deploy.pack', {
       name: index.name,

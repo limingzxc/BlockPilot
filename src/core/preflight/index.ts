@@ -12,8 +12,7 @@ import type { RepairPlan } from '../deps/plan.js'
 import { checkLocalInstance } from './local.js'
 import { scanInstanceDir } from '../instance/scan.js'
 import type { ScannedMod } from '../instance/scan.js'
-import { mrpackToInstance, readMrpackIndex } from './mrpack.js'
-import { isCurseforgeZip, readCurseforgePack } from './curseforge.js'
+import { readPackFile } from './read-pack.js'
 import { checkInstance, checkJava } from './check.js'
 import { verdictOf } from './types.js'
 import type { Finding, PreflightReport } from './types.js'
@@ -64,37 +63,28 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
         mods: localMods.length,
         skipped: skippedJars.length,
       })
-    } else if (isCurseforgeZip(opts.target)) {
-      // CF 的 files 只有 projectID/fileID，下载与校验都要 API key。
-      // 这里只解析 manifest：MC 版本、加载器、文件数——Java 判定仍然有效
-      const pack = readCurseforgePack(opts.target)
-      instance = pack.instance
-      cfGated = true
-      yield Op.log('info', 'modpack.curseforge', {
-        name: instance.name,
-        gameVersion: instance.gameVersion,
-        loader: instance.loader,
-        files: pack.manifest.files.length,
-      })
     } else {
       yield Op.log('info', 'modpack.reading', { path: opts.target })
       try {
-        const index = readMrpackIndex(opts.target)
-        instance = mrpackToInstance(index)
+        const pack = readPackFile(opts.target)
+        instance = pack.instance
+        // CF 的 files 只有 projectID/fileID，下载与校验都要 API key。
+        // 能力声明由 readPackFile 一处给出，消费者不再各自判断格式
+        cfGated = !pack.ability.checksMods
+        yield Op.log('info', pack.kind === 'curseforge' ? 'modpack.curseforge' : 'modpack.parsed', {
+          name: instance.name,
+          gameVersion: instance.gameVersion,
+          loader: instance.loader,
+          mods: instance.mods.length,
+        })
       } catch (err) {
         yield Op.failed(
           'BAD_MODPACK',
-          `无法解析整合包：${String(err)}`,
+          String(err instanceof Error ? err.message : err),
           '目前支持 .mrpack、CurseForge 的 .zip（带 manifest.json）和实例目录',
         )
         return
       }
-      yield Op.log('info', 'modpack.parsed', {
-        name: instance.name,
-        gameVersion: instance.gameVersion,
-        loader: instance.loader,
-        mods: instance.mods.length,
-      })
     }
 
     if (signal.aborted) return
