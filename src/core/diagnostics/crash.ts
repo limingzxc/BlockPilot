@@ -20,6 +20,7 @@ export type CrashKind =
   | 'natives'
   | 'graphics'
   | 'mod-crash'
+  | 'auth-failed'
   | 'unknown'
 
 export interface CrashSignal {
@@ -107,6 +108,18 @@ const RULES: readonly Rule[] = [
     kind: 'graphics',
     severity: 'fatal',
     hint: '显卡驱动或 OpenGL 版本不够。更新驱动，或换用 Mesa/软件渲染',
+  },
+
+  // ---- 认证 ----
+  {
+    // 游戏不会因此崩，但只能单机、进不了服务器；错误信息埋在启动前几行，
+    // 很容易被当成「网络问题」而永远查不出原因
+    // 包住整条 authlib 异常链：`Caused by: ...MinecraftClientHttpException` 是同一件事，
+    // 漏了它就会掉进兜底规则，被当成「某个模组的问题」指错方向
+    re: /InvalidCredentialsException|Failed to verify authentication|authlib\.exceptions\.|MinecraftClientHttpException|profile key pair/i,
+    kind: 'auth-failed',
+    severity: 'warning',
+    hint: '正版令牌无效或已过期。跑 blockpilot login 重新授权；只玩单机可以忽略',
   },
 
   // ---- 兜底：任何未被上面覆盖的异常 ----

@@ -21,6 +21,8 @@ import type { DiagResult } from '../core/diagnostics/index.js'
 import type { RunResult } from '../core/launch/run.js'
 import type { LaunchPlan } from '../core/launch/plan.js'
 import { defaultRoot, resolveLayout } from '../core/layout.js'
+import { authStorePath, createLogin, isAuthError, loadStore, removeAccount, resolveAccount } from '../core/auth/index.js'
+import type { AuthAccount } from '../core/auth/types.js'
 import { createVanillaSetup, pickSources } from '../core/setup/vanilla.js'
 import { createAssetsSetup } from '../core/setup/assets.js'
 import { createFabricSetup } from '../core/setup/fabric.js'
@@ -109,8 +111,10 @@ function usage(): void {
   blockpilot assets <version> [--root <dir>] [--china] [--dry-run] [--concurrency <n>]
   blockpilot fabric <gameVersion> [--root <dir>] [--loader <ver>] [--china]
   blockpilot deploy <pack.mrpack> [--root <dir>] [--instance <name>] [--china]
-  blockpilot launch <version> [--root <dir>] [--instance <name>] [--java <path>] [--memory <MB>] [--raw]
-  blockpilot run    <version> [--root <dir>] [--instance <name>] [--memory <MB>] [--quiet] [--stop <秒>]
+  blockpilot login     [--root <dir>] [--client-id <uuid>]
+  blockpilot accounts  [--root <dir>] [--remove <name|uuid>]
+  blockpilot launch <version> [--root <dir>] [--instance <name>] [--java <path>] [--memory <MB>] [--account <name>] [--offline] [--raw]
+  blockpilot run    <version> [--root <dir>] [--instance <name>] [--memory <MB>] [--account <name>] [--offline] [--quiet] [--stop <秒>]
 
   所有子命令通用：  --proxy <url>   走 HTTP 代理（也读 HTTPS_PROXY 环境变量）
                     影响元数据、下载与 installer；如 http://127.0.0.1:1081
@@ -126,6 +130,10 @@ function usage(): void {
             --no-host 跳过本机 Java / 内存检测（省 1–3 秒）
   java      列出本机可用的 Java 运行时
   java install <major> [--root <dir>]   从 Adoptium 下载并解压 JRE 到 <root>/java
+  login     用微软账号登录（设备码：给你一个网址和一个短码，在浏览器里输）
+            需要自己的 Azure 应用 id：--client-id 或 BLOCKPILOT_CLIENT_ID
+            client id 注册一次就够，见 ADR-0024
+  accounts  列出已保存的账号；--remove <name|uuid> 删掉一个
 
   --root    数据根目录，默认 ${defaultRoot()}
             用户只需要选这一次；实例目录由 --instance 自动派生
@@ -140,6 +148,8 @@ function usage(): void {
   run       真的启动游戏，转发日志并落盘到 <实例>/logs/
             --quiet 只显示 ERROR 级日志
             --stop <秒> 到时自动结束（测试用）
+            --account <name>  用指定账号（在线）；缺省用上次登录的那个
+            --offline         强制离线模式，不读账号存档
   logs      列出会话日志
   diag      分析最近的会话日志，把异常归类成可理解的结论
             --file <path> 指定日志；默认取最新一份
@@ -400,6 +410,8 @@ function renderLaunch(plan: LaunchPlan, raw: boolean): string {
   lines.push(`${C.bold}BlockPilot launch${C.reset}`)
   lines.push('')
   lines.push(`  版本      ${plan.versionId}`)
+  const who = plan.mode === 'online' ? `${plan.playerName}（正版）` : `${plan.playerName}（离线）`
+  lines.push(`  身份      ${who}`)
   lines.push(`  Java      ${plan.java}`)
   lines.push(`  主类      ${plan.mainClass}`)
   lines.push(`  类路径    ${plan.classpath.length} 个 jar`)
@@ -445,6 +457,132 @@ async function pickJavaOrReport(
   return undefined
 }
 
+/**
+ * 为启动挑账号。
+ *
+ * 三种情况分开处理，因为「用户此刻想要什么」不同：
+ *   --offline     明确要离线，不问存档
+ *   有存档        用它（过期就自动刷新）
+ *   没存档        离线，并在 stderr 说明一句
+ *
+ * 点名要 `--account` 却拿不到时退出码非零：他要的是在线身份，
+ * 悄悄用离线身份进去，朋友会看到「这不是你」。
+ */
+async function resolveAuth(
+  argv: readonly string[],
+  layout: ReturnType<typeof resolveLayout>,
+  signal: AbortSignal,
+): Promise<{ ok: true; account?: AuthAccount } | { ok: false }> {
+  if (argv.includes('--offline')) return { ok: true }
+
+  const selector = argOf(argv, '--account')
+  try {
+    const r = await resolveAccount({
+      storePath: authStorePath(layout.root),
+      ...(selector === undefined ? {} : { selector }),
+      signal,
+    })
+    if (r.kind === 'online') {
+      const note = r.refreshed ? '（令牌已刷新）' : ''
+      process.stderr.write(`${C.dim}· 账号 ${r.account.name}${note}${C.reset}\n`)
+      return { ok: true, account: r.account }
+    }
+    process.stderr.write(`${C.dim}· 离线模式：${r.reason}${C.reset}\n`)
+    return { ok: true }
+  } catch (err) {
+    if (!isAuthError(err)) throw err
+    process.stderr.write(`${C.red}${err.code}${C.reset}: ${err.message}\n`)
+    if (err.hint !== undefined) process.stderr.write(`${C.dim}${err.hint}${C.reset}\n`)
+    return { ok: false }
+  }
+}
+
+function runLogin(argv: readonly string[]): Promise<number> {
+  const root = argOf(argv, '--root') ?? defaultRoot()
+  const layout = resolveLayout(root, 'default')
+  const clientId = argOf(argv, '--client-id') ?? process.env['BLOCKPILOT_CLIENT_ID'] ?? ''
+  const signal = createInterrupt().signal
+
+  process.stdout.write('\n')
+  process.stdout.write(`  ${C.bold}BlockPilot login${C.reset}  ${C.dim}微软账号 · 设备码${C.reset}\n\n`)
+
+  return consume(
+    createLogin({ clientId, storePath: authStorePath(layout.root) }),
+    {
+      log: (ev) => {
+        if (ev.code === 'auth.device_code') {
+          const d = ev.data as { userCode: string; verificationUri: string; expiresInSec: number }
+          process.stdout.write('\n')
+          process.stdout.write(`  ${C.bold}1.${C.reset} 打开  ${C.cyan}${d.verificationUri}${C.reset}\n`)
+          process.stdout.write(`  ${C.bold}2.${C.reset} 输入  ${C.bold}${d.userCode}${C.reset}\n\n`)
+          process.stdout.write(
+            `  ${C.dim}等待授权…（${Math.round(d.expiresInSec / 60)} 分钟内有效，Ctrl+C 取消）${C.reset}\n\n`,
+          )
+          return
+        }
+        if (ev.code === 'auth.step') {
+          const step = (ev.data as { step?: string } | undefined)?.step ?? ''
+          const text: Record<string, string> = {
+            device_code: '申请设备码',
+            waiting: '等待你在浏览器里完成授权',
+            xbox: '换取 Xbox / Minecraft 令牌',
+          }
+          process.stderr.write(`${C.dim}· ${text[step] ?? step}${C.reset}\n`)
+          return
+        }
+        process.stderr.write(`${C.dim}· ${ev.code}${C.reset}\n`)
+      },
+      result: (acc) => {
+        process.stdout.write(`  ${C.green}登录成功${C.reset}  ${C.bold}${acc.name}${C.reset}\n`)
+        process.stdout.write(`  ${C.dim}uuid ${acc.uuid}${C.reset}\n`)
+        process.stdout.write(
+          `  ${C.dim}令牌有效至 ${new Date(acc.expiresAt).toLocaleString()}${C.reset}\n\n`,
+        )
+        return 0
+      },
+    },
+    signal,
+  )
+}
+
+async function runAccounts(argv: readonly string[]): Promise<number> {
+  const root = argOf(argv, '--root') ?? defaultRoot()
+  const layout = resolveLayout(root, 'default')
+  const storePath = authStorePath(layout.root)
+  const remove = argOf(argv, '--remove')
+
+  process.stdout.write('\n')
+  if (remove !== undefined) {
+    const removed = removeAccount(storePath, remove)
+    process.stdout.write(
+      removed
+        ? `  ${C.green}已移除${C.reset}  ${remove}\n`
+        : `  ${C.yellow}没有这个账号${C.reset}  ${remove}\n`,
+    )
+    process.stdout.write('\n')
+    return removed ? 0 : 1
+  }
+
+  const store = loadStore(storePath)
+  process.stdout.write(`  ${C.dim}${storePath}${C.reset}\n\n`)
+  if (store.accounts.length === 0) {
+    process.stdout.write(`  ${C.dim}还没有账号。跑一次 blockpilot login 会加一个。${C.reset}\n\n`)
+    return 0
+  }
+
+  const now = Date.now()
+  for (const a of store.accounts) {
+    const active = a.uuid === store.active ? `${C.green}*${C.reset}` : ' '
+    const state =
+      a.expiresAt > now + 60_000 ? `${C.dim}令牌有效${C.reset}` : `${C.yellow}令牌过期，启动时自动刷新${C.reset}`
+    const refreshable = a.refreshToken === undefined ? `${C.red}不可刷新${C.reset}` : state
+    process.stdout.write(`  ${active} ${C.bold}${a.name}${C.reset}  ${C.dim}${a.uuid}${C.reset}\n`)
+    process.stdout.write(`     ${refreshable}\n`)
+  }
+  process.stdout.write('\n')
+  return 0
+}
+
 async function runLaunch(argv: readonly string[]): Promise<number> {
   const versionId = argv[0]
   if (versionId === undefined || versionId.startsWith('--')) {
@@ -460,12 +598,16 @@ async function runLaunch(argv: readonly string[]): Promise<number> {
   const javaPath = await pickJavaOrReport(versionId, layout.root, signal, argOf(argv, '--java'))
   if (javaPath === undefined) return 1
 
+  const auth = await resolveAuth(argv, layout, signal)
+  if (!auth.ok) return 1
+
   const memArg = argOf(argv, '--memory')
   const op = createLaunchPlan({
     versionId,
     layout,
     java: javaPath,
     username: argOf(argv, '--user') ?? 'Player',
+    ...(auth.account === undefined ? {} : { account: auth.account }),
     ...(memArg === undefined ? {} : { maxMemoryMiB: Number(memArg) }),
     mirror: argv.includes('--china'),
   })
@@ -628,12 +770,16 @@ async function runGame(argv: readonly string[]): Promise<number> {
   const javaPath = await pickJavaOrReport(versionId, layout.root, signal, argOf(argv, '--java'))
   if (javaPath === undefined) return 1
 
+  const auth = await resolveAuth(argv, layout, signal)
+  if (!auth.ok) return 1
+
   const memArg = argOf(argv, '--memory')
   const planOp = createLaunchPlan({
     versionId,
     layout,
     java: javaPath,
     username: argOf(argv, '--user') ?? 'Player',
+    ...(auth.account === undefined ? {} : { account: auth.account }),
     ...(memArg === undefined ? {} : { maxMemoryMiB: Number(memArg) }),
     mirror: argv.includes('--china'),
   })
@@ -1068,6 +1214,8 @@ async function main(): Promise<number> {
   if (cmd === 'preflight') return runPreflight(argv.slice(1))
   if (cmd === 'install') return runInstall(argv.slice(1))
   if (cmd === 'java') return runJava(argv.slice(1))
+  if (cmd === 'login') return runLogin(argv.slice(1))
+  if (cmd === 'accounts') return runAccounts(argv.slice(1))
   if (cmd === 'setup') return runSetup(argv.slice(1))
   if (cmd === 'assets') return runAssets(argv.slice(1))
   if (cmd === 'fabric') return runFabric(argv.slice(1))

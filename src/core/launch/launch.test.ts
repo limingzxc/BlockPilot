@@ -149,3 +149,78 @@ test('detectEnv 产出合法的 os/arch', () => {
   assert.ok(['windows', 'osx', 'linux'].includes(env.os))
   assert.ok(['x86', 'x86_64', 'arm64'].includes(env.arch))
 })
+
+/** 1.20.1 的真实模板里这几个变量都在 game args 里 */
+function authVersion(): VersionJson {
+  const base = fakeVersion()
+  return {
+    ...base,
+    arguments: {
+      jvm: ['-cp', '${classpath}'],
+      game: [
+        '--username', '${auth_player_name}',
+        '--uuid', '${auth_uuid}',
+        '--accessToken', '${auth_access_token}',
+        '--clientId', '${clientid}',
+        '--xuid', '${auth_xuid}',
+        '--userType', '${user_type}',
+      ],
+    },
+  }
+}
+
+function planFor(account?: Parameters<typeof buildLaunchPlan>[0]['account']) {
+  return buildLaunchPlan({
+    java: 'java',
+    layout: resolveLayout('/tmp/mc', 'test'),
+    version: authVersion(),
+    rootVersionId: '1.20.1',
+    env: win,
+    username: 'Steve',
+    ...(account === undefined ? {} : { account }),
+  })
+}
+
+test('离线身份：全零 uuid、令牌 0、userType legacy', () => {
+  const plan = planFor()
+  assert.equal(plan.mode, 'offline')
+  assert.equal(plan.playerName, 'Steve')
+  assert.ok(plan.args.includes('00000000000000000000000000000000'))
+  assert.ok(plan.args.includes('legacy'))
+  assert.ok(!plan.args.includes('msa'))
+})
+
+test('正版身份：真实 uuid / 令牌 / xuid，且 userType 必须是 msa', () => {
+  const plan = planFor({
+    uuid: '069a79f444e94726a5befca90e38aaf5',
+    name: 'Notch',
+    accessToken: 'mc-token',
+    expiresAt: Date.now() + 3_600_000,
+    xuid: '2535410000000000',
+    refreshToken: 'rt',
+    clientId: 'c',
+    obtainedAt: 1,
+    userType: 'msa',
+  })
+  assert.equal(plan.mode, 'online')
+  assert.equal(plan.playerName, 'Notch')
+  assert.ok(plan.args.includes('069a79f444e94726a5befca90e38aaf5'))
+  assert.ok(plan.args.includes('mc-token'))
+  assert.ok(plan.args.includes('2535410000000000'))
+  assert.ok(plan.args.includes('msa'), 'userType 写 legacy 会让游戏忽略令牌')
+  assert.ok(!plan.args.includes('legacy'))
+  assert.equal(plan.args.filter((a) => /\$\{[a-zA-Z0-9_]+\}/.test(a)).length, 0)
+})
+
+test('正版但没拿到 xuid：退化成占位值，不产生空参数', () => {
+  const plan = planFor({
+    uuid: '069a79f444e94726a5befca90e38aaf5',
+    name: 'Notch',
+    accessToken: 'mc-token',
+    expiresAt: Date.now() + 3_600_000,
+    obtainedAt: 1,
+    userType: 'msa',
+  })
+  const i = plan.args.indexOf('--xuid')
+  assert.equal(plan.args[i + 1], '0')
+})

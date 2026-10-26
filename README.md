@@ -222,6 +222,48 @@ Fabric 的 profile 只有 8 个库和主类，其余全靠 `inheritsFrom` 合并
 
 **默认取最新 loader 不一定对**：0.20.1 跑 1.20.1 会崩在 `RenderSystem`，换同期 0.15.11 正常。`--loader` 是必要的逃生口。
 
+## 正版登录
+
+```bash
+export BLOCKPILOT_CLIENT_ID=<你的 Azure 应用 id>   # 注册一次即可
+npx tsx src/cli/index.ts login --root D:/mc
+```
+
+```
+  BlockPilot login  微软账号 · 设备码
+
+  1. 打开  https://microsoft.com/link
+  2. 输入  AB12-CD34
+
+  等待授权…（15 分钟内有效，Ctrl+C 取消）
+
+  登录成功  Notch
+  uuid 069a79f444e94726a5befca90e38aaf5
+```
+
+**为什么要自己注册一个 App**：第三方启动器不能复用官方启动器的应用 id——那是冒充。
+注册是免费的，在 portal.azure.com 建一个「个人账号」应用，开启「允许公共客户端流」，
+加一条委托权限 `XboxLive.signin` 就行。细节见 [ADR-0024](docs/adr/0024-microsoft-auth.md)。
+
+选设备码而不是内嵌登录框，理由不是省事：**参考实现不该让用户在无法审查的代码里输微软密码**。
+密码留在微软自己的页面上，我们只拿一个短时效的码。
+
+账号存在 `<root>/auth/accounts.json`（明文，权限 0600）。能读到这个文件的人就能接管账号，
+所以它不进 git、不进日志，CLI 也只显示名字与 uuid。
+
+```bash
+blockpilot accounts                      # 列出账号
+blockpilot run 1.20.1 --account Notch    # 指定账号
+blockpilot run 1.20.1 --offline          # 强制离线，不读存档
+```
+
+令牌过期会**自动刷新**（走完整三跳，因为 MC 令牌不能续 XSTS）。两种失败刻意不同：
+
+| 场景 | 行为 |
+|---|---|
+| 默认账号刷不动 | 退回离线并说明原因——玩家多半只想玩单人 |
+| `--account` 点名的账号不可用 | 退出码 1——他要的是在线身份，悄悄用离线会让他朋友看到「这不是你」 |
+
 ## 真的启动
 
 ```bash
@@ -341,11 +383,14 @@ npx tsx src/cli/index.ts install fixtures/closure.mrpack --mods-dir /tmp/mods
 
 | 源 | 覆盖 | 实测（2026-10-25） |
 |---|---|---|
-| `bmclapi` | Mojang 版本/资源/库、Forge/NeoForge/Fabric maven | 可用 |
+| `bmclapi` | Mojang 版本/资源/库、Forge/Fabric maven | 可用；**neoforged 路由是空壳**（302 后无内容） |
+| `neoforge-cdn` | `maven.neoforged.net` | 可用，路径完全兼容，sha1 与官方一致 |
 | `direct` | 全部 | — |
 | `mcim` | Modrinth / CurseForge 文件 | API `200`；文件可能 302 跳回官方（未缓存） |
 
-默认顺序 `[bmclapi, direct, mcim]`：MCIM 官方自己建议「下载失败后再用镜像」，所以放在直连之后。要国内优先用 `chinaFirstSources()`，CLI 里加 `--china`。
+默认顺序 `[bmclapi, neoforge-cdn, direct, mcim]`：MCIM 官方自己建议「下载失败后再用镜像」，所以放在直连之后。要国内优先用 `chinaFirstSources()`，CLI 里加 `--china`。
+
+NeoForge 的 installer 还会被重打包：把 `install_profile.json` 与 `version.json` 里的 `maven.neoforged.net` 换成镜像域名，这样它自己下载依赖时也走镜像。有代理时保持原包直连官方，见 [ADR-0022](docs/adr/0022-neoforge-mirror.md)。
 
 **BMCLAPI 不覆盖 Modrinth CDN**，对模组文件没意义；它加速的是启动原版游戏要用的那些资源。反过来，MCIM 真正的价值在 API 加速——`ModrinthSource` 支持传 `apiBase: MODRINTH_API_MCIM`。
 
@@ -382,7 +427,7 @@ npx tsx src/cli/index.ts install fixtures/closure.mrpack --mods-dir /tmp/mods
 
 早期，但核心链路已经通了。
 
-**已完成**：`.mrpack` / CurseForge zip / 实例目录三种输入解析、jar 元数据读取（fabric/forge/neoforge/quilt，含 `provides` 与 jar-in-jar）、约束检查（含版本范围）、递归依赖闭包、可执行修复计划、并发下载（哈希校验 / 多源降级 / 缓存命中）、Java 检测与自动安装、原版安装（client jar + libraries + assetIndex + natives + assets）、启动命令生成、进程启动与日志落盘、崩溃日志分析与栈帧归属、Java 的 tar.gz 安装（Linux/macOS 代码就绪）、Modrinth 元数据源、CLI 与 MCP 两个消费者。
+**已完成**：`.mrpack` / CurseForge zip / 实例目录三种输入解析、jar 元数据读取（fabric/forge/neoforge/quilt，含 `provides` 与 jar-in-jar）、约束检查（含版本范围）、递归依赖闭包、可执行修复计划、并发下载（哈希校验 / 多源降级 / 缓存命中）、Java 检测与自动安装、原版安装（client jar + libraries + assetIndex + natives + assets）、启动命令生成、进程启动与日志落盘、崩溃日志分析与栈帧归属、**微软账号正版登录（设备码 / 令牌自动刷新）**、Java 的 tar.gz 安装（Linux/macOS 代码就绪）、Modrinth 元数据源、CLI 与 MCP 两个消费者。
 
 **全链路已跑通**：`.mrpack` → 部署 → 自检 → 启动 → 崩溃 → 日志 → 定位。
 
@@ -395,10 +440,12 @@ npx tsx src/cli/index.ts install fixtures/closure.mrpack --mods-dir /tmp/mods
 | Fabulously Optimized 6.5.0（50 mod / 1.21.1） | 151 mods loaded，图集全部创建 |
 | Forge 47.3.0 + JEI + AppleSkin | `Launching target 'forgeclient'`，两个 mod 均生效 |
 | NeoForge 21.1.264（经代理）/ 21.1.265（无代理走镜像） | ModLauncher 11.0.5，OpenAL 与全部图集成功 |
+| 正版登录 | 端点与错误映射已验证；**真实登录未实测**（需自备 Azure 应用 id 与正版账号，见 ADR-0024） |
 
 **未开始 / 刻意不做**：
 
 - **CurseForge 下载**——要 API key 才能实测，没实测的不发布（预检已支持，见 ADR-0021）
+- **正版登录的实测**——同上，需要使用者自备 Azure 应用与账号；代码与测试都已就绪
 - **版本求解**——ADR-0003 刻意不做：Modrinth 元数据没有版本范围，硬做等于用假精度骗自己
 - **GUI**——参考实现的价值在协议与分层，GUI 会把依赖和复杂度翻倍
 

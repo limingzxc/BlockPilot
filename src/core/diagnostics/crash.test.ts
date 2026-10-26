@@ -124,3 +124,12 @@ test('primarySignal 优先 fatal', () => {
 test('没有命中时 primarySignal 返回 null', () => {
   assert.equal(primarySignal(analyze('all good')), null)
 })
+
+test('不认的令牌归因到认证，而不是当成模组异常', () => {
+  const s = analyze(
+    'com.mojang.authlib.exceptions.InvalidCredentialsException: Status: 401',
+  )
+  assert.equal(s[0]?.kind, 'auth-failed')
+  assert.equal(s[0]?.severity, 'warning')
+  assert.match(s[0]?.hint ?? '', /blockpilot login/)
+})

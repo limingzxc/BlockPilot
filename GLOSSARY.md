@@ -60,6 +60,15 @@ Consumer 内部的 module：接收 `OpEvent` 流，产出人类/AI 可读的输�
 **Pack reader（整合包读取）**
 「路径 → Instance + 这个格式能做什么」的 module。能力声明用 `givesDownloadUrls` / `checksMods` 表达，消费者据此决定能做什么检查，而不是各自判断格式。见 `preflight/read-pack.ts`。
 
+**Auth chain（认证链）**
+微软账号 → Xbox Live → XSTS → Minecraft 的四段令牌交换。每段的令牌只对下一段有效，不能复用也不能跳过。见 `core/auth/xbox.ts`。
+
+**Device code（设备码）**
+OAuth 的一种授权方式：服务端给出一组 `user_code` + `verification_uri`，用户在任意设备的浏览器里输入，程序轮询 `device_code` 直到完成。密码不经过调用方。
+
+**Account store（账号存档）**
+`<root>/auth/accounts.json`。只存「够启动 + 够刷新」的字段（uuid/name/accessToken/refreshToken/clientId）。明文、0600、原子写。见 ADR-0024。
+
 **Capability group（能力组）**
 MCP 暴露的工具分组，六组：`instance` / `package` / `config` / `repository` / `account` / `loader`。
 

@@ -20,6 +20,8 @@ function planWith(script: string, cwd: string): LaunchPlan {
     java: process.execPath,
     mainClass: 'FakeMain',
     versionId: 'fake-1.0.0',
+    mode: 'offline',
+    playerName: 'Player',
     args: ['-e', script],
     cwd,
     classpath: [],

@@ -1,6 +1,7 @@
 import { Op } from '../events.js'
 import { defineOperation } from '../operation.js'
 import type { Operation } from '../operation.js'
+import type { AuthAccount } from '../auth/types.js'
 import type { Layout } from '../layout.js'
 import { fetchVersionJson } from '../version/fetch.js'
 import { resolveVersion } from '../version/resolve.js'
@@ -13,6 +14,8 @@ export interface LaunchOptions {
   readonly layout: Layout
   readonly java: string
   readonly username?: string
+  /** 在线账号。给了按正版身份启动 */
+  readonly account?: AuthAccount
   readonly maxMemoryMiB?: number
   /** 走 BMCLAPI 拉版本 JSON */
   readonly mirror?: boolean
@@ -49,6 +52,7 @@ export function createLaunchPlan(opts: LaunchOptions): Operation<LaunchPlan> {
       rootVersionId: resolved.rootId,
       env,
       username: opts.username ?? 'Player',
+      ...(opts.account === undefined ? {} : { account: opts.account }),
       ...(opts.maxMemoryMiB === undefined ? {} : { maxMemoryMiB: opts.maxMemoryMiB }),
     })
 
