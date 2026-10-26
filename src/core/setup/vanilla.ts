@@ -7,7 +7,7 @@ import type { OpEvent } from '../events.js'
 import { defineOperation } from '../operation.js'
 import type { Operation } from '../operation.js'
 import { downloadOne } from '../download/downloader.js'
-import { AsyncQueue, runPool } from '../download/queue.js'
+import { runDownloadBatch } from '../download/batch.js'
 import { defaultSources, chinaFirstSources } from '../download/sources.js'
 import type { DownloadSource, DownloadTask } from '../download/types.js'
 import type { Layout } from '../layout.js'
@@ -154,40 +154,13 @@ export function createVanillaSetup(opts: VanillaSetupOptions): Operation<Vanilla
     const sources = opts.sources ?? defaultSources()
     const concurrency = opts.concurrency ?? 4
 
-    const queue = new AsyncQueue<OpEvent<never>>()
-    const failed: { fileName: string; error: string }[] = []
-    let done = 0
-    let downloaded = 0
-    let skipped = 0
-    let bytes = 0
-
-    const runner = runPool(tasks, concurrency, async (task) => {
-      if (signal.aborted) return
-      try {
-        const outcome = await downloadOne(task, sources, signal)
-        if (outcome.skipped) skipped += 1
-        else {
-          downloaded += 1
-          bytes += outcome.bytes
-        }
-        queue.push(
-          Op.log('info', outcome.skipped ? 'setup.cached' : 'setup.ok', {
-            file: task.fileName,
-            source: outcome.source,
-          }),
-        )
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        failed.push({ fileName: task.fileName, error: message })
-        queue.push(Op.log('error', 'setup.failed', { file: task.fileName, error: message }))
-      } finally {
-        done += 1
-        queue.push(Op.progress('setup', done, tasks.length, task.fileName))
-      }
-    }).finally(() => queue.close())
-
-    for await (const ev of queue.drain()) yield ev
-    await runner
+    const { downloaded, skipped, bytes, failed } = yield* runDownloadBatch({
+      tasks,
+      sources,
+      concurrency,
+      signal,
+      codes: { ok: 'setup.ok', cached: 'setup.cached', failed: 'setup.failed', progressId: 'setup' },
+    })
 
     const nativesExtracted = extractNatives(version, env, opts.layout)
     yield Op.log('info', 'setup.natives', { extracted: nativesExtracted })

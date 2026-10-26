@@ -6,7 +6,7 @@ import type { OpEvent } from '../events.js'
 import { defineOperation } from '../operation.js'
 import type { Operation } from '../operation.js'
 import { downloadOne } from '../download/downloader.js'
-import { AsyncQueue, runPool } from '../download/queue.js'
+import { runDownloadBatch } from '../download/batch.js'
 import { defaultSources } from '../download/sources.js'
 import type { DownloadSource, DownloadTask } from '../download/types.js'
 import type { Layout } from '../layout.js'
@@ -111,38 +111,16 @@ export function createAssetsSetup(opts: AssetsSetupOptions): Operation<AssetsSet
     const concurrency = opts.concurrency ?? 8
     const reportEvery = opts.progressEvery ?? 50
 
-    const queue = new AsyncQueue<OpEvent<never>>()
-    const failed: { fileName: string; error: string }[] = []
-    let done = 0
-    let downloaded = 0
-    let skipped = 0
-    let bytes = 0
-
-    const runner = runPool(tasks, concurrency, async (task) => {
-      if (signal.aborted) return
-      try {
-        const outcome = await downloadOne(task, sources, signal)
-        if (outcome.skipped) skipped += 1
-        else {
-          downloaded += 1
-          bytes += outcome.bytes
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        failed.push({ fileName: task.fileName, error: message })
-        // 失败必须逐条报，否则用户不知道该重试什么
-        queue.push(Op.log('error', 'assets.failed', { file: task.fileName, error: message }))
-      } finally {
-        done += 1
-        // 3598 个事件会把 CLI 刷爆，按批次报
-        if (done % reportEvery === 0 || done === tasks.length) {
-          queue.push(Op.progress('assets', done, tasks.length, `${done}/${tasks.length}`))
-        }
-      }
-    }).finally(() => queue.close())
-
-    for await (const ev of queue.drain()) yield ev
-    await runner
+    // 3598 个文件逐条报会把 CLI 刷爆：不逐文件发 log，进度按批次报
+    const { downloaded, skipped, bytes, failed } = yield* runDownloadBatch({
+      tasks,
+      sources,
+      concurrency,
+      signal,
+      codes: { ok: 'assets.ok', cached: 'assets.cached', failed: 'assets.failed', progressId: 'assets' },
+      logPerFile: false,
+      progressEvery: reportEvery,
+    })
 
     yield Op.result({
       indexId,

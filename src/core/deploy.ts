@@ -2,8 +2,7 @@ import { Op } from './events.js'
 import type { OpEvent } from './events.js'
 import { defineOperation } from './operation.js'
 import type { Operation } from './operation.js'
-import { downloadOne } from './download/downloader.js'
-import { AsyncQueue, runPool } from './download/queue.js'
+import { runDownloadBatch } from './download/batch.js'
 import { defaultSources } from './download/sources.js'
 import type { DownloadSource } from './download/types.js'
 import type { Layout } from './layout.js'
@@ -28,6 +27,70 @@ export interface DeployOptions {
   readonly java?: string
   /** installer 的下载走这个代理。不填用环境变量 */
   readonly proxy?: string
+  /**
+   * 步骤工厂，注入点。缺省用真实的 setup modules。
+   * 测试传假的 Operation 就能离线验证编排契约，不用下载任何东西。
+   */
+  readonly deps?: DeployDeps
+}
+
+/** 加载器步骤的契约：result.versionId 就是装完能启动的版本 id。 */
+export interface LoaderStepResult {
+  readonly versionId: string
+}
+
+export interface VanillaStepOptions {
+  readonly layout: Layout
+  readonly versionId: string
+  readonly sources: readonly DownloadSource[]
+  readonly concurrency: number
+}
+
+export interface LoaderStepOptions {
+  readonly layout: Layout
+  readonly gameVersion: string
+  readonly kind: LoaderKind
+  readonly loaderVersion: string
+  readonly java?: string
+  readonly proxy?: string
+  readonly sources: readonly DownloadSource[]
+  readonly concurrency: number
+}
+
+export interface DeployDeps {
+  /** 原版文件步骤：产出一个 result 即视为成功 */
+  readonly vanilla?: (opts: VanillaStepOptions) => Operation<unknown>
+  readonly loader?: (opts: LoaderStepOptions) => Operation<LoaderStepResult>
+}
+
+/**
+ * 转发子 Operation 的事件，返回是否以 failed 结束（`yield*` 取返回值）。
+ *
+ * 契约——deploy 对所有子步骤的约定，只写这一次：
+ * - log / progress / artifact 原样转发
+ * - result 交给 onResult 消费，不转发：result 一个 Operation 只 yield 一次，
+ *   deploy 自己还要产出自己的 result，混在一起消费者分不清
+ * - done 不转发：子步骤结束不代表整体结束
+ * - failed 原样转发并立即中止整体
+ */
+async function* forwardStep<T>(
+  step: Operation<T>,
+  signal: AbortSignal,
+  onResult: (value: T) => void,
+): AsyncGenerator<OpEvent<never>, boolean> {
+  for await (const ev of step.run(signal)) {
+    if (ev.type === 'result') {
+      onResult(ev.value)
+      continue
+    }
+    if (ev.type === 'done') continue
+    if (ev.type === 'failed') {
+      yield ev
+      return true
+    }
+    yield ev as OpEvent<never>
+  }
+  return false
 }
 
 export interface DeployResult {
@@ -86,21 +149,42 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
     const sources = opts.sources ?? defaultSources()
     const concurrency = opts.concurrency ?? 4
 
+    const deps = opts.deps ?? {}
+    const vanillaStep =
+      deps.vanilla ??
+      ((o: VanillaStepOptions) => createVanillaSetup(o))
+    const loaderStep =
+      deps.loader ??
+      ((o: LoaderStepOptions) =>
+        o.kind === 'fabric'
+          ? createFabricSetup({
+              layout: o.layout,
+              gameVersion: o.gameVersion,
+              loaderVersion: o.loaderVersion,
+              sources: o.sources,
+              concurrency: o.concurrency,
+            })
+          : createForgeSetup({
+              layout: o.layout,
+              gameVersion: o.gameVersion,
+              kind: o.kind === 'neoforge' ? 'neoforge' : 'forge',
+              forgeVersion: o.loaderVersion,
+              java: o.java ?? '',
+              ...(o.proxy === undefined ? {} : { proxy: o.proxy }),
+              sources: o.sources,
+            }))
+
     // ---- 1. 原版：client jar + libraries + assetIndex + natives ----
     yield Op.log('info', 'deploy.step', { step: 'vanilla' })
     let vanillaOk = false
-    for await (const ev of createVanillaSetup({
-      layout: opts.layout,
-      versionId: instance.gameVersion,
-      sources,
-      concurrency,
-    }).run(signal)) {
-      if (ev.type === 'result') vanillaOk = true
-      else if (ev.type === 'failed') {
-        yield ev
-        return
-      } else if (ev.type !== 'done') yield ev
-    }
+    const vanillaFailed = yield* forwardStep(
+      vanillaStep({ layout: opts.layout, versionId: instance.gameVersion, sources, concurrency }),
+      signal,
+      () => {
+        vanillaOk = true
+      },
+    )
+    if (vanillaFailed) return
     if (!vanillaOk) {
       yield Op.failed('VANILLA_FAILED', '原版文件没装完')
       return
@@ -108,44 +192,30 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
 
     // ---- 2. 加载器 ----
     yield Op.log('info', 'deploy.step', { step: 'loader' })
-    let playableVersionId: string | undefined
 
-    if (instance.loader.kind === 'fabric') {
-      for await (const ev of createFabricSetup({
+    // Forge：靠官方 installer 下载依赖并给 client 打补丁，比自己解析 install_profile 可靠
+    if (instance.loader.kind !== 'fabric' && opts.java === undefined) {
+      yield Op.failed('NEED_JAVA', 'Forge 需要 java 来跑 installer', '传 --java 或先跑 java 检测')
+      return
+    }
+    let playableVersionId: string | undefined
+    const loaderFailed = yield* forwardStep(
+      loaderStep({
         layout: opts.layout,
         gameVersion: instance.gameVersion,
+        kind: instance.loader.kind,
         loaderVersion: instance.loader.version,
+        java: opts.java,
+        proxy: opts.proxy,
         sources,
         concurrency,
-      }).run(signal)) {
-        if (ev.type === 'result') playableVersionId = (ev.value as { versionId: string }).versionId
-        else if (ev.type === 'failed') {
-          yield ev
-          return
-        } else if (ev.type !== 'done') yield ev
-      }
-    } else {
-      // Forge：靠官方 installer 下载依赖并给 client 打补丁，比自己解析 install_profile 可靠
-      if (opts.java === undefined) {
-        yield Op.failed('NEED_JAVA', 'Forge 需要 java 来跑 installer', '传 --java 或先跑 java 检测')
-        return
-      }
-      for await (const ev of createForgeSetup({
-        layout: opts.layout,
-        gameVersion: instance.gameVersion,
-        kind: instance.loader.kind === 'neoforge' ? 'neoforge' : 'forge',
-        forgeVersion: instance.loader.version,
-        java: opts.java,
-        ...(opts.proxy === undefined ? {} : { proxy: opts.proxy }),
-        sources,
-      }).run(signal)) {
-        if (ev.type === 'result') playableVersionId = (ev.value as { versionId: string }).versionId
-        else if (ev.type === 'failed') {
-          yield ev
-          return
-        } else if (ev.type !== 'done') yield ev
-      }
-    }
+      }),
+      signal,
+      (value) => {
+        playableVersionId = value.versionId
+      },
+    )
+    if (loaderFailed) return
 
     if (playableVersionId === undefined) {
       yield Op.failed('LOADER_FAILED', '加载器没装成')
@@ -155,36 +225,13 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
     // ---- 3. 整合包文件 ----
     yield Op.log('info', 'deploy.step', { step: 'files' })
     const tasks = buildPackTasks(index, opts.layout)
-    const queue = new AsyncQueue<OpEvent<never>>()
-    const failed: { fileName: string; error: string }[] = []
-    let done = 0
-    let downloaded = 0
-    let skipped = 0
-
-    const runner = runPool(tasks, concurrency, async (task) => {
-      if (signal.aborted) return
-      try {
-        const outcome = await downloadOne(task, sources, signal)
-        if (outcome.skipped) skipped += 1
-        else downloaded += 1
-        queue.push(
-          Op.log('info', outcome.skipped ? 'deploy.cached' : 'deploy.ok', {
-            file: task.fileName,
-            source: outcome.source,
-          }),
-        )
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        failed.push({ fileName: task.fileName, error: message })
-        queue.push(Op.log('error', 'deploy.failed', { file: task.fileName, error: message }))
-      } finally {
-        done += 1
-        queue.push(Op.progress('deploy', done, tasks.length, task.fileName))
-      }
-    }).finally(() => queue.close())
-
-    for await (const ev of queue.drain()) yield ev
-    await runner
+    const { downloaded, skipped, failed } = yield* runDownloadBatch({
+      tasks,
+      sources,
+      concurrency,
+      signal,
+      codes: { ok: 'deploy.ok', cached: 'deploy.cached', failed: 'deploy.failed', progressId: 'deploy' },
+    })
 
     // ---- 4. overrides ----
     yield Op.log('info', 'deploy.step', { step: 'overrides' })
