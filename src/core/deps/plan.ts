@@ -1,5 +1,8 @@
 import type { ClosureResult } from './closure.js'
 
+/** 这条安装建议有多确定。见 closure.ts 的 FindingOptions。 */
+export type InstallConfidence = 'verified' | 'unverified'
+
 /** 一条可以直接执行的安装动作。字段与下载器需要的完全对齐。 */
 export interface PlannedInstall {
   readonly projectId: string
@@ -12,6 +15,11 @@ export interface PlannedInstall {
   readonly hashes: Readonly<Record<string, string>>
   /** 谁需要它。可能不止一个。 */
   readonly requiredBy: readonly string[]
+  /**
+   * `unverified`：整合包里没看到它，但也无法排除它被别的模组内置（jar-in-jar）。
+   * 默认不装——装重复的模组换不来任何好处，还可能改变整合包作者确定的版本。
+   */
+  readonly confidence: InstallConfidence
 }
 
 export type ManualReason = 'no-compatible-version' | 'no-download-file'
@@ -27,15 +35,24 @@ export interface RepairPlan {
   readonly manual: readonly ManualFix[]
 }
 
+export interface PlanOptions {
+  /** 与 closureToFindings 的 verified 同义：false 时所有安装项标为 unverified */
+  readonly verified?: boolean
+}
+
 /**
  * 把依赖闭包翻译成可执行的安装计划。
  *
  * 只处理「缺依赖」这一类问题——版本不匹配、声明不兼容都不是装一个东西能解决的，
  * 硬塞进 plan 只会让消费者误以为能一键修复。
  */
-export function buildRepairPlan(closure: ClosureResult): RepairPlan {
+export function buildRepairPlan(
+  closure: ClosureResult,
+  opts: PlanOptions = {},
+): RepairPlan {
   const installs: PlannedInstall[] = []
   const manual: ManualFix[] = []
+  const confidence: InstallConfidence = opts.verified === false ? 'unverified' : 'verified'
 
   for (const dep of closure.missing) {
     const version = dep.resolved
@@ -57,6 +74,7 @@ export function buildRepairPlan(closure: ClosureResult): RepairPlan {
       size: file.size,
       hashes: file.hashes,
       requiredBy: dep.requiredBy,
+      confidence,
     })
   }
 

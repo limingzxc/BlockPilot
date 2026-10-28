@@ -1,7 +1,24 @@
+import { fetchJson } from '../http.js'
 import { USER_AGENT } from '../user-agent.js'
 
 const FABRIC_META = 'https://meta.fabricmc.net/v2'
+/**
+ * BMCLAPI 的 Fabric 元数据镜像，路径与官方一致。
+ *
+ * 2026-10-28 实测：meta.fabricmc.net 在这台机器上 20 s 无响应，而镜像 0.17 s 返回。
+ * `--china` 此前只作用于文件下载，元数据仍直连——结果是「加了镜像也装不上 Fabric」。
+ */
+const FABRIC_META_MIRROR = 'https://bmclapi2.bangbang93.com/fabric-meta/v2'
 const TIMEOUT_MS = 20_000
+
+interface MetaOptions {
+  /** true 时元数据走 BMCLAPI */
+  readonly mirror?: boolean
+}
+
+function metaBase(opts: MetaOptions = {}): string {
+  return opts.mirror === true ? FABRIC_META_MIRROR : FABRIC_META
+}
 
 export interface FabricLoaderEntry {
   readonly loader: { readonly version: string; readonly stable: boolean }
@@ -23,30 +40,27 @@ export interface FabricProfile {
 }
 
 async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(url, {
-    headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
-    signal: AbortSignal.any([
-      ...(signal === undefined ? [] : [signal]),
-      AbortSignal.timeout(TIMEOUT_MS),
-    ]),
-  })
-  if (!res.ok) throw new Error(`${url} -> HTTP ${res.status}`)
-  return (await res.json()) as T
+  return fetchJson<T>(url, signal === undefined ? {} : { signal })
 }
 
 export async function listLoaders(
   gameVersion: string,
   signal?: AbortSignal,
+  opts: MetaOptions = {},
 ): Promise<readonly FabricLoaderEntry[]> {
-  return getJson<FabricLoaderEntry[]>(`${FABRIC_META}/versions/loader/${gameVersion}`, signal)
+  return getJson<FabricLoaderEntry[]>(
+    `${metaBase(opts)}/versions/loader/${gameVersion}`,
+    signal,
+  )
 }
 
 /** 不指定版本时取最新的 stable。全都不稳定就取第一个。 */
 export async function pickLoaderVersion(
   gameVersion: string,
   signal?: AbortSignal,
+  opts: MetaOptions = {},
 ): Promise<string> {
-  const list = await listLoaders(gameVersion, signal)
+  const list = await listLoaders(gameVersion, signal, opts)
   if (list.length === 0) throw new Error(`Fabric 没有 ${gameVersion} 的 loader`)
   const stable = list.find((l) => l.loader.stable)
   return (stable ?? list[0])!.loader.version
@@ -56,9 +70,10 @@ export async function fetchProfile(
   gameVersion: string,
   loaderVersion: string,
   signal?: AbortSignal,
+  opts: MetaOptions = {},
 ): Promise<FabricProfile> {
   return getJson<FabricProfile>(
-    `${FABRIC_META}/versions/loader/${gameVersion}/${loaderVersion}/profile/json`,
+    `${metaBase(opts)}/versions/loader/${gameVersion}/${loaderVersion}/profile/json`,
     signal,
   )
 }

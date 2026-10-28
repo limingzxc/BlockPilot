@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { existsSync } from 'node:fs'
+import { NetworkError } from '../core/http.js'
 import { applyProxy } from '../core/proxy.js'
 import { dirname, join } from 'node:path'
 
@@ -77,10 +78,15 @@ function renderHuman(r: PreflightReport): string {
     lines.push(`${C.bold}修复计划${C.reset}`)
     lines.push('')
     for (const p of r.plan.installs) {
+      const uncertain = p.confidence === 'unverified'
+      const mark = uncertain ? `${C.yellow}?${C.reset}` : `${C.green}+${C.reset}`
       lines.push(
-        `  ${C.green}+${C.reset} ${p.displayName}  ${C.dim}${p.fileName} · ${humanBytes(p.size)}${C.reset}`,
+        `  ${mark} ${p.displayName}  ${C.dim}${p.fileName} · ${humanBytes(p.size)}${C.reset}`,
       )
-      lines.push(`    ${C.dim}被 ${p.requiredBy.join('、')} 依赖 · ${p.projectId}/${p.versionId}${C.reset}`)
+      lines.push(
+        `    ${C.dim}被 ${p.requiredBy.join('、')} 依赖 · ${p.projectId}/${p.versionId}${C.reset}` +
+          (uncertain ? `  ${C.yellow}未验证：可能已被某个模组内置${C.reset}` : ''),
+      )
     }
     lines.push('')
   }
@@ -105,11 +111,11 @@ function usage(): void {
   process.stdout.write(`BlockPilot — AI-drivable launcher core
 
   blockpilot preflight <target> [--json] [--no-host]
-  blockpilot install   <target> --mods-dir <dir> [--dry-run] [--china]
+  blockpilot install   <target> --mods-dir <dir> [--dry-run] [--china] [--include-unverified]
   blockpilot java
   blockpilot setup  <version> [--root <dir>] [--instance <name>] [--china] [--dry-run]
   blockpilot assets <version> [--root <dir>] [--china] [--dry-run] [--concurrency <n>]
-  blockpilot fabric <gameVersion> [--root <dir>] [--loader <ver>] [--china]
+  blockpilot fabric <gameVersion> [--root <dir>] [--instance <name>] [--loader <ver>] [--china]
   blockpilot deploy <pack.mrpack> [--root <dir>] [--instance <name>] [--china]
   blockpilot login     [--root <dir>] [--client-id <uuid>]
   blockpilot accounts  [--root <dir>] [--remove <name|uuid>]
@@ -126,6 +132,8 @@ function usage(): void {
   install   先预检，再把 plan.installs 里的文件下载到 --mods-dir
             --dry-run 只打印计划，不下载
             --china   镜像优先（mcim 提到直连之前）
+            --include-unverified  连「未验证」的依赖一起装
+                        整合包可能把依赖打在 jar-in-jar 里，默认不装，装完先 preflight 实例确认
   preflight --json    输出结构化报告
             --no-host 跳过本机 Java / 内存检测（省 1–3 秒）
   java      列出本机可用的 Java 运行时
@@ -200,6 +208,7 @@ async function runInstall(argv: readonly string[]): Promise<number> {
     return 1
   }
   const dryRun = argv.includes('--dry-run')
+  const includeUnverified = argv.includes('--include-unverified')
   const signal = createInterrupt().signal
 
   process.stderr.write(`${C.dim}· preflight${C.reset}\n`)
@@ -226,9 +235,19 @@ async function runInstall(argv: readonly string[]): Promise<number> {
 
   process.stdout.write(renderHuman(report))
 
-  const installs = report.plan.installs
+  const installs = report.plan.installs.filter(
+    (i) => includeUnverified || i.confidence === 'verified',
+  )
+  const heldBack = report.plan.installs.length - installs.length
   if (installs.length === 0) {
-    process.stdout.write(`${C.green}没有需要自动补装的东西。${C.reset}\n\n`)
+    process.stdout.write(`${C.green}没有需要自动补装的东西。${C.reset}\n`)
+    if (heldBack > 0) {
+      process.stdout.write(
+        `${C.dim}有 ${heldBack} 个依赖未验证（整合包可能用 jar-in-jar 内置了它们）。` +
+          `确认缺再装：加 --include-unverified${C.reset}\n`,
+      )
+    }
+    process.stdout.write('\n')
     return report.verdict === 'blocked' ? 2 : 0
   }
 
@@ -244,7 +263,7 @@ async function runInstall(argv: readonly string[]): Promise<number> {
   }
 
   const installer = createInstaller({
-    plan: report.plan,
+    plan: { installs, manual: report.plan.manual },
     modsDir,
     sources: argv.includes('--china') ? chinaFirstSources() : defaultSources(),
   })
@@ -838,6 +857,14 @@ async function runGame(argv: readonly string[]): Promise<number> {
       result: (result) => {
         const secs = (result.durationMs / 1000).toFixed(1)
         process.stdout.write('\n')
+        if (result.stopped) {
+          process.stdout.write(`  ${C.green}已到时限结束${C.reset}  ${secs}s · ${result.lineCount} 行日志\n`)
+          if (result.logPath !== undefined) {
+            process.stdout.write(`  ${C.dim}日志${C.reset}  ${result.logPath}\n`)
+          }
+          process.stdout.write('\n')
+          return 0
+        }
         if (result.crashed) {
           process.stdout.write(
             `  ${C.red}异常退出${C.reset}  code=${result.exitCode ?? '-'} signal=${result.signal ?? '-'} · ${secs}s · ${result.lineCount} 行日志\n`,
@@ -871,7 +898,8 @@ async function runFabric(argv: readonly string[]): Promise<number> {
     return 1
   }
   const root = argOf(argv, '--root') ?? defaultRoot()
-  const layout = resolveLayout(root, 'default')
+  const instance = argOf(argv, '--instance') ?? 'default'
+  const layout = resolveLayout(root, instance)
   const loader = argOf(argv, '--loader')
   const china = argv.includes('--china')
   const signal = createInterrupt().signal
@@ -885,6 +913,7 @@ async function runFabric(argv: readonly string[]): Promise<number> {
     gameVersion,
     ...(loader === undefined ? {} : { loaderVersion: loader }),
     sources: pickSources(china),
+    mirror: china,
   })
 
   return consume(
@@ -947,6 +976,7 @@ async function runDeploy(argv: readonly string[]): Promise<number> {
     packPath,
     layout,
     sources: pickSources(china),
+    mirror: china,
     ...(javaPath === undefined ? {} : { java: javaPath }),
     ...(proxyUrl === undefined ? {} : { proxy: proxyUrl }),
   })
@@ -1231,6 +1261,15 @@ async function main(): Promise<number> {
 main().then(
   (code) => process.exit(code),
   (err: unknown) => {
+    // 网络故障不该显示成「unexpected error」：它是最常见的一类失败，
+    // 用户需要知道是哪个地址、以及可以怎么办。
+    if (err instanceof NetworkError) {
+      process.stderr.write(`${C.red}网络错误${C.reset}：${err.message}\n`)
+      process.stderr.write(
+        `${C.dim}检查网络；国内可加 --china 走镜像，或用 --proxy 指定代理${C.reset}\n`,
+      )
+      process.exit(1)
+    }
     process.stderr.write(`${C.red}unexpected error${C.reset}: ${String(err)}\n`)
     process.exit(1)
   },

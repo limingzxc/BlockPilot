@@ -4,7 +4,8 @@ import { Op } from '../events.js'
 import { defineOperation } from '../operation.js'
 import type { Operation } from '../operation.js'
 import type { HostProfile, Instance, LoaderKind } from '../instance.js'
-import type { ContentSource, DependencyResolver } from '../sources.js'
+import { NetworkError } from '../http.js'
+import type { ContentSource, DependencyResolver, VersionInfo } from '../sources.js'
 import { closureToFindings, computeClosure } from '../deps/closure.js'
 import type { ClosureResult } from '../deps/closure.js'
 import { buildRepairPlan } from '../deps/plan.js'
@@ -133,7 +134,17 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
       const ids = [...new Set(withVersion)]
 
       yield Op.progress('metadata.fetch', 0, ids.length, '拉取模组元数据')
-      const versions = ids.length === 0 ? [] : await opts.source.getVersions(ids, signal)
+      let versions: readonly VersionInfo[]
+      try {
+        versions = ids.length === 0 ? [] : await opts.source.getVersions(ids, signal)
+      } catch (err) {
+        // 断网不是「这些模组没有元数据」。分开报，用户才知道该修网络还是修包。
+        if (err instanceof NetworkError) {
+          yield Op.failed('NETWORK_ERROR', err.message, '检查网络；国内可加 --china 走镜像，或用 --proxy 指定代理')
+          return
+        }
+        throw err
+      }
       yield Op.progress('metadata.fetch', ids.length, ids.length, '拉取模组元数据')
 
       if (signal.aborted) return
@@ -147,16 +158,26 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
       let closure: ClosureResult | null = null
       if (typeof resolveFn === 'function') {
         yield Op.log('info', 'deps.closure.start', { roots: knownVersions.length })
-        closure = await computeClosure({
-          roots: knownVersions,
-          filter: {
-            gameVersion: instance.gameVersion,
-            loader: instance.loader.kind === 'vanilla' ? null : instance.loader.kind,
-          },
-          resolver: { resolve: resolveFn.bind(opts.source) },
-          signal,
-        })
-        findings.push(...closureToFindings(closure))
+        try {
+          closure = await computeClosure({
+            roots: knownVersions,
+            filter: {
+              gameVersion: instance.gameVersion,
+              loader: instance.loader.kind === 'vanilla' ? null : instance.loader.kind,
+            },
+            resolver: { resolve: resolveFn.bind(opts.source) },
+            signal,
+          })
+        } catch (err) {
+          if (err instanceof NetworkError) {
+            yield Op.failed('NETWORK_ERROR', err.message, '检查网络；国内可加 --china 走镜像，或用 --proxy 指定代理')
+            return
+          }
+          throw err
+        }
+        // 整合包里没有 jar，依赖到底在不在无法证实——见 FindingOptions 的注释。
+        // 宁可降级成 warning，也不要把「没看见」说成「不存在」。
+        findings.push(...closureToFindings(closure, { verified: false }))
         yield Op.log('info', 'deps.closure.done', {
           visited: closure.visited.length,
           missing: closure.missing.length,
@@ -167,7 +188,7 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
         yield Op.log('warn', 'deps.closure.skipped', { reason: 'source cannot resolve by projectId' })
       }
 
-      plan = closure === null ? EMPTY_PLAN : buildRepairPlan(closure)
+      plan = closure === null ? EMPTY_PLAN : buildRepairPlan(closure, { verified: false })
       mods = instance.mods.length
       resolved = map.size
       // map 里没有的，就是没查到的——本地文件和坏 id 都在里面，不要重复计。

@@ -10,6 +10,7 @@ import { downloadOne } from '../download/downloader.js'
 import { runDownloadBatch } from '../download/batch.js'
 import { defaultSources, chinaFirstSources } from '../download/sources.js'
 import type { DownloadSource, DownloadTask } from '../download/types.js'
+import { writeInstanceMarker } from '../instance/marker.js'
 import type { Layout } from '../layout.js'
 import { fetchVersionJson } from '../version/fetch.js'
 import type { VersionJson } from '../version/types.js'
@@ -154,6 +155,13 @@ export function createVanillaSetup(opts: VanillaSetupOptions): Operation<Vanilla
     const sources = opts.sources ?? defaultSources()
     const concurrency = opts.concurrency ?? 4
 
+    // 把版本 JSON 落盘。它是 `launch` 唯一的本地依据：不写的话，下次启动即使
+    // 文件全在也要回源拉一次，断网就起不来（加载器版本还要沿 inheritsFrom 找父版本）。
+    const versionJsonPath = opts.layout.versionJson(version.id)
+    mkdirSync(dirname(versionJsonPath), { recursive: true })
+    writeFileSync(versionJsonPath, `${JSON.stringify(version, null, 2)}\n`, 'utf8')
+    yield Op.log('info', 'setup.version_json', { path: versionJsonPath })
+
     const { downloaded, skipped, bytes, failed } = yield* runDownloadBatch({
       tasks,
       sources,
@@ -164,6 +172,11 @@ export function createVanillaSetup(opts: VanillaSetupOptions): Operation<Vanilla
 
     const nativesExtracted = extractNatives(version, env, opts.layout)
     yield Op.log('info', 'setup.natives', { extracted: nativesExtracted })
+
+    // 让 `preflight <实例目录>` 知道这是哪个游戏版本。只有 Prism 的实例有这份文件，
+    // 自己装的反而查不出 MC 版本，说不通。
+    const markerPath = writeInstanceMarker(opts.layout.gameDir, { gameVersion: version.id })
+    yield Op.log('info', 'setup.marker', { path: markerPath })
 
     yield Op.result({
       versionId: version.id,

@@ -20,7 +20,9 @@ export interface RunResult {
   readonly exitCode: number | null
   readonly signal: string | null
   readonly durationMs: number
-  /** 非 0 退出，或者被信号杀死 */
+  /** 到 `--stop` 时限由我们结束的。此时不算崩溃 */
+  readonly stopped: boolean
+  /** 非 0 退出，或者被信号杀死（不含我们主动结束的情况） */
   readonly crashed: boolean
   /** 最后 N 行输出，用于崩溃现场 */
   readonly tail: readonly string[]
@@ -89,8 +91,11 @@ export function createLauncher(opts: RunOptions): Operation<RunResult> {
     child.stderr.on('data', makeSplitter(onLine('stderr')))
 
     let timer: NodeJS.Timeout | undefined
+    /** 是我们自己按 --stop 结束的：不能既当裁判又吹哨，把主动结束报成崩溃 */
+    let stopped = false
     if (opts.autoStopSeconds !== undefined) {
       timer = setTimeout(() => {
+        stopped = true
         queue.push(Op.log('warn', 'launch.autostop', { seconds: opts.autoStopSeconds }))
         child.kill()
       }, opts.autoStopSeconds * 1000)
@@ -121,7 +126,7 @@ export function createLauncher(opts: RunOptions): Operation<RunResult> {
     const { code, sig } = await finish
 
     const durationMs = Date.now() - started
-    const crashed = code !== 0 || sig !== null
+    const crashed = !stopped && (code !== 0 || sig !== null)
 
     if (crashed) {
       yield Op.log('error', 'launch.exited_abnormally', { code, signal: sig, durationMs })
@@ -135,6 +140,7 @@ export function createLauncher(opts: RunOptions): Operation<RunResult> {
       exitCode: code,
       signal: sig,
       durationMs,
+      stopped,
       crashed,
       tail,
       lineCount,

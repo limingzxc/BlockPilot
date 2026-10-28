@@ -204,3 +204,27 @@ test('Fabric 与 Forge 两种嵌套路径互不干扰', () => {
   assert.ok(meta?.nested.some((n) => n.modId === 'fab-sub'))
   assert.ok(meta?.nested.some((n) => n.modId === 'forge-sub'))
 })
+
+test('description 里有裸换行也能读出元数据（Fabric 的 lenient 解析）', () => {
+  // 真实样本：BetterGrassify / Debugify 的 fabric.mod.json，换行直接落在字符串里。
+  // 严格 JSON.parse 会抛 Bad control character，但游戏里能正常加载。
+  const raw =
+    '{\n  "schemaVersion": 1,\n  "id": "debugify",\n  "version": "1.21.1+1.0",\n' +
+    '  "description": "第一行\n第二行"\n}'
+  const meta = readModMetadata(jar({ 'fabric.mod.json': raw }))
+  assert.ok(meta, '裸换行不该让整个模组读不出来')
+  assert.equal(meta.modId, 'debugify')
+  assert.equal(meta.version, '1.21.1+1.0')
+})
+
+test('嵌套 jar 里的 lenient JSON 也能读到', () => {
+  const inner = zipSync({
+    'fabric.mod.json': strToU8('{"id":"midnightlib","version":"1.9.2","description":"a\nb"}'),
+  })
+  const buf = zipSync({
+    'fabric.mod.json': strToU8(JSON.stringify({ id: 'puzzle', version: '2.3.0' })),
+    'META-INF/jars/midnightlib-1.9.2.jar': inner,
+  })
+  const meta = readModMetadata(buf)
+  assert.equal(meta?.nested[0]?.modId, 'midnightlib')
+})

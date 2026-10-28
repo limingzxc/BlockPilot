@@ -1,11 +1,9 @@
-import { USER_AGENT } from '../user-agent.js'
+import { fetchJson } from '../http.js'
 import type { VersionJson, VersionManifest } from './types.js'
 
 const MOJANG_MANIFEST = 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json'
 /** BMCLAPI 的前缀替换规则：同路径换 host */
 const BMCLAPI_MANIFEST = 'https://bmclapi2.bangbang93.com/mc/game/version_manifest_v2.json'
-
-const TIMEOUT_MS = 20_000
 
 export interface VersionFetchOptions {
   /** true 时走 BMCLAPI（国内更快） */
@@ -14,15 +12,7 @@ export interface VersionFetchOptions {
 }
 
 async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(url, {
-    headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
-    signal: AbortSignal.any([
-      ...(signal === undefined ? [] : [signal]),
-      AbortSignal.timeout(TIMEOUT_MS),
-    ]),
-  })
-  if (!res.ok) throw new Error(`${url} -> HTTP ${res.status}`)
-  return (await res.json()) as T
+  return fetchJson<T>(url, signal === undefined ? {} : { signal })
 }
 
 export async function fetchManifest(opts: VersionFetchOptions = {}): Promise<VersionManifest> {

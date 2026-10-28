@@ -160,3 +160,45 @@ test('超出上限时截断而不是跑不完', async () => {
   const findings = closureToFindings(result)
   assert.ok(findings.some((f) => f.code === 'CLOSURE_TRUNCATED'))
 })
+
+test('整合包模式（verified=false）：缺依赖降级为 warning，不说成「不存在」', async () => {
+  const a = ver('a', [['b', 'required']])
+  const result = await computeClosure({
+    roots: [a],
+    filter,
+    resolver: resolverOf({ b: ver('b') }),
+    signal,
+  })
+
+  const findings = closureToFindings(result, { verified: false })
+  assert.equal(findings.length, 1)
+  const f = findings[0]
+  assert.equal(f?.code, 'UNVERIFIED_DEPENDENCY')
+  assert.equal(f?.severity, 'warning')
+  assert.match(f?.message ?? '', /可能已内置/)
+})
+
+test('修复计划：未验证的安装项带 confidence，默认计划仍是 verified', async () => {
+  const { buildRepairPlan } = await import('./plan.js')
+  const b: VersionInfo = {
+    ...ver('b'),
+    files: [
+      {
+        filename: 'b.jar',
+        url: 'https://example.invalid/b.jar',
+        size: 1,
+        hashes: { sha1: '00' },
+        primary: true,
+      },
+    ],
+  }
+  const result = await computeClosure({
+    roots: [ver('a', [['b', 'required']])],
+    filter,
+    resolver: resolverOf({ b }),
+    signal,
+  })
+
+  assert.equal(buildRepairPlan(result).installs[0]?.confidence, 'verified')
+  assert.equal(buildRepairPlan(result, { verified: false }).installs[0]?.confidence, 'unverified')
+})

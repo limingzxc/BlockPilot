@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 
 import { Op } from '../events.js'
@@ -9,6 +9,7 @@ import { downloadOne } from '../download/downloader.js'
 import { runDownloadBatch } from '../download/batch.js'
 import { defaultSources } from '../download/sources.js'
 import type { DownloadSource, DownloadTask } from '../download/types.js'
+import { writeInstanceMarker } from '../instance/marker.js'
 import type { Layout } from '../layout.js'
 import {
   fetchMavenSha1,
@@ -25,6 +26,8 @@ export interface FabricSetupOptions {
   readonly loaderVersion?: string
   readonly sources?: readonly DownloadSource[]
   readonly concurrency?: number
+  /** 元数据与文件都走国内镜像（CLI 的 --china） */
+  readonly mirror?: boolean
 }
 
 export interface FabricSetupResult {
@@ -77,6 +80,10 @@ export async function buildFabricTasks(
       noHash.push(`${lib.name}（无法解析 maven 坐标）`)
       continue
     }
+    const destPath = join(layout.libraries, ...path.split('/'))
+    // 已经装过的库不再探测 sha1：断网/镜像缺 .sha1 时不该把「已存在」说成失败
+    if (existsSync(destPath)) continue
+
     const base = lib.url.replace(/\/+$/, '')
     const url = `${base}/${path}`
     const sha1Url = new URL(`${url}.sha1`)
@@ -91,7 +98,7 @@ export async function buildFabricTasks(
     tasks.push({
       url,
       fileName: basename(path),
-      destPath: join(layout.libraries, ...path.split('/')),
+      destPath,
       // maven 不给 size，跳过大小检查，只靠哈希
       expectedSize: 0,
       hashes: { sha1 },
@@ -103,11 +110,12 @@ export async function buildFabricTasks(
 
 export function createFabricSetup(opts: FabricSetupOptions): Operation<FabricSetupResult> {
   return defineOperation<FabricSetupResult>('fabric-setup', async function* (signal) {
+    const meta = opts.mirror === true ? { mirror: true } : {}
     const loaderVersion =
-      opts.loaderVersion ?? (await pickLoaderVersion(opts.gameVersion, signal))
+      opts.loaderVersion ?? (await pickLoaderVersion(opts.gameVersion, signal, meta))
     yield Op.log('info', 'fabric.loader', { gameVersion: opts.gameVersion, loaderVersion })
 
-    const profile = await fetchProfile(opts.gameVersion, loaderVersion, signal)
+    const profile = await fetchProfile(opts.gameVersion, loaderVersion, signal, meta)
     yield Op.log('info', 'fabric.profile', { id: profile.id, libraries: profile.libraries.length })
 
     const sources = opts.sources ?? defaultSources()
@@ -122,14 +130,32 @@ export function createFabricSetup(opts: FabricSetupOptions): Operation<FabricSet
     writeFileSync(jsonPath, JSON.stringify(profile, null, 2))
     yield Op.log('info', 'fabric.version_json', { path: jsonPath })
 
+    // 版本标记：让 preflight 知道这个实例是「1.21.1 + fabric 0.19.3」，
+    // 而不是「目录里没有版本信息」
+    const markerPath = writeInstanceMarker(opts.layout.gameDir, {
+      gameVersion: opts.gameVersion,
+      loader: { kind: 'fabric', version: loaderVersion },
+    })
+    yield Op.log('info', 'fabric.marker', { path: markerPath })
+
     const concurrency = opts.concurrency ?? 4
-    const { downloaded, skipped, failed } = yield* runDownloadBatch({
+    const { downloaded, skipped, failed: batchFailed } = yield* runDownloadBatch({
       tasks,
       sources,
       concurrency,
       signal,
       codes: { ok: 'fabric.ok', cached: 'fabric.cached', failed: 'fabric.failed', progressId: 'fabric' },
     })
+
+    // 拿不到 sha1 的库按 ADR-0005 不下载，但要算失败：静默跳过会装出一个
+    // 看起来成功、实际上缺 loader 的实例
+    const failed = [
+      ...batchFailed,
+      ...noHash.map((name) => ({
+        fileName: name,
+        error: '拿不到 sha1，按 ADR-0005 不下载（换网络或去掉 --china 重试）',
+      })),
+    ]
 
     yield Op.result({
       versionId: profile.id,

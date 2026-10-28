@@ -8,6 +8,7 @@
  *
  * 现在用例在这里，CLI 只渲染结局。
  */
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { detectJava } from './detect.js'
@@ -58,7 +59,14 @@ export interface SelectJavaOptions {
 }
 
 export async function selectJava(opts: SelectJavaOptions): Promise<SelectJavaOutcome> {
-  if (opts.explicit !== undefined) return { ok: true, path: opts.explicit }
+  if (opts.explicit !== undefined) {
+    // 显式路径优先，但不能假装它存在：直接 spawn 的话，用户看到的是
+    // 「spawn ENOENT + 异常退出」，被引导去 diag 一份 0 行的日志。
+    if (!existsSync(opts.explicit)) {
+      return { ok: false, message: `指定的 Java 不存在：${opts.explicit}`, foundMajors: [] }
+    }
+    return { ok: true, path: opts.explicit }
+  }
 
   const needMajor = opts.versionId === undefined ? undefined : requiredJavaMajor(opts.versionId)
   const managedDir = join(opts.layoutRoot, 'java')

@@ -1,3 +1,4 @@
+import { fetchJson, NetworkError } from '../core/http.js'
 import { USER_AGENT } from '../core/user-agent.js'
 import type {
   ContentSource,
@@ -87,6 +88,9 @@ export class ModrinthSource implements ContentSource, DependencyResolver {
       try {
         out.push(...(await this.fetchBatch(chunk, signal)))
       } catch (err) {
+        // 网络断了就别装作「这几个 id 查不到」：逐个重试只会把一次故障
+        // 放大成 48 条「可能已下架」，还让预检给出 exit 0。
+        if (err instanceof NetworkError) throw err
         // 一个坏 id 不该让整批失败。降级成逐个请求，只丢坏的那一个。
         for (const id of chunk) {
           if (signal.aborted) break
@@ -106,14 +110,7 @@ export class ModrinthSource implements ContentSource, DependencyResolver {
     signal: AbortSignal,
   ): Promise<readonly VersionInfo[]> {
     const url = `${this.api}/versions?ids=${encodeURIComponent(JSON.stringify(ids))}`
-    const res = await fetch(url, {
-      headers: { 'User-Agent': UA, Accept: 'application/json' },
-      signal: AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]),
-    })
-    if (!res.ok) {
-      throw new Error(`modrinth ${res.status}: ${await res.text().catch(() => '')}`)
-    }
-    const rows = (await res.json()) as RawVersion[]
+    const rows = await fetchJson<RawVersion[]>(url, { signal, headers: { 'User-Agent': UA } })
     return rows.map(toVersionInfo)
   }
 
@@ -135,16 +132,13 @@ export class ModrinthSource implements ContentSource, DependencyResolver {
 
     const url = `${this.api}/project/${encodeURIComponent(projectId)}/version?${params.toString()}`
     try {
-      const res = await fetch(url, {
-        headers: { 'User-Agent': UA, Accept: 'application/json' },
-        signal: AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]),
-      })
-      if (!res.ok) return null
-      const rows = (await res.json()) as RawVersion[]
+      const rows = await fetchJson<RawVersion[]>(url, { signal, headers: { 'User-Agent': UA } })
       if (!Array.isArray(rows) || rows.length === 0) return null
       const picked = rows.find((r) => r.version_type === 'release') ?? rows[0]
       return picked === undefined ? null : toVersionInfo(picked)
-    } catch {
+    } catch (err) {
+      // 「查不到」是正常结局；「连不上」不是——交给上面报网络错误
+      if (err instanceof NetworkError) throw err
       return null
     }
   }

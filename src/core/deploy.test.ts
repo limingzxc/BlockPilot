@@ -6,7 +6,7 @@
  * run() → 断言事件序列与 result，用 DeployDeps 注入假步骤，全程离线。
  */
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -19,6 +19,7 @@ import type { OpEvent } from './events.js'
 import { createDeploy } from './deploy.js'
 import type { DeployResult } from './deploy.js'
 import { resolveLayout } from './layout.js'
+import { scanInstanceDir } from './instance/scan.js'
 
 function withTemp(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'bp-deploy-'))
@@ -221,5 +222,40 @@ test('Forge 包缺 java：NEED_JAVA', async () => {
     })
     const { failed } = await collectEvents(op.run(new AbortController().signal))
     assert.equal(failed?.code, 'NEED_JAVA')
+  })
+})
+
+test('部署成功后写版本标记：preflight 能直接认出游戏版本与加载器', async () => {
+  await withTemp(async (dir) => {
+    const layout = resolveLayout(dir, 'test')
+    const op = createDeploy({
+      packPath: writeMrpack(dir),
+      layout,
+      deps: {
+        vanilla: () => fakeVanilla(),
+        loader: () => fakeLoader('fabric-loader-0.16.14-1.20.1'),
+      },
+    })
+    await collect(op)
+
+    const marker = JSON.parse(
+      readFileSync(join(layout.gameDir, 'mmc-pack.json'), 'utf8'),
+    ) as { components?: { uid?: string; version?: string }[] }
+    assert.equal(
+      marker.components?.find((c) => c.uid === 'net.minecraft')?.version,
+      '1.20.1',
+    )
+    assert.equal(
+      marker.components?.find((c) => c.uid === 'net.fabricmc.fabric-loader')?.version,
+      '0.16.14',
+    )
+
+    const scan = scanInstanceDir(layout.gameDir, {
+      fallbackGameVersion: 'unknown',
+      fallbackLoader: { kind: 'vanilla', version: 'unknown' },
+    })
+    assert.equal(scan.instance.gameVersion, '1.20.1')
+    assert.equal(scan.instance.loader.kind, 'fabric')
+    assert.equal(scan.instance.loader.version, '0.16.14')
   })
 })

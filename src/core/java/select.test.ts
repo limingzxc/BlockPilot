@@ -32,7 +32,7 @@ test('没有版本要求：按最高版本兜底', () => {
 test('selectJava：显式路径直接通过，不探测', async () => {
   let scanned = false
   const r = await selectJava({
-    explicit: '/my/java',
+    explicit: process.execPath, // 必须真实存在：不存在的路径现在会直接报错
     layoutRoot: '/root',
     scan: async () => {
       scanned = true
@@ -40,8 +40,14 @@ test('selectJava：显式路径直接通过，不探测', async () => {
     },
   })
   assert.equal(r.ok, true)
-  assert.equal(r.ok && r.path, '/my/java')
+  assert.equal(r.ok && r.path, process.execPath)
   assert.equal(scanned, false)
+})
+
+test('selectJava：显式路径不存在时直接报错，不去 spawn', async () => {
+  const r = await selectJava({ explicit: '/nope/java', layoutRoot: '/root' })
+  assert.equal(r.ok, false)
+  assert.match(r.ok === false ? r.message : '', /不存在/)
 })
 
 test('selectJava：找不到时给出人话错误与已发现的版本', async () => {

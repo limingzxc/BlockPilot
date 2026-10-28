@@ -12,6 +12,7 @@ import { checkLocalInstance } from './preflight/local.js'
 import { verdictOf } from './preflight/types.js'
 import type { Finding, Verdict } from './preflight/types.js'
 import { scanInstanceDir } from './instance/scan.js'
+import { writeInstanceMarker } from './instance/marker.js'
 import { createVanillaSetup } from './setup/vanilla.js'
 import { createFabricSetup } from './setup/fabric.js'
 import { createForgeSetup } from './setup/forge.js'
@@ -26,6 +27,8 @@ export interface DeployOptions {
   readonly java?: string
   /** installer 的下载走这个代理。不填用环境变量 */
   readonly proxy?: string
+  /** 元数据与文件都走国内镜像（CLI 的 --china） */
+  readonly mirror?: boolean
   /**
    * 步骤工厂，注入点。缺省用真实的 setup modules。
    * 测试传假的 Operation 就能离线验证编排契约，不用下载任何东西。
@@ -52,6 +55,7 @@ export interface LoaderStepOptions {
   readonly loaderVersion: string
   readonly java?: string
   readonly proxy?: string
+  readonly mirror?: boolean
   readonly sources: readonly DownloadSource[]
   readonly concurrency: number
 }
@@ -173,6 +177,7 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
               loaderVersion: o.loaderVersion,
               sources: o.sources,
               concurrency: o.concurrency,
+              ...(o.mirror === undefined ? {} : { mirror: o.mirror }),
             })
           : createForgeSetup({
               layout: o.layout,
@@ -217,6 +222,7 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
         loaderVersion: instance.loader.version,
         java: opts.java,
         proxy: opts.proxy,
+        ...(opts.mirror === undefined ? {} : { mirror: opts.mirror }),
         sources,
         concurrency,
       }),
@@ -256,6 +262,12 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
     // 装在完不等于能跑：mod 的版本约束、loader 下限、缺失依赖都要在启动前暴露。
     // 不做这一步的话，问题要等游戏启动时才在千行日志里报 HARD_DEP。
     yield Op.log('info', 'deploy.step', { step: 'check' })
+    // 先写版本标记，再自检：这样自检走的是「和用户 preflight 完全一样」的路径，
+    // 而不是靠 fallback 参数凑出来的版本号
+    writeInstanceMarker(opts.layout.gameDir, {
+      gameVersion: instance.gameVersion,
+      loader: { kind: instance.loader.kind, version: instance.loader.version },
+    })
     const scan = scanInstanceDir(opts.layout.gameDir, {
       fallbackGameVersion: instance.gameVersion,
       fallbackLoader: instance.loader,

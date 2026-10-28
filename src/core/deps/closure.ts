@@ -101,13 +101,45 @@ export async function computeClosure(opts: ClosureOptions): Promise<ClosureResul
   }
 }
 
+export interface FindingOptions {
+  /**
+   * 「缺失」是否有直接证据。
+   *
+   * 整合包（.mrpack）里没有 jar，无法确认某个依赖是不是被打进了别的模组的
+   * `META-INF/jars/`（jar-in-jar）。Modrinth 的元数据也不会标这一点——真实样本：
+   * Fabulously Optimized 6.5.0 的 Puzzle / Mod Menu 就是这样带 MidnightLib 与
+   * Placeholder API 的，但它俩在依赖里仍然写作 `required`。
+   *
+   * 所以整合包模式下传 false：缺依赖降级为 warning，措辞改成「可能已内置」。
+   * 默认 true（有 jar 可比对时才叫确定缺失）。
+   */
+  readonly verified?: boolean
+}
+
 /** 把闭包结果翻译成 findings。文案给人看，code 给机器用。 */
-export function closureToFindings(result: ClosureResult): readonly Finding[] {
+export function closureToFindings(
+  result: ClosureResult,
+  opts: FindingOptions = {},
+): readonly Finding[] {
   const out: Finding[] = []
+  const verified = opts.verified !== false
 
   for (const m of result.missing) {
     const by = m.requiredBy.slice(0, 3).join('、')
     const more = m.requiredBy.length > 3 ? ` 等 ${m.requiredBy.length} 个模组` : ''
+    if (!verified) {
+      out.push({
+        severity: 'warning',
+        code: 'UNVERIFIED_DEPENDENCY',
+        message:
+          m.resolved === null
+            ? `${by}${more} 需要前置模组 ${m.projectId}，元数据里没有兼容版本（也可能已内置在某个模组里）`
+            : `${by}${more} 需要前置模组 ${m.projectId}，整合包里没有它（可能已内置在某个模组里）`,
+        subject: m.projectId,
+        hint: '整合包常把依赖打在 jar-in-jar 里；装完跑一次 preflight <实例目录> 确认，确有缺失再补装',
+      })
+      continue
+    }
     if (m.resolved !== null) {
       out.push({
         severity: 'blocker',

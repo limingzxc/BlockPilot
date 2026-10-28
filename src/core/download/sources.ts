@@ -29,6 +29,9 @@ const BMCLAPI_MAP: ReadonlyArray<readonly [string, string]> = [
   ['libraries.minecraft.net', '/maven'],
   ['files.minecraftforge.net', '/maven'],
   ['maven.minecraftforge.net', '/maven'],
+  // Fabric 的 loader / intermediary 都在这个域。此前漏了它，导致 `--china`
+  // 只镜像元数据、加载器本体仍直连 maven.fabricmc.net（2026-10-28 实测直连约 10 s）
+  ['maven.fabricmc.net', '/maven'],
   ['meta.fabricmc.net', '/fabric-meta'],
 ]
 

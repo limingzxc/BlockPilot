@@ -76,7 +76,7 @@ test('崩溃行的级别是 error（下游 consumer 靠它做 --quiet 过滤）'
   })
 })
 
-test('autoStopSeconds 到点杀进程：crashed=true 且发出 autostop 事件', async () => {
+test('autoStopSeconds 到点杀进程：stopped=true、crashed=false 且发出 autostop 事件', async () => {
   await withTemp(async (dir) => {
     // 假 java 睡 30 秒，0.4 秒后应被 kill
     const plan = planWith('setTimeout(() => {}, 30000)', dir)
@@ -88,6 +88,7 @@ test('autoStopSeconds 到点杀进程：crashed=true 且发出 autostop 事件',
       if (ev.type === 'result') result = ev.value
     }
     assert.ok(events.includes('launch.autostop'))
-    assert.equal(result?.crashed, true)
+    assert.equal(result?.stopped, true)
+    assert.equal(result?.crashed, false)
   })
 })
