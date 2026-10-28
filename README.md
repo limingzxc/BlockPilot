@@ -2,63 +2,100 @@
 
 AI 可驱动的 Minecraft 启动器**内核**——参考实现。
 
-不是又一个启动器。这个仓库想回答一个具体问题：**当 AI 要替你装游戏、查兼容性、修崩溃时，启动器该长什么样？**
-
-## 不是什么
-
-- 不是给玩家用的客户端（第一版没有 GUI）
-- 不与 HMCL / Prism / Pandora 竞争功能
-- 不做「AI 看日志猜原因」——那条路上已经站了五个人
-
-## 是什么
-
-一个把「操作」和「界面」彻底分开的 core。CLI 和 MCP server 是它的两个消费者，未来的 GUI 会是第三个。
+不是又一个启动器。它想回答一个问题：**当 AI 要替你装游戏、查兼容性、修崩溃时，启动器该长什么样？**
 
 ```
-core/          纯逻辑。不知道 stdout 存在
-  ├── cli/     进程内消费者，渲染成人类可读文本
-  └── mcp/     独立进程，把 OpEvent 转成 MCP 进度通知
-      └── gui/ （未来）第三个消费者，core 一行不改
+core/      纯逻辑，不知道 stdout 存在
+  cli/     进程内消费者，渲染成人类可读文本
+  mcp/     独立进程，把 OpEvent 转成 MCP 通知
 ```
+
+不是给玩家用的客户端（没有 GUI），不与 HMCL / Prism 竞争功能，也不做「AI 看日志猜原因」——那条路上已经站了五个人。
 
 ## 快速开始
 
 ```bash
 npm install
-node scripts/make-fixture.mjs
-node scripts/make-instance-fixture.mjs
+node scripts/make-fixture.mjs && node scripts/make-instance-fixture.mjs
 
-npm run preflight -- fixtures/closure.mrpack   # 在线：缺 Sodium，给修复计划
-npm run preflight -- fixtures/instance-miss    # 离线：读 jar 元数据，发现缺 sodium
+npm run preflight -- fixtures/closure.mrpack   # 在线：缺 Sodium，给出可执行的修复计划
+npm run preflight -- fixtures/instance-miss    # 离线：只读 jar 元数据，零网络
 
-# 真的把修复计划下载下来
-npx tsx src/cli/index.ts install fixtures/closure.mrpack --mods-dir /tmp/mods
-npx tsx src/cli/index.ts install fixtures/closure.mrpack --mods-dir /tmp/mods --dry-run
+npm test        # 242 个测试，全部不依赖网络
+npm run smoke   # 起真实 MCP 子进程，走 stdio 调一次工具
 ```
 
-输出：
+## 前提
 
-```
-BlockPilot preflight
+- **正版登录要一个自己的 Azure 应用 id**（免费注册一次）：在 portal.azure.com 建「个人账号」应用，开启「允许公共客户端流」，加委托权限 `XboxLive.signin`，然后 `--client-id` 或 `BLOCKPILOT_CLIENT_ID`。第三方不能复用官方启动器的 id——那是冒充。
+- **NeoForge 的 maven 在国内被墙**，已内置 `neoforged.forgecdn.net` 镜像（含 installer 重打包），无代理可装；有代理时 `--proxy` 走官方保真度更高。
 
-  verdict   UNKNOWN
-  mods      3  (resolved 1, unresolved 2)
+## 命令
 
-  i UNRESOLVED_MOD  无法获取 mods/broken-id.jar 的元数据，该模组未参与检查
-    → 内容源未返回该版本，可能已下架
-```
+| 命令 | 做什么 |
+|---|---|
+| `preflight <target>` | 检查它能不能跑。`--json` 给结构化报告 |
+| `deploy <pack.mrpack>` | 一条命令装完：原版 → 加载器 → 模组 → overrides，装完自检 |
+| `install <target> --mods-dir <dir>` | 把 `plan.installs` 下载落地（`--dry-run` 只看计划） |
+| `setup <version>` | 原版文件：client jar + libraries + assetIndex + natives |
+| `assets <version>` | 音效/语言/字体（1.20.1 约 621 MB，可不装——只是没声音） |
+| `fabric <mc> [--loader <ver>]` | 单独装 Fabric（`deploy` 会自动做） |
+| `java` / `java install <major>` | 列出本机 Java / 从 Adoptium 装一个 |
+| `login` / `accounts` | 微软账号登录（设备码）/ 列出或删除账号 |
+| `launch <version>` | **只生成启动命令**，不启动 |
+| `run <version>` | 真的启动，日志落盘到 `<实例>/logs/` |
+| `logs` / `diag` | 列出会话日志 / 把崩溃归因到具体模组 |
 
-`--json` 输出结构化报告，供 AI 或上层应用消费。
+通用：`--root <dir>`（默认 `%APPDATA%\BlockPilot`）、`--instance`、`--china`（镜像优先）、`--proxy <url>`。
 
-```bash
-npm test        # 确定性核心的单元测试，不依赖网络
-npm run build   # tsc
-npm run smoke   # 起一个真实 MCP 子进程，走 stdio 协议调一次工具
-```
+## 能力边界
 
-## 接进 AI 客户端
+预检支持三种输入，但**只承诺能承诺的**：
 
-MCP server 把同一个 core 暴露成工具。开发期直接指向源码：
+| | `.mrpack` | CurseForge zip | 实例目录 |
+|---|---|---|---|
+| 模组身份 | Modrinth `projectId` | `projectID`/`fileID` | jar 内 `modId` |
+| 依赖检查 | 递归闭包 | 无法（要 API key） | 单层 |
+| 网络 | 需要 | 预检不需要 | **不需要** |
+| 给出下载地址 | 是 | 否 | 否 |
+
+CF 的 manifest 只有数字 id，没有 URL 和哈希——所以它明确报 `CF_API_REQUIRED`，而不是装懂。详见 [ADR-0021](docs/adr/0021-curseforge-boundary.md)。
+
+`preflight --json` 里的 `plan.installs` 与下载器字段完全对齐（`url` / `fileName` / `size` / `hashes` / `requiredBy`）——这是「检查 → 一键修 → 再检查」的接口，不是建议列表。
+
+<details>
+<summary>检查项全集（14 个 code）</summary>
+
+| code | 含义 |
+|---|---|
+| `VERSION_MISMATCH` / `LOADER_MISMATCH` | 模组不支持这个 MC 版本 / 加载器 |
+| `MISSING_DEPENDENCY` | 缺前置（在线模式附可安装版本） |
+| `DEPENDENCY_VERSION_MISMATCH` | 已装的版本不满足依赖方声明的范围 |
+| `UNSATISFIABLE_DEPENDENCY` | 缺前置，且没有兼容当前版本的可安装版本 |
+| `DECLARED_INCOMPATIBLE` / `DEPENDENCY_CYCLE` | 互相声明不兼容 / 闭环依赖 |
+| `UNRESOLVED_MOD` / `UNREADABLE_JAR` | 查不到元数据 / jar 读不出元数据，不参与判断 |
+| `JAVA_MISSING` | 一个够用的 Java 都没有（blocker） |
+| `JAVA_NEWER_ONLY` | 没有精确版本但有更高版本（warning，多数能跑） |
+| `JAVA_OLDER_PRESENT` | 同时存在更低版本（info，启动时需指定路径） |
+| `UNKNOWN_GAME_VERSION` / `CLOSURE_TRUNCATED` | 目录无版本信息 / 依赖链超出展开上限 |
+
+</details>
+
+## 四个决定成败的判断
+
+**1. 同一个模组有两套身份，且不能互相推导。**
+Modrinth 叫 `AANobbMI`，jar 里叫 `sodium`。用文件名猜 `create-1.20.1-0.5.1.jar → Create` 很诱人，但猜错会让用户装上一个完全无关的模组——一次就毁掉预检的可信度。宁可说「不知道装哪个」。见 [ADR-0004](docs/adr/0004-dual-identity.md)。
+
+**2. 镜像给的字节不一定是你要的字节。**
+实测过一次：同一个 URL、同一分钟，`curl` 拿到正确的 jar，Node 拿到 HTTP 200 + 一张 2 KB 的 "Service Temporarily Unavailable" HTML。所以**每个源落盘前都比字节数、再比哈希，校验失败等同于下载失败**，直接换下一个源。没有哈希的任务拒绝下载。见 [ADR-0005](docs/adr/0005-download-and-mirrors.md)。
+
+**3. 加载器版本没有自己的 client jar 和 natives。**
+Fabric / Forge 的版本目录只有 `.json`，jar 与 natives 要按 **rootId**（父版本）取。另外 `libraryKey` 必须包含 classifier，否则 `org.lwjgl:lwjgl` 和它的 `natives-windows` 变体会互相覆盖——表现是 `NoClassDefFoundError: org/lwjgl/system/MemoryUtil`，而原版能跑、装加载器就崩。见 [ADR-0011](docs/adr/0011-loader-version-merge.md)。
+
+**4. AI 不写盘、不碰凭证。**
+MCP 只有两个只读工具。下载要写磁盘、可能几百 MB、还会覆盖用户文件；登录和启动不可回滚。**AI 诊断、人执行**——这才是能交付的边界。见 [ADR-0001](docs/adr/0001-operation-event-stream.md)。
+
+## 对接 AI
 
 ```json
 {
@@ -71,390 +108,73 @@ MCP server 把同一个 core 暴露成工具。开发期直接指向源码：
 }
 ```
 
-构建后换成 `{"command": "node", "args": ["D:/BlockPilot/dist/mcp/server.js"]}`。
+构建后换成 `dist/mcp/server.js`。
 
-当前暴露两个工具：
-
-| 工具 | 作用 | 输入的副作用 |
-|---|---|---|
-| `preflight_modpack` | 检查整合包/实例能否运行 | 只读（`.mrpack` 会联网查 Modrinth） |
-| `diagnose_crash` | 读崩溃日志，指认到具体模组 | 只读 |
-
-两个工具的描述里都写了给模型的行为约束：**看到 `unknown` 不许说「没问题」**；**定位不到模组时不许猜名字**。后者尤其重要——猜错会让用户去删一个无辜的模组，问题依旧，还多了一个新问题。
-
-`preflight_modpack` 与 `diagnose_crash` 都属于 `diagnose` 组。完整的六组划分见 ADR-0001。
-
-**`install` 刻意没有暴露给 AI。** 下载要写磁盘、可能几百 MB、还会覆盖用户已有的文件。参考实现应该展示「AI 诊断、人执行」这条边界，而不是让模型直接动手。报告里的 `plan` 已经足够让上层应用在用户确认后调用后者。
-
-## 第一个能力：启动前预检
-
-在启动之前判断一套模组跑不跑得起来——不下载、不启动、不登录。
-
-**支持三种输入，三条链路：**
-
-| | `.mrpack` 文件 | CurseForge zip | 实例目录 |
-|---|---|---|---|
-| 身份 | Modrinth `projectId` | `projectID`/`fileID`（数字） | jar 内 `modId` |
-| 元数据 | Modrinth API | **需要 CF API key** | `fabric.mod.json` / `mods.toml` 等 |
-| 依赖 | 递归闭包 | 无法检查 | 单层检查 |
-| 网络 | 需要 | 预检不需要 | **不需要** |
-| 能给出下载地址 | 是（`plan.installs`） | 否（没有 URL，只有 id） | 否（`plan.manual`） |
-
-CF 的 manifest 只有 id 没有下载地址——所以预检只承诺能承诺的：MC 版本、加载器、Java 判定可靠，mod 级兼容性明确报 `CF_API_REQUIRED` 而不是装懂。见 [ADR-0021](docs/adr/0021-curseforge-boundary.md)。
-
-同一个模组有 `projectId`（`AANobbMI`）和 `modId`（`sodium`）两套身份，它们不能互相推导——这是 ADR-0004 的全部内容。
-
-检查项：
-
-| code | 含义 |
+| 工具 | 作用 |
 |---|---|
-| `VERSION_MISMATCH` | 模组不支持这个 MC 版本 |
-| `LOADER_MISMATCH` | 模组不支持这个加载器 |
-| `MISSING_DEPENDENCY` | 缺必需的前置模组（在线模式会附可安装版本） |
-| `DEPENDENCY_VERSION_MISMATCH` | 已装模组或加载器的版本不满足依赖方声明的范围 |
-| `UNSATISFIABLE_DEPENDENCY` | 缺前置，但找不到兼容当前版本与加载器的可用版本 |
-| `DECLARED_INCOMPATIBLE` | 两个模组互相声明不兼容 |
-| `DEPENDENCY_CYCLE` | 需要新装的部分里有闭环依赖 |
-| `UNRESOLVED_MOD` | 查不到元数据，不参与判断 |
-| `UNREADABLE_JAR` | 目录里的 jar 读不出模组元数据 |
-| `UNKNOWN_GAME_VERSION` | 目录里没有版本信息 |
-| `JAVA_MISSING` | 一个够用的 Java 都没有（blocker） |
-| `JAVA_NEWER_ONLY` | 没有精确版本但有更高版本（warning，多数能跑） |
-| `JAVA_OLDER_PRESENT` | 有精确版本，同时存在更低版本（info，启动时需指定路径） |
-| `CLOSURE_TRUNCATED` | 依赖链超出展开上限，报告不完整 |
+| `preflight_modpack` | 检查整合包/实例能否运行 |
+| `diagnose_crash` | 读崩溃日志，指认到具体模组 |
 
-Java 检查**独立于在线/离线模式**，两条链路都跑。检测方式是起进程读 `-XshowSettings:properties`，不是读注册表——绿色版 JDK 也能发现。见 [ADR-0006](docs/adr/0006-java-detection.md)。
+两个工具的描述里都写了给模型的行为约束：**看到 `unknown` 不许说「没问题」**；**定位不到模组就不许猜名字**——猜错会让用户删掉一个无辜的模组。
 
-```bash
-npx tsx src/cli/index.ts java                 # 列出本机可用的 Java
-npx tsx src/cli/index.ts java install 21      # 没装就从 Adoptium 装一个
-```
-
-`java install` 下载 Temurin JRE（带 sha256 校验）、解压到 `<root>/java`，装完立刻探测验证版本。之后 `run` / `launch` / `deploy` 会**优先用它**，而不是系统里那个——用户明确装的东西不该被别的软件带来的覆盖。见 [ADR-0017](docs/adr/0017-java-auto-install.md)。
-
-Windows 走 zip（实测）；Linux/macOS 走 tar.gz——内置了一个 ~150 行的 tar 读取器，与系统 GNU tar 互通，但端到端没在 Linux/macOS 上跑过。
-
-## 目录布局
-
-用户只选一次根目录，实例自动派生（见 [ADR-0008](docs/adr/0008-directory-layout.md)）：
-
-```
-<root>/                         --root，默认 %APPDATA%\BlockPilot
-  libraries/                    所有实例共享（几百 MB）
-  assets/                       所有实例共享（1–2 GB）
-  versions/<id>/<id>.jar        原版 client jar
-  instances/<name>/             每个实例独立
-    natives/<id>/               解压出来的原生库
-    mods/
-```
-
-**不把 `assets` 复制到每个实例**——十来个实例就是十几 GB 的重复。共享的是只读资源，隔离的是会被改的东西。
-
-```bash
-npx tsx src/cli/index.ts setup  1.20.1 --root D:/mc
-npx tsx src/cli/index.ts assets 1.20.1 --root D:/mc      # 音效/语言/字体，621 MB
-npx tsx src/cli/index.ts launch 1.20.1 --root D:/mc --instance rlcraft
-```
-
-`setup` 与 `assets` 分开：第一次装原版只下 80 MB 就能验证启动链路，621 MB 的音效可以晚点再补——没有 assets 也能进主界面，只是没声音。见 [ADR-0009](docs/adr/0009-assets-download.md)。
-
-## 一条命令装整合包
-
-```bash
-npx tsx src/cli/index.ts deploy fixtures/real-pack.mrpack --root D:/mc --instance rlcraft
-```
-
-`.mrpack` 里已经写好了该用哪个 MC 版本、哪个 loader 版本。`deploy` 依次完成：原版文件 → 加载器 → 整合包模组 → overrides，最后直接给出启动命令。
-
-```
-BlockPilot Real Fixture
-→ 原版文件（66 个，已存在则跳过）
-→ 加载器（8 个库）
-→ 整合包文件（sodium + fabric-api）
-→ overrides（2 个文件）
-
-装好了 1.20.1 + fabric 0.16.14
-```
-
-服务端专用的文件（`env.client: "unsupported"`）不会装到客户端。细节见 [ADR-0012](docs/adr/0012-deploy-orchestration.md)。
-
-**装完会立刻自检**，而不是等启动时闪退：
-
-```
-部署后检查  BLOCKED
-  ✗ DEPENDENCY_VERSION_MISMATCH  fabric-api 要求 fabricloader >=0.16.10，实际是 0.15.11
-    → 加载器版本太低，换更高的 loader 版本重装
-
-先别启动，上面这些会直接导致崩溃
-```
-
-检查读的是 jar 里的真实元数据，包括 `META-INF/jars/` 下的嵌套模组——Fabric API 的 57 个子模块都在那里。见 [ADR-0013](docs/adr/0013-post-deploy-check.md)。
-
-## 加载器
-
-Fabric、Forge、NeoForge 都支持，`deploy` 会按 `.mrpack` 里的 `dependencies` 自动选。所有子命令支持 `--proxy <url>`（或 `HTTPS_PROXY` 环境变量）——它同时作用于 Node 的下载与 installer 的 JVM 下载。
-
-Forge 靠官方 installer 完成安装——它要给 client jar 打二进制补丁，自己复刻那套工具链没有意义。三个坑见 [ADR-0015](docs/adr/0015-forge-installer.md)：
-
-- installer 要求 `launcher_profiles.json`（空壳即可）
-- Forge 的版本目录只有 `.json`，patched client 在 `libraries` 里
-- classpath 里**不能**有原版 jar，否则和 Forge 的 `minecraft` 模块冲突
-
-NeoForge 与 Forge 共用 installer 流程，只是坐标不同（版本号不带 MC 前缀）。**已实测**：1.21.1 + NeoForge 21.1.264 经代理启动成功（ModLauncher 11.0.5、OpenAL、全部图集）。注意两点：
-
-- **NeoForge 没有 1.20.1 版本**，从 1.20.2 起步
-- `maven.neoforged.net` 国内被墙，内置了 `neoforged.forgecdn.net` 镜像（含 installer 重打包），**无代理可装**；有代理时用 `--proxy` 走官方保真度更高。见 [ADR-0022](docs/adr/0022-neoforge-mirror.md)
-
-见 [ADR-0016](docs/adr/0016-neoforge.md)。
-
-## Fabric 加载器
-
-```bash
-npx tsx src/cli/index.ts fabric 1.20.1 --root D:/mc              # 取最新 stable loader
-npx tsx src/cli/index.ts fabric 1.20.1 --root D:/mc --loader 0.15.11
-npx tsx src/cli/index.ts run fabric-loader-0.15.11-1.20.1 --root D:/mc
-```
-
-Fabric 的 profile 只有 8 个库和主类，其余全靠 `inheritsFrom` 合并父版本。三个坑见 [ADR-0011](docs/adr/0011-loader-version-merge.md)：
-
-- `libraryKey` 必须含 classifier，否则 `org.lwjgl:lwjgl` 和它的 `natives-windows` 变体会互相覆盖
-- natives 目录与 client jar 都要用 **rootId**，加载器版本没有自己的
-
-**默认取最新 loader 不一定对**：0.20.1 跑 1.20.1 会崩在 `RenderSystem`，换同期 0.15.11 正常。`--loader` 是必要的逃生口。
-
-## 正版登录
-
-```bash
-export BLOCKPILOT_CLIENT_ID=<你的 Azure 应用 id>   # 注册一次即可
-npx tsx src/cli/index.ts login --root D:/mc
-```
-
-```
-  BlockPilot login  微软账号 · 设备码
-
-  1. 打开  https://microsoft.com/link
-  2. 输入  AB12-CD34
-
-  等待授权…（15 分钟内有效，Ctrl+C 取消）
-
-  登录成功  Notch
-  uuid 069a79f444e94726a5befca90e38aaf5
-```
-
-**为什么要自己注册一个 App**：第三方启动器不能复用官方启动器的应用 id——那是冒充。
-注册是免费的，在 portal.azure.com 建一个「个人账号」应用，开启「允许公共客户端流」，
-加一条委托权限 `XboxLive.signin` 就行。细节见 [ADR-0024](docs/adr/0024-microsoft-auth.md)。
-
-选设备码而不是内嵌登录框，理由不是省事：**参考实现不该让用户在无法审查的代码里输微软密码**。
-密码留在微软自己的页面上，我们只拿一个短时效的码。
-
-账号存在 `<root>/auth/accounts.json`（明文，权限 0600）。能读到这个文件的人就能接管账号，
-所以它不进 git、不进日志，CLI 也只显示名字与 uuid。
-
-```bash
-blockpilot accounts                      # 列出账号
-blockpilot run 1.20.1 --account Notch    # 指定账号
-blockpilot run 1.20.1 --offline          # 强制离线，不读存档
-```
-
-令牌过期会**自动刷新**（走完整三跳，因为 MC 令牌不能续 XSTS）。两种失败刻意不同：
-
-| 场景 | 行为 |
-|---|---|
-| 默认账号刷不动 | 退回离线并说明原因——玩家多半只想玩单人 |
-| `--account` 点名的账号不可用 | 退出码 1——他要的是在线身份，悄悄用离线会让他朋友看到「这不是你」 |
-
-## 真的启动
-
-```bash
-npx tsx src/cli/index.ts run 1.20.1 --root D:/mc --memory 2048
-```
-
-日志实时转成事件流（`--quiet` 只显示 ERROR），**同时落盘到 `<实例>/logs/`**。异常退出时打印日志路径和诊断入口：
-
-```
-  异常退出  code=1 · 12.3s · 428 行日志
-  完整日志  D:\mc\instances\default\logs\2026-10-25T11-57-12-1.20.1.log
-
-  下一步
-    blockpilot diag --root D:\mc --instance default
-    blockpilot preflight "D:\mc\instances\default"
-```
-
-日志文件名带时间戳而不是固定的 `latest.log`——同一实例跑不同版本时，固定名会把上一次的现场冲掉。轮转只删自己的，**不碰游戏写的 `latest.log`**，见 [ADR-0018](docs/adr/0018-session-logs.md)。
-
-`launch` 崩溃后**不会自己调 preflight**——那是 CLI 的策略，不是 core 的能力。分层见 [ADR-0010](docs/adr/0010-launch-process.md)。
-
-## 读日志：`diag`
-
-```bash
-npx tsx src/cli/index.ts logs --root D:/mc    # 列出会话日志
-npx tsx src/cli/index.ts diag --root D:/mc    # 分析最近一份
-```
-
-`diag` 做两件事：把异常归类成可理解的结论，并**尽量指认到具体模组**。
-
-```
-最可能的根因
-
-  ✗ mod-crash  第 9 行
-    java.lang.RuntimeException: Ticking screen
-    → 异常来自 Just Enough Items（jei），文件 jei.jar。先禁用或更新它，看崩溃是否消失
-
-指向的模组（按证据强度排序，越靠前越可能是它）
-
-  ✗ jei · Just Enough Items 15.74.0.229
-    jei.jar · 2 个栈帧
-    · 根因区段最上面的一帧
-    · 包名属于它：mezz.jei.common、mezz.jei.gui
-    at mezz.jei.common.Internal.getLogger(Internal.java:42)
-```
-
-归属只用**事实**，不用猜测。证据按强度排序：
-
-| 强度 | 证据 | 来源 |
-|---|---|---|
-| 100 | 根因区段（最后一条 `Caused by` 之后）最上面那一帧 | 栈帧位置 |
-| 60 | mixin 处理器方法名里嵌的 mod id（`handler$zcb000$sodium$...`） | Fabric 的命名规范 |
-| 50 | 帧尾标注的 jar 名（`~[jei-...jar%23123!/:?]`） | Forge / ModLauncher |
-| 40 | 日志点名 `<modid>.mixins.json` | mixin 报错 |
-| 10 | 包名属于某个 jar 里的类 | 扫 jar 条目 |
-
-**两个模组声明同一个包时不指认任何人**——那说明它是共用库，说「是谁」等于瞎猜。宁可输出「定位不到具体模组」。理由见 [ADR-0020](docs/adr/0020-stack-attribution.md)。
-
-`diag` 同时也是一个 MCP 工具（`diagnose_crash`）：只读文件，符合「AI 诊断、人执行」的边界。
-
-## 启动命令生成
-
-```bash
-npx tsx src/cli/index.ts launch 1.20.1 --root ./mc --memory 2048
-```
-
-输出完整命令行（`-cp` 折叠成 `<44 jars>`，`--raw` 看完整值）、Java 路径、主类，以及**缺失文件清单**。
-
-这一步**只生成不启动**。理由见 [ADR-0007](docs/adr/0007-launch-command-first.md)：classpath 分隔符写错时，游戏会报「找不到主类」——错误信息指向完全无关的地方，一次错一次重启，排查成本极高。
-
-已处理的坑：
-
-- `rules` 语义是「最后一条匹配生效」，不是「任意 allow 放行」
-- 模板替换后断言**没有 `${...}` 残留**（这条断言抓到了漏掉的 `${clientid}` / `${auth_xuid}`）
-- 路径统一 resolve 成绝对路径，避免正反斜杠混用
-- 缺失检查覆盖 client jar / libraries / assetIndex 三类
-
-### 修复计划
-
-报告里的 `plan` 是**可执行**的，不是建议：
-
-```json
-{
-  "installs": [{
-    "projectId": "AANobbMI",
-    "versionId": "OihdIimA",
-    "displayName": "Sodium 0.5.13 for Fabric",
-    "fileName": "sodium-fabric-0.5.13+mc1.20.1.jar",
-    "url": "https://cdn.modrinth.com/data/AANobbMI/versions/OihdIimA/...",
-    "size": 921600,
-    "hashes": { "sha1": "...", "sha512": "..." },
-    "requiredBy": ["YL57xq9U"]
-  }],
-  "manual": []
-}
-```
-
-字段与下载器需要的完全对齐——这是「检查 → 一键修 → 再检查」闭环的接口。
-
-### 下载
-
-`install` 会把 `plan.installs` 真正落地：
-
-```bash
-npx tsx src/cli/index.ts install fixtures/closure.mrpack --mods-dir /tmp/mods
-```
-
-规则（[ADR-0005](docs/adr/0005-download-and-mirrors.md)）：
-
-- **源是候选列表，不是唯一地址。** 逐个尝试，直到成功。
-- **每个源下载后都要校验哈希，校验失败等同于下载失败。** 镜像活着、HTTP 200、大小对得上，都不能说明内容正确。
-- **没有哈希的任务拒绝下载。** 宁可不下，不可下错。
-- `.part` + rename 保证原子性，中途崩溃不会留下半个 jar。
-- 已存在且哈希匹配直接跳过。
-
-内置三个源，各有边界：
-
-| 源 | 覆盖 | 实测（2026-10-25） |
-|---|---|---|
-| `bmclapi` | Mojang 版本/资源/库、Forge/Fabric maven | 可用；**neoforged 路由是空壳**（302 后无内容） |
-| `neoforge-cdn` | `maven.neoforged.net` | 可用，路径完全兼容，sha1 与官方一致 |
-| `direct` | 全部 | — |
-| `mcim` | Modrinth / CurseForge 文件 | API `200`；文件可能 302 跳回官方（未缓存） |
-
-默认顺序 `[bmclapi, neoforge-cdn, direct, mcim]`：MCIM 官方自己建议「下载失败后再用镜像」，所以放在直连之后。要国内优先用 `chinaFirstSources()`，CLI 里加 `--china`。
-
-NeoForge 的 installer 还会被重打包：把 `install_profile.json` 与 `version.json` 里的 `maven.neoforged.net` 换成镜像域名，这样它自己下载依赖时也走镜像。有代理时保持原包直连官方，见 [ADR-0022](docs/adr/0022-neoforge-mirror.md)。
-
-**BMCLAPI 不覆盖 Modrinth CDN**，对模组文件没意义；它加速的是启动原版游戏要用的那些资源。反过来，MCIM 真正的价值在 API 加速——`ModrinthSource` 支持传 `apiBase: MODRINTH_API_MCIM`。
-
-加别的镜像用 `createMirrorSource({ name, from, to, credit })`，地址写在配置里而不是源码里——镜像站的域名寿命通常比代码短。
-
-依赖闭包是递归的：实例里只装了 Iris，它会顺着 Iris 的 required 依赖反查到 Sodium，并告诉你该装哪个版本。它**不做版本范围求解**——Modrinth 的元数据里根本没有版本范围，硬做等于用假精度骗自己。理由见 [ADR-0003](docs/adr/0003-dependency-closure.md)。
-
-设计细节见 [ADR-0002](docs/adr/0002-preflight-first.md)。
-
-## 两条不能破的规矩
-
-1. **core 里没有 `console.log`。** 所有状态变化先成为 `OpEvent`，由消费者决定怎么显示。
-2. **AI 不能启动游戏，也不能碰登录凭证。** 这两件事不可回滚，必须由人亲手触发。装错模组能删，用你的账号启动一次游戏撤不回来。
-
-见 [ADR-0001](docs/adr/0001-operation-event-stream.md)。
-
-## 术语
-
-见 [GLOSSARY.md](GLOSSARY.md)。写 issue 和测试名时用那里的词。
-
-## 合规
-
-这个项目调用的是第三方**公益**服务，它们的协议是硬约束，不是建议：
-
-| 服务 | 要求 | 本项目的做法 |
-|---|---|---|
-| BMCLAPI | UA 以 `${NAME}/${VERSION}` 开头；**下载界面或其他可视部分必须标明来源**；禁止在其上二次封装其他协议 | `USER_AGENT = 'BlockPilot/0.0.1'`（[MCLF-CN/docs#2](https://github.com/MCLF-CN/docs/issues/2)）；下载完成打印「资源来源」；只做下载加速，不代其对外提供 API |
-| MCIM | 使用前**登记启动器 UA**；禁止二次封装接口 | UA 集中在 `src/core/user-agent.ts`；登记见 [mcim-rust-api#12](https://github.com/mcmod-info-mirror/mcim-rust-api/issues/12) |
-| Modrinth | 必须带可识别 UA；300 req/min | 统一 UA，元数据 100 个一批 |
-
-`DownloadSource.credit` 不是装饰字段——BMCLAPI 要求的「标明来源」必须能被渲染出来，所以它进了类型定义、透传到 `DownloadOutcome`、并由 CLI 打印。
-
-## 状态
-
-早期，但核心链路已经通了。
-
-**已完成**：`.mrpack` / CurseForge zip / 实例目录三种输入解析、jar 元数据读取（fabric/forge/neoforge/quilt，含 `provides` 与 jar-in-jar）、约束检查（含版本范围）、递归依赖闭包、可执行修复计划、并发下载（哈希校验 / 多源降级 / 缓存命中）、Java 检测与自动安装、原版安装（client jar + libraries + assetIndex + natives + assets）、启动命令生成、进程启动与日志落盘、崩溃日志分析与栈帧归属、**微软账号正版登录（设备码 / 令牌自动刷新）**、Java 的 tar.gz 安装（Linux/macOS 代码就绪）、Modrinth 元数据源、CLI 与 MCP 两个消费者。
-
-**全链路已跑通**：`.mrpack` → 部署 → 自检 → 启动 → 崩溃 → 日志 → 定位。
-
-实测样本：
+## 实测样本
 
 | 场景 | 结果 |
 |---|---|
-| 原版 1.20.1 | 启动到主菜单 |
-| Fabric 0.15.11 + 1.20.1 | 启动成功 |
-| Fabulously Optimized 6.5.0（50 mod / 1.21.1） | 151 mods loaded，图集全部创建 |
+| 原版 1.20.1 | 启动到主菜单（OpenAL + 纹理图集） |
+| Fabulously Optimized 6.5.0（50 mod / 1.21.1） | 151 mods loaded |
 | Forge 47.3.0 + JEI + AppleSkin | `Launching target 'forgeclient'`，两个 mod 均生效 |
-| NeoForge 21.1.264（经代理）/ 21.1.265（无代理走镜像） | ModLauncher 11.0.5，OpenAL 与全部图集成功 |
-| 正版登录 | 端点与错误映射已验证；**真实登录未实测**（需自备 Azure 应用 id 与正版账号，见 ADR-0024） |
+| NeoForge 21.1.265（无代理，走镜像） | ModLauncher 11.0.5，图集全部成功 |
+| 崩溃诊断 | 真实日志里指认到 `jei` / `controlify` |
+| 正版登录 | 端点与错误映射已验证，**真实登录未实测**（见下） |
 
-**未开始 / 刻意不做**：
+## 目录布局
 
-- **CurseForge 下载**——要 API key 才能实测，没实测的不发布（预检已支持，见 ADR-0021）
-- **正版登录的实测**——同上，需要使用者自备 Azure 应用与账号；代码与测试都已就绪
-- **版本求解**——ADR-0003 刻意不做：Modrinth 元数据没有版本范围，硬做等于用假精度骗自己
-- **GUI**——参考实现的价值在协议与分层，GUI 会把依赖和复杂度翻倍
+用户只选一次根目录，实例自动派生。`libraries` 与 `assets` 共享——十来个实例就是十几 GB 的重复，而它们是只读的。见 [ADR-0008](docs/adr/0008-directory-layout.md)。
 
-## 许可
+```
+<root>/
+  libraries/  assets/  versions/<id>/    共享
+  instances/<name>/  mods/  natives/      每实例独立
+  auth/accounts.json                     明文 0600，见 ADR-0024
+```
 
-MIT（见 [LICENSE](LICENSE)）。
+## 设计文档
 
-使用内置镜像时的第三方义务，代码里已落地的不重复展开：
+24 篇 ADR 在 [`docs/adr/`](docs/adr/)。绕不开的几篇：
 
-- **BMCLAPI** 要求在下载界面标明来源——`DownloadSource.credit` 是必填字段，CLI 每次下载后打印「资源来源」
-- **MCIM** 要求登记启动器 UA（[mcim-rust-api#12](https://github.com/mcmod-info-mirror/mcim-rust-api/issues/12)），需要你去提一次
-- **forgecdn** 无公开协议，sha1 校验是唯一防线（ADR-0022）
+| ADR | 讲什么 |
+|---|---|
+| [0001](docs/adr/0001-operation-event-stream.md) | Operation / OpEvent：core 不打印任何东西 |
+| [0002](docs/adr/0002-preflight-first.md) | 为什么先做预检而不是先做启动 |
+| [0005](docs/adr/0005-download-and-mirrors.md) | 源是候选列表，哈希是唯一裁判 |
+| [0008](docs/adr/0008-directory-layout.md) | 共享库存 + 实例隔离 |
+| [0015](docs/adr/0015-forge-installer.md) | Forge 直接跑官方 installer，不自己复刻 |
+| [0020](docs/adr/0020-stack-attribution.md) | 栈帧归属：只用事实，两个模组同包就不指认 |
+| [0024](docs/adr/0024-microsoft-auth.md) | 设备码登录与令牌刷新 |
+
+术语见 [GLOSSARY.md](GLOSSARY.md)。
+
+## 状态
+
+链路已闭合，全部实测：`.mrpack` → 部署 → 自检 → 启动 → 崩溃 → 日志 → 定位到模组。
+
+**未做**：
+
+- **CurseForge 下载**——要 API key 才能实测，没实测的不发布（预检已支持）
+- **真实登录实测**——需要你自备 Azure 应用 id 与正版账号；代码与 22 个测试已就绪
+- **Linux/macOS 端到端**——tar.gz 解压器与系统 GNU tar 互通，但没在目标平台跑过
+- **版本求解**（刻意不做）——Modrinth 元数据里没有版本范围，硬做等于用假精度骗自己
+- **GUI**（刻意不做）——参考实现的价值在协议与分层
+
+## 合规与许可
+
+MIT（见 [LICENSE](LICENSE)）。调用的第三方公益服务有硬性义务：
+
+| 服务 | 要求 | 做法 |
+|---|---|---|
+| BMCLAPI | UA 以 `${NAME}/${VERSION}` 开头；**必须标明来源** | `USER_AGENT = 'BlockPilot/0.0.1'`；`DownloadSource.credit` 是必填字段，CLI 每次下载后打印「资源来源」 |
+| MCIM | 使用前登记 UA | UA 集中在 `src/core/user-agent.ts`，登记见 [issue #12](https://github.com/mcmod-info-mirror/mcim-rust-api/issues/12) |
+| Modrinth | 可识别 UA；300 req/min | 统一 UA，元数据 100 个一批 |
+
+`credit` 不是装饰字段——BMCLAPI 要求的「标明来源」必须能被渲染出来，所以它进了类型定义，而不是只写在文档里。
