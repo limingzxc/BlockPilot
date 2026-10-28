@@ -64,23 +64,36 @@ blockpilot preflight ~/Downloads/MyPack.mrpack
 ```
 
 ```
-  verdict   BLOCKED
+  verdict   WARN
+  mods      48  (resolved 47, unresolved 1)
 
-  ✗ DEPENDENCY_VERSION_MISMATCH  fabric-api 要求 fabricloader >=0.16.10，实际是 0.15.11
-    → 加载器版本太低，换更高的 loader 版本重装
+  ! UNVERIFIED_DEPENDENCY  3IuO68q1 需要前置模组 codAaoxh，整合包里没有它（可能已内置在某个模组里）
+    → 整合包常把依赖打在 jar-in-jar 里；装完跑一次 preflight <实例目录> 确认，确有缺失再补装
 ```
 
-报告里的修复计划是**可执行**的（文件名、下载地址、sha1），可以直接落地：
+整合包会把依赖直接打进模组 jar 里（jar-in-jar），装之前看不到这一层。所以这类问题只报
+WARN、不判 BLOCKED——**预检只说有证据的话**。
+
+装好的实例查得更准，而且完全离线、不发任何请求：
+
+```bash
+blockpilot preflight D:/mc/instances/fo
+```
+
+```
+  verdict   BLOCKED
+  ✗ MISSING_DEPENDENCY  iris 需要前置模组 sodium，本地目录里没有
+    → 本地元数据只提供 modId，没有下载地址；需要联网反查才能给出可安装版本
+```
+
+确实缺依赖时，`install` 给出带文件名、下载地址、sha1 的计划：
 
 ```bash
 blockpilot install ~/Downloads/MyPack.mrpack --mods-dir D:/mc/instances/fo
 ```
 
-已经装好的实例也能查，这种情况下完全离线、不发任何请求：
-
-```bash
-blockpilot preflight D:/mc/instances/fo
-```
+计划里每一项都带 `confidence`：`unverified` 表示「包里没看到，但可能被内置」，默认不装——
+装一个重复的模组只会改掉整合包作者选定的版本。确认缺了再加 `--include-unverified`。
 
 加 `--json` 输出结构化报告，方便脚本处理。
 
@@ -115,7 +128,7 @@ blockpilot diag --root D:/mc    # 分析最近一次
 | 装整合包 | `blockpilot deploy <pack.mrpack> --root <dir>` |
 | 装完启动 | `blockpilot run <版本 id> --root <dir> --instance <name>` |
 | 查包或查实例能不能跑 | `blockpilot preflight <包或实例目录>` |
-| 缺依赖，让它下载 | `blockpilot install <包> --mods-dir <实例>/mods` |
+| 缺依赖，看是否能确认 | `blockpilot install <包> --mods-dir <实例>/mods` |
 | 只看启动命令，不启动 | `blockpilot launch <版本 id> --root <dir>` |
 | 崩了查原因 | `blockpilot diag --root <dir>` |
 | 装原版 / 补音效 | `blockpilot setup <mc>` / `blockpilot assets <mc>` |
@@ -201,7 +214,7 @@ MCP 客户端可以挂两个只读工具：
 
 `preflight_modpack` 查包能不能跑，`diagnose_crash` 把崩溃归因到模组。**下载和启动刻意没有暴露**——写盘和用你的账号启动都不可回滚，交给人在看到结论后自己决定。
 
-设计理由在 [`docs/adr/`](docs/adr/)（24 篇），术语在 [GLOSSARY.md](GLOSSARY.md)。改代码前跑 `npm test`（242 个用例，全部不联网）。
+设计理由在 [`docs/adr/`](docs/adr/)（25 篇），术语在 [GLOSSARY.md](GLOSSARY.md)。改代码前跑 `npm test`（257 个用例，全部不联网）；改链路再跑 `npm run e2e`（实测，见 `docs/testing/`）。
 
 ## 许可
 

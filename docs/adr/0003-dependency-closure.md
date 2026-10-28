@@ -74,3 +74,8 @@ mods      1  (resolved 1, unresolved 0)
 ```
 
 Sodium 不在这个整合包里，是从 Iris 的依赖声明跨模组反查出来的真实版本。
+
+> **2026-10-28 修订**：上面这段输出已经变了。整合包可以把依赖打进别的模组的 jar
+> （jar-in-jar），而 `.mrpack` 里没有 jar 能证实这一点，所以「缺依赖」在整合包模式下
+> 降级为 `UNVERIFIED_DEPENDENCY`（warning），`plan.installs` 带 `confidence: unverified`。
+> 闭包算法与 `closureToFindings()` 的默认行为不变（默认仍是 `blocker`），决策见 ADR-0025。
