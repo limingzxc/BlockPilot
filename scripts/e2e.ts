@@ -31,15 +31,14 @@ const MCP = join(REPO, 'dist', 'mcp', 'server.js')
 const FIX = join(REPO, 'fixtures')
 const MCROOT = join(FIX, 'mcroot')
 
-const FO_CRASH_LOG = join(
-  MCROOT,
-  'instances',
-  'fo',
-  'logs',
-  '2026-10-25T21-10-00-1.21.1-fabric-loader-0.19.3.log',
-)
-const AUTH_FAIL_LOG = join(MCROOT, 'instances', 'default', 'logs', 'latest.log')
-const CLEAN_LOG = join(MCROOT, 'instances', 'forge-test', 'logs', 'latest.log')
+/**
+ * 日志样本放在 testdata/ 而不是 fixtures/：后者被 gitignore，而且是活的运行目录——
+ * 会话日志只保留最近 10 份，跑几次 E2E-301 就会把真实崩溃样本轮转掉（确实发生过）。
+ */
+const TESTDATA = join(REPO, 'testdata', 'instances')
+const FO_CRASH_LOG = join(TESTDATA, 'crash', 'logs', 'controlify-mixin.log')
+const AUTH_FAIL_LOG = join(TESTDATA, 'auth', 'logs', 'auth-failed.log')
+const CLEAN_LOG = join(TESTDATA, 'clean', 'logs', 'clean.log')
 
 // ---------------------------------------------------------------------------
 // 基础设施
@@ -203,6 +202,37 @@ function readMarker(gameDir: string): MmcMarker {
 
 function markerComponent(marker: MmcMarker, uid: string): string | undefined {
   return marker.components?.find((c) => c.uid === uid)?.version
+}
+
+/**
+ * 每条用例依赖的夹具。CI 上 `fixtures/` 不存在（被 gitignore），
+ * 这里列出来的用例记为 SKIP——不能因为「本机没有 1.7 GB 的实测目录」就假红。
+ */
+const REQUIRES: Readonly<Record<string, readonly string[]>> = {
+  'E2E-003': [join(FIX, 'instance-miss')],
+  'E2E-004': [join(FIX, 'instance-ok')],
+  'E2E-005': [join(FIX, 'instance-miss')],
+  'E2E-007': [AUTH_FAIL_LOG],
+  'E2E-008': [CLEAN_LOG],
+  'E2E-009': [MCROOT],
+  'E2E-010': [MCROOT],
+  'E2E-010B': [MCROOT],
+  'E2E-011': [MCROOT],
+  'E2E-012': [MCROOT],
+  'E2E-101': [join(FIX, 'fo-6.5.0.mrpack')],
+  'E2E-102': [join(FIX, 'fo-6.5.0.mrpack')],
+  'E2E-103': [join(FIX, 'real-pack.mrpack')],
+  'E2E-104': [join(FIX, 'cf-pack.zip')],
+  'E2E-106': [join(FIX, 'fo-6.5.0.mrpack')],
+  'E2E-107': [join(FIX, 'demo.mrpack')],
+  'E2E-201': [MCROOT],
+  'E2E-202': [MCROOT],
+  'E2E-301': [MCROOT],
+  'E2E-302': [MCROOT],
+  'E2E-303': [MCROOT],
+  'E2E-401': [MCROOT],
+  'E2E-402': [join(FIX, 'fo-6.5.0.mrpack')],
+  'E2E-403': [join(FIX, 'fo-6.5.0.mrpack')],
 }
 
 interface CliOptions {
@@ -932,6 +962,23 @@ const CASES: readonly CaseDef[] = [
     },
   },
   {
+    id: 'E2E-404',
+    title: 'root 指向文件：立刻说清楚，不写半截目录',
+    tier: 4,
+    async run(ctx) {
+      const file = join(ctx.tmp, 'not-a-dir')
+      writeFileSync(file, 'x')
+      const r = await ctx.cli(['setup', '1.21.1', '--root', file, '--dry-run'], {
+        offline: true,
+        timeoutMs: 30_000,
+      })
+      assertCode(r, 1, 'root 是文件')
+      assertText(r, '不是文件夹', '应直接说 root 不可用')
+      assertNoText(r, 'unexpected error', '不该是未处理异常')
+      assert(existsSync(file), '不该动这个文件')
+    },
+  },
+  {
     id: 'E2E-403',
     title: '代理不可用：同样快速失败',
     tier: 4,
@@ -950,7 +997,7 @@ const CASES: readonly CaseDef[] = [
 // 执行器
 // ---------------------------------------------------------------------------
 
-type Status = 'PASS' | 'FAIL' | 'KNOWN' | 'XPASS'
+type Status = 'PASS' | 'FAIL' | 'KNOWN' | 'XPASS' | 'SKIP'
 
 interface Outcome {
   readonly id: string
@@ -1047,6 +1094,19 @@ async function main(): Promise<number> {
   const outcomes: Outcome[] = []
 
   for (const c of selected) {
+    const missing = (REQUIRES[c.id] ?? []).filter((p) => !existsSync(p))
+    if (missing.length > 0) {
+      outcomes.push({
+        id: c.id,
+        title: c.title,
+        tier: c.tier,
+        status: 'SKIP',
+        ms: 0,
+        message: `缺夹具：${missing.join('、')}`,
+      })
+      continue
+    }
+
     const ctx = new Ctx(c.id, evidenceRoot)
     const started = Date.now()
     try {
@@ -1093,7 +1153,15 @@ async function main(): Promise<number> {
   process.stdout.write('\n')
   for (const o of outcomes) {
     const mark =
-      o.status === 'PASS' ? 'PASS ' : o.status === 'FAIL' ? 'FAIL ' : o.status === 'KNOWN' ? 'KNOWN' : 'XPASS'
+      o.status === 'PASS'
+        ? 'PASS '
+        : o.status === 'FAIL'
+          ? 'FAIL '
+          : o.status === 'KNOWN'
+            ? 'KNOWN'
+            : o.status === 'SKIP'
+              ? 'SKIP '
+              : 'XPASS'
     const line = `${mark}  ${o.id}  ${o.title.padEnd(30, ' ')} ${String(o.ms).padStart(6, ' ')}ms`
     process.stdout.write(`${line}\n`)
     if (o.message !== undefined && o.status !== 'PASS') {
@@ -1109,7 +1177,8 @@ async function main(): Promise<number> {
   for (const t of tiers) {
     process.stdout.write(
       `T${t}  ${String(outcomes.filter((o) => o.tier === t).length)} 条：` +
-        `PASS ${count(t, 'PASS')} · KNOWN ${count(t, 'KNOWN')} · FAIL ${count(t, 'FAIL')} · XPASS ${count(t, 'XPASS')}\n`,
+        `PASS ${count(t, 'PASS')} · KNOWN ${count(t, 'KNOWN')} · FAIL ${count(t, 'FAIL')} · ` +
+          `SKIP ${count(t, 'SKIP')} · XPASS ${count(t, 'XPASS')}\n`,
     )
   }
 
@@ -1119,6 +1188,10 @@ async function main(): Promise<number> {
 
   process.stdout.write(`\n证据：${evidenceRoot}\n`)
 
+  const skipped = outcomes.filter((o) => o.status === 'SKIP')
+  if (skipped.length > 0) {
+    process.stdout.write(`跳过 ${skipped.length} 条：本机没有对应夹具（fixtures/ 被 gitignore）\n`)
+  }
   if (known.length > 0) {
     process.stdout.write(
       `已知缺陷 ${known.length} 条（不算红）：${[...new Set(known.map((o) => o.message?.split(':')[0] ?? '?'))].join(', ')}\n`,

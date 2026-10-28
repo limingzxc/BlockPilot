@@ -34,3 +34,25 @@ jobs:
           HTTP_PROXY: ''
           https_proxy: ''
           http_proxy: ''
+
+      # 实测的离线层（T0）。夹具用脚本现造——它们只包含元数据，不下载任何东西。
+      # fixtures/mcroot 这类大件在 CI 上不存在，对应用例会记为 SKIP 而不是假红。
+      - run: node scripts/make-fixture.mjs && node scripts/make-instance-fixture.mjs
+
+      - run: npm run e2e -- --tier 0
+        env:
+          HTTPS_PROXY: ''
+          HTTP_PROXY: ''
+          https_proxy: ''
+          http_proxy: ''
+
+      # 实测的离线层（T0）。夹具用脚本现造——它们只包含元数据，不下载任何东西。
+      # fixtures/mcroot 这类大件在 CI 上不存在，对应用例会记为 SKIP 而不是假红。
+      - run: node scripts/make-fixture.mjs && node scripts/make-instance-fixture.mjs
+
+      - run: npm run e2e -- --tier 0
+        env:
+          HTTPS_PROXY: ''
+          HTTP_PROXY: ''
+          https_proxy: ''
+          http_proxy: ''

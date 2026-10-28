@@ -214,7 +214,7 @@ MCP 客户端可以挂两个只读工具：
 
 `preflight_modpack` 查包能不能跑，`diagnose_crash` 把崩溃归因到模组。**下载和启动刻意没有暴露**——写盘和用你的账号启动都不可回滚，交给人在看到结论后自己决定。
 
-设计理由在 [`docs/adr/`](docs/adr/)（25 篇），术语在 [GLOSSARY.md](GLOSSARY.md)。改代码前跑 `npm test`（257 个用例，全部不联网）；改链路再跑 `npm run e2e`（实测，见 `docs/testing/`）。
+设计理由在 [`docs/adr/`](docs/adr/)（25 篇），术语在 [GLOSSARY.md](GLOSSARY.md)。改代码前跑 `npm test`（260 个用例，全部不联网）；改链路再跑 `npm run e2e`（实测，见 `docs/testing/`）。
 
 ## 许可
 

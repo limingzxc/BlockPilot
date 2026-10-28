@@ -33,8 +33,8 @@ Java 选择用例、CLI 消费循环）并新增了 auth。242 个单测全绿�
 | Java | 系统 GraalVM CE 21.0.4；`fixtures/mcroot/java/jdk-21.0.12.1+1-jre` |
 | 单测基线 | 242 / 242，5.4 s（全离线） |
 | 真实资产 | `fixtures/mcroot` 1.7 GB：8 个实例、11 个版本、FO 6.5.0 全量 48 mod |
-| 真崩溃样本 | `instances/fo/logs/2026-10-25T21-10-00-*.log`（controlify mixin 注入失败） |
-| 真登录失败样本 | `instances/default/logs/latest.log`（authlib 401） |
+| 真崩溃样本 | `testdata/instances/crash/`（controlify mixin 注入失败，含极小 mods/ 供归因） |
+| 真登录失败样本 | `testdata/instances/auth/logs/auth-failed.log`（authlib 401） |
 
 网络（同一台机器，逐条 curl 实测）：
 
@@ -100,7 +100,7 @@ E2E-011 / 012 是本轮新发现，先按 knownIssue 记录（见 §5）。
 | E2E-302 | Java 路径错误 | `--java <不存在>`→1；一句人话，不 spawn、不报「异常退出」 |
 | E2E-303 | 版本不兼容被拦住 | 把 1.20.1 的 sodium 塞进 1.21.1 实例 → 预检 BLOCKED、`DEPENDENCY_VERSION_MISMATCH` |
 
-### T4 故障注入（3 条，约 5 s）
+### T4 故障注入（4 条，约 6 s）
 
 | ID | 场景 | 判定 |
 |---|---|---|
@@ -108,8 +108,10 @@ E2E-011 / 012 是本轮新发现，先按 knownIssue 记录（见 §5）。
 | E2E-402 | 断网 | 死代理下预检 →1、`NETWORK_ERROR`、消息含失败的 URL、不说成「模组已下架」、30 s 内返回 |
 | E2E-403 | 代理不可用 | `--proxy 127.0.0.1:9` →1、`NETWORK_ERROR` |
 
-未实现：**E2E-404 root 不可写**（Windows 上只读目录语义与 POSIX 不同，先放着）；
-SIGINT 中断改由 `run.test.ts` 的 abort 用例覆盖——Windows 给子进程发 SIGINT 不可靠。
+| E2E-404 | root 指向文件 | `--root <文件>` →1、「根目录不是文件夹」，不写半截目录 |
+
+说明：真正的「只读目录」不测——Windows 的只读语义与 POSIX 不同，测出来大概率是平台怪癖；
+SIGINT 中断由 `run.test.ts` 的 abort 用例覆盖。
 
 ## 4. 成本与执行
 
@@ -120,11 +122,11 @@ npm run e2e -- --only E2E-101
 npm run e2e -- --list
 ```
 
-T0–T4 已实现（29 条）。`--tier 2,3` 会真的下载、并打开一个游戏窗口
+T0–T4 已实现（30 条）。`--tier 2,3` 会真的下载、并打开一个游戏窗口
 （E2E-301，默认 60 s，可用 `BP_E2E_STOP` 调短）；T4 只写 `/tmp` 与一个本地 HTTP 端口。
 
-T2 之后会写盘、占用带宽、开游戏窗口，**不作为默认**。CI 只跑 T0（`CI=true` 时
-执行器自动拒绝 T2+，避免在别人的 runner 上偷偷下 150 MB）。
+T2 之后会写盘、占用带宽、开游戏窗口，**不作为默认**。CI 跑 T0：夹具用
+`scripts/make-*.mjs` 现造，没有大件的用例自动 SKIP（`--tier 2` 在 `CI=true` 下也会被拒绝）。
 
 ## 5. 缺陷与修复（2026-10-28）
 
@@ -157,6 +159,8 @@ T2 之后会写盘、占用带宽、开游戏窗口，**不作为默认**。CI �
 ## 7. 维护
 
 - 新增一个真实样本（新加载器、新包）→ 加一条 T2 用例，别只写在 ADR 里。
+- 日志类样本放 `testdata/`，不要放 `fixtures/`：后者是活的运行目录，会话日志只保留 10 份，
+  跑几次 T3 就会把样本轮转掉（2026-10-29 真发生过一次）。
 - 修掉一个 knownIssue → 删标记，用例转 PASS；`XPASS` 出现说明标记忘了删。
 - 用例只断言**契约**（退出码、稳定字段、文件事实），不断言文案排版——否则改个措辞
   就要改测试，测试会先于产品腐烂。
