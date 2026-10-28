@@ -1,6 +1,6 @@
 import { authError, type AuthAccount, type DeviceCode, type MsaToken } from './types.js'
 import type { HttpClient } from './http.js'
-import { pollForToken, refreshMsaToken, requestDeviceCode, sleep, type SleepFn } from './msa.js'
+import { pollForToken, refreshMsaToken, requestDeviceCode, type SleepFn } from './msa.js'
 import {
   assertGameOwnership,
   authenticateXbl,
@@ -122,6 +122,3 @@ export async function refreshAccount(
 export function isExpired(account: AuthAccount, now: number = Date.now(), skewMs = 60_000): boolean {
   return account.expiresAt - skewMs <= now
 }
-
-/** 登录默认用的等待函数，测试里注入假的。 */
-export const defaultSleep: SleepFn = sleep

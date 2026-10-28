@@ -42,16 +42,6 @@ export function installerSpec(
   }
 }
 
-/** 兼容旧调用 */
-export function forgeVersionId(gameVersion: string, forgeVersion: string): string {
-  return installerSpec('forge', gameVersion, forgeVersion).versionId
-}
-
-/** 兼容旧调用 */
-export function installerUrl(gameVersion: string, forgeVersion: string): string {
-  return installerSpec('forge', gameVersion, forgeVersion).url
-}
-
 export interface ForgePromotions {
   readonly [key: string]: string
 }

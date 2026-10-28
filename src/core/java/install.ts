@@ -157,8 +157,3 @@ export function createJavaInstall(opts: JavaInstallOptions): Operation<JavaInsta
     yield Op.done()
   })
 }
-
-/** 供 CLI 判断某个大版本是否已由我们管理 */
-export function managedJavaPath(layout: Layout): string {
-  return join(layout.root, 'java')
-}

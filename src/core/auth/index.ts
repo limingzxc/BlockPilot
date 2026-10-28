@@ -73,31 +73,6 @@ export function createLogin(opts: LoginOptions): Operation<AuthAccount> {
   })
 }
 
-export interface RefreshOptions {
-  readonly account: AuthAccount
-  readonly storePath: string
-  readonly http?: HttpClient
-  readonly now?: () => number
-}
-
-/** 显式刷新一个账号并写回存档。 */
-export function createRefresh(opts: RefreshOptions): Operation<AuthAccount> {
-  return defineOperation<AuthAccount>('refresh', async function* (signal) {
-    try {
-      const fresh = await refreshAccount(opts.account, {
-        ...(opts.http === undefined ? {} : { http: opts.http }),
-        ...(opts.now === undefined ? {} : { now: opts.now }),
-        signal,
-      })
-      upsertAccount(opts.storePath, fresh)
-      yield Op.result(fresh)
-      yield Op.done()
-    } catch (err) {
-      yield* asFailed(err)
-    }
-  })
-}
-
 export interface ResolveAccountOptions {
   readonly storePath: string
   /** 用户显式指定的名字或 uuid。给了就必须能用，不能静默降级 */

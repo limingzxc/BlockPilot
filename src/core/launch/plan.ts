@@ -155,8 +155,3 @@ export function buildLaunchPlan(opts: LaunchPlanOptions): LaunchPlan {
     commandLine,
   }
 }
-
-/** 供上层预估 natives 解压工作用。 */
-export function listNativeLibraries(version: VersionJson, env: LaunchEnv) {
-  return pickLibraries(version, env).natives
-}
