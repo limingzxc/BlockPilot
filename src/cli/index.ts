@@ -21,7 +21,7 @@ import { createDiagnose } from '../core/diagnostics/index.js'
 import type { DiagResult } from '../core/diagnostics/index.js'
 import type { RunResult } from '../core/launch/run.js'
 import type { LaunchPlan } from '../core/launch/plan.js'
-import { defaultRoot, resolveLayout } from '../core/layout.js'
+import { defaultRoot, LayoutError, resolveLayout } from '../core/layout.js'
 import { authStorePath, createLogin, isAuthError, loadStore, removeAccount, resolveAccount } from '../core/auth/index.js'
 import type { AuthAccount } from '../core/auth/types.js'
 import { createVanillaSetup, pickSources } from '../core/setup/vanilla.js'
@@ -1263,6 +1263,10 @@ main().then(
   (err: unknown) => {
     // 网络故障不该显示成「unexpected error」：它是最常见的一类失败，
     // 用户需要知道是哪个地址、以及可以怎么办。
+    if (err instanceof LayoutError) {
+      process.stderr.write(`${C.red}${err.message}${C.reset}\n`)
+      process.exit(1)
+    }
     if (err instanceof NetworkError) {
       process.stderr.write(`${C.red}网络错误${C.reset}：${err.message}\n`)
       process.stderr.write(

@@ -1,5 +1,14 @@
+import { existsSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
+
+/** 根目录本身不可用（是文件、或是个打不开的路径）。CLI 直接渲染这句话。 */
+export class LayoutError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'LayoutError'
+  }
+}
 
 /**
  * 磁盘布局。参照 Prism/MultiMC 的模型：
@@ -36,6 +45,18 @@ export function resolveLayout(root: string, instanceId = 'default'): Layout {
   // 必须转绝对路径：相对路径会让 -cp 里的条目依赖进程 cwd，
   // 换个目录启动就是一堆「找不到主类」
   const base = resolve(root)
+
+  // --root 指到文件上（常见于少打一个目录名）时，与其让 mkdir 在第三步抛 ENOTDIR，
+  // 不如在解析目录布局这一步就说清楚
+  if (existsSync(base)) {
+    let isDir = true
+    try {
+      isDir = statSync(base).isDirectory()
+    } catch {
+      isDir = true // 权限问题交给后续步骤报，别在这里掩盖真实原因
+    }
+    if (!isDir) throw new LayoutError(`根目录不是文件夹：${base}`)
+  }
   return {
     root: base,
     instanceId,
