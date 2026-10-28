@@ -12,4 +12,6 @@ _tmp/
 .workbuddy/memory/
 
 *.log
+# testdata 里的日志是测试输入，不是运行产生的日志
+!testdata/instances/**/logs/*.log
 .DS_Store

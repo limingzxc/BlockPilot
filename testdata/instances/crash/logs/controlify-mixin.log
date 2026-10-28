@@ -1,0 +1,13 @@
+[21:10:01] [main/INFO]: Loading Minecraft 1.21.1 with Fabric Loader 0.19.3
+[21:10:03] [main/INFO]: Loading 151 mods:
+[21:10:09] [main/ERROR]: Mixin apply for mod controlify failed controlify.mixins.json:ScreenAccessor -> net.minecraft.class_437: org.spongepowered.asm.mixin.injection.throwables.InvalidInjectionException
+[21:10:09] [main/ERROR]: org.spongepowered.asm.mixin.transformer.throwables.MixinTransformerError: An unexpected critical error was encountered
+[21:10:09] [Render thread/ERROR]: java.lang.RuntimeException: Mixin transformation of net.minecraft.class_437 failed
+	at net.minecraft.class_437.method_25423(class_437.java:120)
+	at net.minecraft.class_310.handler$zcb000$controlify$method_15563(class_310.java:1234)
+	at dev.isxander.controlify.utils.RenderUtils.blit(RenderUtils.kt:88)
+Caused by: java.lang.NoSuchMethodError: 'void dev.isxander.controlify.api.ControlifyApi.register()'
+	at dev.isxander.controlify.Controlify.onInitialize(Controlify.kt:42)
+	at net.fabricmc.loader.impl.FabricLoaderImpl.invokeEntrypoints(FabricLoaderImpl.java:394)
+	at net.fabricmc.loader.impl.launch.knot.Knot.init(Knot.java:160)
+[21:10:10] [Render thread/INFO]: Stopping!
