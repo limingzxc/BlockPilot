@@ -1,180 +1,210 @@
 # BlockPilot
 
-AI 可驱动的 Minecraft 启动器**内核**——参考实现。
+命令行的 Minecraft 启动器内核：**装整合包、查兼容性、启动游戏、崩了告诉你是哪个模组**。
 
-不是又一个启动器。它想回答一个问题：**当 AI 要替你装游戏、查兼容性、修崩溃时，启动器该长什么样？**
+没有图形界面，所有操作都是一条命令。适合整合包作者、爱折腾的玩家，以及想把「装游戏」交给脚本或 AI 的人。
 
-```
-core/      纯逻辑，不知道 stdout 存在
-  cli/     进程内消费者，渲染成人类可读文本
-  mcp/     独立进程，把 OpEvent 转成 MCP 通知
-```
+## 装上
 
-不是给玩家用的客户端（没有 GUI），不与 HMCL / Prism 竞争功能，也不做「AI 看日志猜原因」——那条路上已经站了五个人。
-
-## 快速开始
+需要 Node 20+（开发用 22）。
 
 ```bash
+git clone <本仓库> && cd BlockPilot
 npm install
-node scripts/make-fixture.mjs && node scripts/make-instance-fixture.mjs
-
-npm run preflight -- fixtures/closure.mrpack   # 在线：缺 Sodium，给出可执行的修复计划
-npm run preflight -- fixtures/instance-miss    # 离线：只读 jar 元数据，零网络
-
-npm test        # 242 个测试，全部不依赖网络
-npm run smoke   # 起真实 MCP 子进程，走 stdio 调一次工具
+npm run build
+npm link          # 之后可以直接敲 blockpilot
 ```
 
-## 前提
+```bash
+blockpilot --help
+```
 
-- **正版登录要一个自己的 Azure 应用 id**（免费注册一次）：在 portal.azure.com 建「个人账号」应用，开启「允许公共客户端流」，加委托权限 `XboxLive.signin`，然后 `--client-id` 或 `BLOCKPILOT_CLIENT_ID`。第三方不能复用官方启动器的 id——那是冒充。
-- **NeoForge 的 maven 在国内被墙**，已内置 `neoforged.forgecdn.net` 镜像（含 installer 重打包），无代理可装；有代理时 `--proxy` 走官方保真度更高。
+不想动全局命令就用 `node dist/cli/index.js <命令>`；改代码时用 `npx tsx src/cli/index.ts <命令>`。
 
-## 命令
+数据默认放在 `%APPDATA%\BlockPilot`（macOS 是 `~/Library/Application Support/BlockPilot`，Linux 是 `~/.local/share/blockpilot`）。想放别的盘加 `--root`，**只需要选这一次**，实例目录会自动派生。
 
-| 命令 | 做什么 |
+## 装一个整合包，然后玩
+
+```bash
+blockpilot deploy ~/Downloads/Fabulously.Optimized.mrpack --root D:/mc --instance fo
+```
+
+包里已经写好了要哪个 MC 版本、哪个加载器，不用你选：
+
+```
+BlockPilot Real Fixture
+→ 原版文件
+→ 加载器
+→ 整合包文件
+→ overrides
+
+  装好了  1.21.1 + fabric 0.19.3
+  模组 50 个（下载 50 / 跳过 0 失败 0）· overrides 63 个文件
+
+  部署后检查  OK
+
+  启动
+    blockpilot run fabric-loader-0.19.3-1.21.1 --root D:/mc --instance fo
+```
+
+照最后一行敲就进游戏。首次约 150 MB（原版 + 库 + 模组）。
+
+想要声音和字体再补一次（可后补，不装也能进游戏）：
+
+```bash
+blockpilot assets 1.21.1 --root D:/mc     # 约 790 MB
+```
+
+Fabric、Forge、NeoForge 都支持，按包里的声明自动选。Forge 类要跑官方 installer，会多花 1–3 分钟。
+
+## 装之前，先看它能不能跑
+
+```bash
+blockpilot preflight ~/Downloads/MyPack.mrpack
+```
+
+```
+  verdict   BLOCKED
+
+  ✗ DEPENDENCY_VERSION_MISMATCH  fabric-api 要求 fabricloader >=0.16.10，实际是 0.15.11
+    → 加载器版本太低，换更高的 loader 版本重装
+```
+
+报告里的修复计划是**可执行**的（文件名、下载地址、sha1），可以直接落地：
+
+```bash
+blockpilot install ~/Downloads/MyPack.mrpack --mods-dir D:/mc/instances/fo
+```
+
+已经装好的实例也能查，这种情况下完全离线、不发任何请求：
+
+```bash
+blockpilot preflight D:/mc/instances/fo
+```
+
+加 `--json` 输出结构化报告，方便脚本处理。
+
+## 崩了
+
+```bash
+blockpilot logs --root D:/mc    # 有哪些会话日志
+blockpilot diag --root D:/mc    # 分析最近一次
+```
+
+```
+最可能的根因
+
+  ✗ mod-crash  第 9 行
+    java.lang.RuntimeException: Ticking screen
+    → 异常来自 Just Enough Items（jei），文件 jei.jar。先禁用或更新它，看崩溃是否消失
+
+指向的模组（按证据强度排序，越靠前越可能是它）
+
+  ✗ jei · Just Enough Items 15.74.0.229
+    jei.jar · 2 个栈帧
+    · 根因区段最上面的一帧
+    · 包名属于它：mezz.jei.common、mezz.jei.gui
+```
+
+**定位不到时会直说**，不会猜一个名字给你——照着删错模组，问题还在，还多一个。
+
+## 常用命令
+
+| 我想…… | 命令 |
 |---|---|
-| `preflight <target>` | 检查它能不能跑。`--json` 给结构化报告 |
-| `deploy <pack.mrpack>` | 一条命令装完：原版 → 加载器 → 模组 → overrides，装完自检 |
-| `install <target> --mods-dir <dir>` | 把 `plan.installs` 下载落地（`--dry-run` 只看计划） |
-| `setup <version>` | 原版文件：client jar + libraries + assetIndex + natives |
-| `assets <version>` | 音效/语言/字体（1.20.1 约 621 MB，可不装——只是没声音） |
-| `fabric <mc> [--loader <ver>]` | 单独装 Fabric（`deploy` 会自动做） |
-| `java` / `java install <major>` | 列出本机 Java / 从 Adoptium 装一个 |
-| `login` / `accounts` | 微软账号登录（设备码）/ 列出或删除账号 |
-| `launch <version>` | **只生成启动命令**，不启动 |
-| `run <version>` | 真的启动，日志落盘到 `<实例>/logs/` |
-| `logs` / `diag` | 列出会话日志 / 把崩溃归因到具体模组 |
+| 装整合包 | `blockpilot deploy <pack.mrpack> --root <dir>` |
+| 装完启动 | `blockpilot run <版本 id> --root <dir> --instance <name>` |
+| 查包或查实例能不能跑 | `blockpilot preflight <包或实例目录>` |
+| 缺依赖，让它下载 | `blockpilot install <包> --mods-dir <实例>/mods` |
+| 只看启动命令，不启动 | `blockpilot launch <版本 id> --root <dir>` |
+| 崩了查原因 | `blockpilot diag --root <dir>` |
+| 装原版 / 补音效 | `blockpilot setup <mc>` / `blockpilot assets <mc>` |
+| 看 Java / 装 Java | `blockpilot java` / `blockpilot java install 21` |
+| 正版服务器 | `blockpilot login` / `blockpilot accounts` |
 
-通用：`--root <dir>`（默认 `%APPDATA%\BlockPilot`）、`--instance`、`--china`（镜像优先）、`--proxy <url>`。
+版本 id 就是 `deploy` 打印出来的那个，例如 `fabric-loader-0.19.3-1.21.1`。
 
-## 能力边界
+## 常见问题
 
-预检支持三种输入，但**只承诺能承诺的**：
+**提示找不到 Java / `JAVA_MISSING`**
+`blockpilot java` 看本机有什么，没有就 `blockpilot java install 21`。装好的会被优先使用，不会去抢系统里那个。
 
-| | `.mrpack` | CurseForge zip | 实例目录 |
-|---|---|---|---|
-| 模组身份 | Modrinth `projectId` | `projectID`/`fileID` | jar 内 `modId` |
-| 依赖检查 | 递归闭包 | 无法（要 API key） | 单层 |
-| 网络 | 需要 | 预检不需要 | **不需要** |
-| 给出下载地址 | 是 | 否 | 否 |
+**进游戏没声音、字体是方框**
+`blockpilot assets <mc> --root <dir>`。这一步是几千个小文件，慢是正常的。
 
-CF 的 manifest 只有数字 id，没有 URL 和哈希——所以它明确报 `CF_API_REQUIRED`，而不是装懂。详见 [ADR-0021](docs/adr/0021-curseforge-boundary.md)。
+**下载慢或者连不上**
+加 `--china` 走国内镜像。NeoForge 的 maven 在国内被墙，已内置镜像，不用额外配置；有代理时 `--proxy http://127.0.0.1:1081` 质量更好，也读 `HTTPS_PROXY` 环境变量。
 
-`preflight --json` 里的 `plan.installs` 与下载器字段完全对齐（`url` / `fileName` / `size` / `hashes` / `requiredBy`）——这是「检查 → 一键修 → 再检查」的接口，不是建议列表。
+**进不了正版服务器**
+需要登录，见下一节。离线模式只能玩单人。
 
-<details>
-<summary>检查项全集（14 个 code）</summary>
+**装的东西占多少空间**
+库和音效是**所有实例共享**的，只有实例目录各自独立，所以多开几个整合包不会成倍增长。想整体搬走，把 `--root` 指的目录拷走就行。
 
-| code | 含义 |
-|---|---|
-| `VERSION_MISMATCH` / `LOADER_MISMATCH` | 模组不支持这个 MC 版本 / 加载器 |
-| `MISSING_DEPENDENCY` | 缺前置（在线模式附可安装版本） |
-| `DEPENDENCY_VERSION_MISMATCH` | 已装的版本不满足依赖方声明的范围 |
-| `UNSATISFIABLE_DEPENDENCY` | 缺前置，且没有兼容当前版本的可安装版本 |
-| `DECLARED_INCOMPATIBLE` / `DEPENDENCY_CYCLE` | 互相声明不兼容 / 闭环依赖 |
-| `UNRESOLVED_MOD` / `UNREADABLE_JAR` | 查不到元数据 / jar 读不出元数据，不参与判断 |
-| `JAVA_MISSING` | 一个够用的 Java 都没有（blocker） |
-| `JAVA_NEWER_ONLY` | 没有精确版本但有更高版本（warning，多数能跑） |
-| `JAVA_OLDER_PRESENT` | 同时存在更低版本（info，启动时需指定路径） |
-| `UNKNOWN_GAME_VERSION` / `CLOSURE_TRUNCATED` | 目录无版本信息 / 依赖链超出展开上限 |
+**日志在哪**
+`<root>/instances/<实例>/logs/`，每次启动写新文件，保留最近 10 份，不会覆盖游戏自己写的 `latest.log`。
 
-</details>
+## 正版登录
 
-## 四个决定成败的判断
+不登录也能玩单人和离线整合包。要进正版服务器才需要这一步，**且需要你自己注册一个 Azure 应用**（免费，一次就够）：
 
-**1. 同一个模组有两套身份，且不能互相推导。**
-Modrinth 叫 `AANobbMI`，jar 里叫 `sodium`。用文件名猜 `create-1.20.1-0.5.1.jar → Create` 很诱人，但猜错会让用户装上一个完全无关的模组——一次就毁掉预检的可信度。宁可说「不知道装哪个」。见 [ADR-0004](docs/adr/0004-dual-identity.md)。
+1. 打开 [portal.azure.com](https://portal.azure.com) → 应用注册 → 账户类型选「仅个人 Microsoft 账户」
+2. 身份验证 → 开启「允许公共客户端流」
+3. API 权限 → 添加委托权限 `XboxLive.signin`
+4. 复制「应用程序(客户端) ID」
 
-**2. 镜像给的字节不一定是你要的字节。**
-实测过一次：同一个 URL、同一分钟，`curl` 拿到正确的 jar，Node 拿到 HTTP 200 + 一张 2 KB 的 "Service Temporarily Unavailable" HTML。所以**每个源落盘前都比字节数、再比哈希，校验失败等同于下载失败**，直接换下一个源。没有哈希的任务拒绝下载。见 [ADR-0005](docs/adr/0005-download-and-mirrors.md)。
+```bash
+export BLOCKPILOT_CLIENT_ID=<上一步的 id>
+blockpilot login --root D:/mc
+```
 
-**3. 加载器版本没有自己的 client jar 和 natives。**
-Fabric / Forge 的版本目录只有 `.json`，jar 与 natives 要按 **rootId**（父版本）取。另外 `libraryKey` 必须包含 classifier，否则 `org.lwjgl:lwjgl` 和它的 `natives-windows` 变体会互相覆盖——表现是 `NoClassDefFoundError: org/lwjgl/system/MemoryUtil`，而原版能跑、装加载器就崩。见 [ADR-0011](docs/adr/0011-loader-version-merge.md)。
+```
+  1. 打开  https://microsoft.com/link
+  2. 输入  AB12-CD34
+```
 
-**4. AI 不写盘、不碰凭证。**
-MCP 只有两个只读工具。下载要写磁盘、可能几百 MB、还会覆盖用户文件；登录和启动不可回滚。**AI 诊断、人执行**——这才是能交付的边界。见 [ADR-0001](docs/adr/0001-operation-event-stream.md)。
+在浏览器里输完码，回来就登好了。之后 `run` 默认用这个账号，令牌过期会自动续。
 
-## 对接 AI
+```bash
+blockpilot accounts                   # 看有哪些账号
+blockpilot run ... --account Notch    # 指定账号
+blockpilot run ... --offline          # 强制离线
+```
+
+为什么必须自己注册：第三方启动器不能复用官方启动器的应用 id，那是冒充。密码只输在微软页面上，本项目不碰。
+
+> 这条路代码与测试齐全，但**还没有一次真实登录的实测记录**（缺 Azure 应用 id 与正版账号）。第一次用如果有问题，带上错误码反馈。
+
+## 现在还不能做的
+
+- **没有图形界面**，也不打算做——这是内核，界面交给上层
+- **CurseForge 整合包只能检查不能装**：清单里没有下载地址，装要 CurseForge 的 API key
+- **Linux / macOS 没跑过端到端**：解压与启动代码都在，但没在目标平台验证
+- 不做版本求解（自动挑「最合适的模组版本」）——元数据里没有版本范围，猜不如不猜
+
+## 给写脚本 / 接 AI 的人
+
+`preflight --json` 里的 `plan.installs` 与下载器字段完全对齐（`url` / `fileName` / `size` / `hashes` / `requiredBy`），照着它下载即可。
+
+MCP 客户端可以挂两个只读工具：
 
 ```json
 {
   "mcpServers": {
     "blockpilot": {
       "command": "node",
-      "args": ["--import", "tsx", "D:/BlockPilot/src/mcp/server.ts"]
+      "args": ["D:/BlockPilot/dist/mcp/server.js"]
     }
   }
 }
 ```
 
-构建后换成 `dist/mcp/server.js`。
+`preflight_modpack` 查包能不能跑，`diagnose_crash` 把崩溃归因到模组。**下载和启动刻意没有暴露**——写盘和用你的账号启动都不可回滚，交给人在看到结论后自己决定。
 
-| 工具 | 作用 |
-|---|---|
-| `preflight_modpack` | 检查整合包/实例能否运行 |
-| `diagnose_crash` | 读崩溃日志，指认到具体模组 |
+设计理由在 [`docs/adr/`](docs/adr/)（24 篇），术语在 [GLOSSARY.md](GLOSSARY.md)。改代码前跑 `npm test`（242 个用例，全部不联网）。
 
-两个工具的描述里都写了给模型的行为约束：**看到 `unknown` 不许说「没问题」**；**定位不到模组就不许猜名字**——猜错会让用户删掉一个无辜的模组。
+## 许可
 
-## 实测样本
+MIT（见 [LICENSE](LICENSE)）。
 
-| 场景 | 结果 |
-|---|---|
-| 原版 1.20.1 | 启动到主菜单（OpenAL + 纹理图集） |
-| Fabulously Optimized 6.5.0（50 mod / 1.21.1） | 151 mods loaded |
-| Forge 47.3.0 + JEI + AppleSkin | `Launching target 'forgeclient'`，两个 mod 均生效 |
-| NeoForge 21.1.265（无代理，走镜像） | ModLauncher 11.0.5，图集全部成功 |
-| 崩溃诊断 | 真实日志里指认到 `jei` / `controlify` |
-| 正版登录 | 端点与错误映射已验证，**真实登录未实测**（见下） |
-
-## 目录布局
-
-用户只选一次根目录，实例自动派生。`libraries` 与 `assets` 共享——十来个实例就是十几 GB 的重复，而它们是只读的。见 [ADR-0008](docs/adr/0008-directory-layout.md)。
-
-```
-<root>/
-  libraries/  assets/  versions/<id>/    共享
-  instances/<name>/  mods/  natives/      每实例独立
-  auth/accounts.json                     明文 0600，见 ADR-0024
-```
-
-## 设计文档
-
-24 篇 ADR 在 [`docs/adr/`](docs/adr/)。绕不开的几篇：
-
-| ADR | 讲什么 |
-|---|---|
-| [0001](docs/adr/0001-operation-event-stream.md) | Operation / OpEvent：core 不打印任何东西 |
-| [0002](docs/adr/0002-preflight-first.md) | 为什么先做预检而不是先做启动 |
-| [0005](docs/adr/0005-download-and-mirrors.md) | 源是候选列表，哈希是唯一裁判 |
-| [0008](docs/adr/0008-directory-layout.md) | 共享库存 + 实例隔离 |
-| [0015](docs/adr/0015-forge-installer.md) | Forge 直接跑官方 installer，不自己复刻 |
-| [0020](docs/adr/0020-stack-attribution.md) | 栈帧归属：只用事实，两个模组同包就不指认 |
-| [0024](docs/adr/0024-microsoft-auth.md) | 设备码登录与令牌刷新 |
-
-术语见 [GLOSSARY.md](GLOSSARY.md)。
-
-## 状态
-
-链路已闭合，全部实测：`.mrpack` → 部署 → 自检 → 启动 → 崩溃 → 日志 → 定位到模组。
-
-**未做**：
-
-- **CurseForge 下载**——要 API key 才能实测，没实测的不发布（预检已支持）
-- **真实登录实测**——需要你自备 Azure 应用 id 与正版账号；代码与 22 个测试已就绪
-- **Linux/macOS 端到端**——tar.gz 解压器与系统 GNU tar 互通，但没在目标平台跑过
-- **版本求解**（刻意不做）——Modrinth 元数据里没有版本范围，硬做等于用假精度骗自己
-- **GUI**（刻意不做）——参考实现的价值在协议与分层
-
-## 合规与许可
-
-MIT（见 [LICENSE](LICENSE)）。调用的第三方公益服务有硬性义务：
-
-| 服务 | 要求 | 做法 |
-|---|---|---|
-| BMCLAPI | UA 以 `${NAME}/${VERSION}` 开头；**必须标明来源** | `USER_AGENT = 'BlockPilot/0.0.1'`；`DownloadSource.credit` 是必填字段，CLI 每次下载后打印「资源来源」 |
-| MCIM | 使用前登记 UA | UA 集中在 `src/core/user-agent.ts`，登记见 [issue #12](https://github.com/mcmod-info-mirror/mcim-rust-api/issues/12) |
-| Modrinth | 可识别 UA；300 req/min | 统一 UA，元数据 100 个一批 |
-
-`credit` 不是装饰字段——BMCLAPI 要求的「标明来源」必须能被渲染出来，所以它进了类型定义，而不是只写在文档里。
+内置的 BMCLAPI、MCIM 镜像有各自的协议要求（UA 格式、标注来源、登记），已在代码里落实：`DownloadSource.credit` 是必填字段，下载结束后会打印「资源来源」。
