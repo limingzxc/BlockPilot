@@ -27,13 +27,15 @@ jobs:
       - run: npm run typecheck
 
       # 测试全部离线：下载器测试用本地假源，tar 测试用系统 GNU tar。
-      # 不设任何代理环境变量，也不断网——避免 CI 环境差异造成假失败
+      # 不设任何代理环境变量，也不断网——避免 CI 环境差异造成假失败。
+      #
+      # 只写大写这一组：GitHub 校验 env 名时**不分大小写**，同时写 HTTPS_PROXY 和
+      # https_proxy 会被判成重复定义，整个 workflow 直接 Invalid workflow file。
+      # 上一次 CI 就是这么挂的——零 job、创建与失败同一秒，看日志什么都看不出来。
       - run: npm test
         env:
           HTTPS_PROXY: ''
           HTTP_PROXY: ''
-          https_proxy: ''
-          http_proxy: ''
 
       # 实测的离线层（T0）。夹具用脚本现造——它们只包含元数据，不下载任何东西。
       # fixtures/mcroot 这类大件在 CI 上不存在，对应用例会记为 SKIP 而不是假红。
@@ -43,16 +45,3 @@ jobs:
         env:
           HTTPS_PROXY: ''
           HTTP_PROXY: ''
-          https_proxy: ''
-          http_proxy: ''
-
-      # 实测的离线层（T0）。夹具用脚本现造——它们只包含元数据，不下载任何东西。
-      # fixtures/mcroot 这类大件在 CI 上不存在，对应用例会记为 SKIP 而不是假红。
-      - run: node scripts/make-fixture.mjs && node scripts/make-instance-fixture.mjs
-
-      - run: npm run e2e -- --tier 0
-        env:
-          HTTPS_PROXY: ''
-          HTTP_PROXY: ''
-          https_proxy: ''
-          http_proxy: ''
