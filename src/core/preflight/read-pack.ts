@@ -61,6 +61,8 @@ export function readPackFile(path: string): PackFileRead {
       ability: { givesDownloadUrls: false, checksMods: false },
     }
   } catch {
-    throw new Error(`无法解析整合包：${String(mrpackError)}`)
+    throw new Error(
+      `无法解析整合包：${mrpackError instanceof Error ? mrpackError.message : String(mrpackError)}`,
+    )
   }
 }
