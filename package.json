@@ -11,7 +11,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/**/*.test.ts",
+    "test": "tsx --test \"src/**/*.test.ts\"",
     "e2e": "tsx scripts/e2e.ts",
     "preflight": "tsx src/cli/index.ts preflight",
     "mcp": "tsx src/mcp/server.ts",
