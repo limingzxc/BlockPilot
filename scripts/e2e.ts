@@ -588,6 +588,40 @@ const CASES: readonly CaseDef[] = [
     },
   },
 
+  {
+    id: 'E2E-014',
+    title: '--memory 非法值给稳定码，不把 -XmxNaNM 丢给 JVM',
+    tier: 0,
+    async run(ctx) {
+      // 用户会照教程填 8192，也会手滑填 abc / -1 / 0。以前这些值原样拼成
+      // `-XmxNaNM` 传给 JVM，用户看到的是 `Unrecognized option`，联想不到是自己写错
+      for (const bad of ['abc', '-1', '0', '999999']) {
+        const r = await ctx.cli(
+          [
+            'launch',
+            'fabric-loader-0.19.3-1.21.1',
+            '--root',
+            MCROOT,
+            '--instance',
+            'fo',
+            '--memory',
+            bad,
+          ],
+          { timeoutMs: 30_000 },
+        )
+        assertCode(r, 1, `--memory ${bad}`)
+        assertText(r, 'BAD_MEMORY', '稳定错误码')
+      }
+
+      const ok = await ctx.cli(
+        ['launch', 'fabric-loader-0.19.3-1.21.1', '--root', MCROOT, '--instance', 'fo', '--memory', '4096'],
+        { timeoutMs: 60_000 },
+      )
+      assertCode(ok, 0, '--memory 4096')
+      assertText(ok, '-Xmx4096M', '内存参数')
+    },
+  },
+
   // ---------------- T1 只读网络 ----------------
   {
     id: 'E2E-101',

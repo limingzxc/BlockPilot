@@ -64,9 +64,13 @@ export async function consume<T>(
       case 'progress':
         if (ui.progress !== undefined) {
           ui.progress(ev)
-        } else {
+        } else if (process.stderr.isTTY === true) {
           process.stderr.write(`\r${C.dim}${ev.done}/${ev.total}  ${ev.label}${C.reset}   `)
           if (ev.done === ev.total) process.stderr.write('\r')
+        } else if (ev.done === ev.total) {
+          // 重定向到文件/管道时没有「回车回到行首」这回事，逐条写会把整个进度
+          // 糊成一行（CI 日志里就是这样）。非 TTY 只在整批结束时留一行。
+          process.stderr.write(`${C.dim}${ev.done}/${ev.total}  ${ev.label}${C.reset}\n`)
         }
         break
       case 'log':

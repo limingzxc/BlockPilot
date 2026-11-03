@@ -22,9 +22,11 @@ import type { DiagResult } from '../core/diagnostics/index.js'
 import type { RunResult } from '../core/launch/run.js'
 import type { LaunchPlan } from '../core/launch/plan.js'
 import { defaultRoot, LayoutError, resolveLayout } from '../core/layout.js'
+import type { Layout } from '../core/layout.js'
 import { authStorePath, createLogin, isAuthError, loadStore, removeAccount, resolveAccount } from '../core/auth/index.js'
 import type { AuthAccount } from '../core/auth/types.js'
 import { createVanillaSetup, pickSources } from '../core/setup/vanilla.js'
+import { VersionNotFoundError } from '../core/version/fetch.js'
 import { createAssetsSetup } from '../core/setup/assets.js'
 import { createFabricSetup } from '../core/setup/fabric.js'
 import type { FabricSetupResult } from '../core/setup/fabric.js'
@@ -40,11 +42,44 @@ const SEVERITY_MARK: Record<Finding['severity'], string> = {
   info: `${C.cyan}i${C.reset}`,
 }
 
+/** 命令行参数不合法。给稳定 code，别让用户看到 `unexpected error: Error: ...`。 */
+class UsageError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly hint?: string,
+  ) {
+    super(message)
+    this.name = 'UsageError'
+  }
+}
+
 const VERDICT_TEXT: Record<PreflightReport['verdict'], string> = {
   ok: `${C.green}OK${C.reset}`,
   warn: `${C.yellow}WARN${C.reset}`,
   blocked: `${C.red}BLOCKED${C.reset}`,
   unknown: `${C.yellow}UNKNOWN${C.reset}`,
+}
+
+/**
+ * verdict → 退出码。
+ *
+ * `unknown` 给 0 是有意的：它的意思是「没验到」，不是「验出问题」。
+ * 这条契约在 E2E-004「unknown 不能当违规」里钉死了——把「没证据」当成
+ * 失败，会让离线场景（模组元数据拿不到）下正常实例全都报错。
+ *
+ * 代价是脚本无法只靠退出码区分「验过且通过」和「什么都没验到」，
+ * 需要区分时用 `--json` 读 verdict 字段。
+ */
+function verdictExit(verdict: PreflightReport['verdict']): number {
+  switch (verdict) {
+    case 'ok':
+    case 'warn':
+    case 'unknown':
+      return 0
+    case 'blocked':
+      return 2
+  }
 }
 
 function renderHuman(r: PreflightReport): string {
@@ -59,7 +94,19 @@ function renderHuman(r: PreflightReport): string {
   lines.push('')
 
   if (r.findings.length === 0) {
-    lines.push(`  ${C.green}没有发现问题${C.reset}`)
+    // 「没有发现问题」是一个结论。没东西可查、或者什么都没查成的时候，
+    // 说这句话等于给了一个假的通过——用户会跳过后面所有步骤。
+    if (r.stats.mods === 0) {
+      lines.push(`  ${C.yellow}没有可检查的模组${C.reset}`)
+      lines.push(
+        `  ${C.dim}清单里没有 mods/ 下的文件。如果包里有模组，检查 path 是不是多套了一层目录${C.reset}`,
+      )
+    } else if (r.verdict === 'unknown') {
+      lines.push(`  ${C.yellow}这次没有验成${C.reset}`)
+      lines.push(`  ${C.dim}模组元数据没取到，不代表包没问题${C.reset}`)
+    } else {
+      lines.push(`  ${C.green}没有发现问题${C.reset}`)
+    }
     lines.push('')
   } else {
     const order: Finding['severity'][] = ['blocker', 'warning', 'info']
@@ -161,6 +208,7 @@ function usage(): void {
   logs      列出会话日志
   diag      分析最近的会话日志，把异常归类成可理解的结论
             --file <path> 指定日志；默认取最新一份
+            --json 输出结构化结论（verdict / primary / culprits），给脚本用
 
 `)
 }
@@ -168,6 +216,126 @@ function usage(): void {
 function argOf(argv: readonly string[], name: string): string | undefined {
   const i = argv.indexOf(name)
   return i === -1 ? undefined : argv[i + 1]
+}
+
+/**
+ * 每个子命令接受的 flag。`true` 表示这个 flag 后面必须跟一个值。
+ *
+ * 为什么要这张表：以前未知参数被静默忽略，`--json` 拼成 `--jsno` 依然退出 0，
+ * 脚本拿到一段人类可读文本去 JSON.parse，错在别处；`--root` 忘了写路径则
+ * 悄悄装进默认目录。**静默做错事比报错难查得多。**
+ */
+const COMMAND_FLAGS: Record<string, Readonly<Record<string, boolean>>> = {
+  preflight: { '--json': false, '--no-host': false },
+  install: {
+    '--mods-dir': true,
+    '--dry-run': false,
+    '--include-unverified': false,
+    '--no-host': false,
+    '--china': false,
+  },
+  java: { '--root': true, '--china': false },
+  login: { '--root': true, '--client-id': true },
+  accounts: { '--root': true, '--remove': true },
+  setup: { '--root': true, '--instance': true, '--dry-run': false, '--china': false },
+  assets: { '--root': true, '--dry-run': false, '--china': false, '--concurrency': true },
+  fabric: { '--root': true, '--instance': true, '--loader': true, '--china': false },
+  deploy: { '--root': true, '--instance': true, '--china': false, '--java': true },
+  launch: {
+    '--root': true,
+    '--instance': true,
+    '--raw': false,
+    '--java': true,
+    '--memory': true,
+    '--user': true,
+    '--china': false,
+    '--account': true,
+    '--offline': false,
+  },
+  run: {
+    '--root': true,
+    '--instance': true,
+    '--quiet': false,
+    '--stop': true,
+    '--java': true,
+    '--memory': true,
+    '--user': true,
+    '--china': false,
+    '--account': true,
+    '--offline': false,
+  },
+  logs: { '--root': true, '--instance': true },
+  diag: { '--root': true, '--instance': true, '--file': true, '--json': false },
+}
+
+/** 找第一个不认识的 flag，或需要值却没给值的 flag。返回人话，没问题返回 undefined。 */
+function validateFlags(
+  args: readonly string[],
+  spec: Readonly<Record<string, boolean>>,
+): string | undefined {
+  for (let i = 0; i < args.length; i += 1) {
+    const a = args[i]
+    if (a === undefined || !a.startsWith('--')) continue
+
+    const needsValue = spec[a]
+    if (needsValue === undefined) return `未知参数 ${a}`
+    if (!needsValue) continue
+
+    const value = args[i + 1]
+    // 值不能是另一个 flag：`--root --china` 是少写了路径，不是要把 root 设成 "--china"
+    if (value === undefined || value.startsWith('--')) return `${a} 需要一个值`
+    i += 1
+  }
+  return undefined
+}
+
+/**
+ * 解析 --memory。
+ *
+ * 用户会照教程填 8192、16384，也会手滑填 abc、-1、0。以前这些值原样拼成
+ * `-XmxNaNM` / `-Xmx-1M` 传给 JVM，JVM 回一句 `Unrecognized option` 就退出——
+ * 用户完全联想不到是自己参数写错了。
+ */
+function parseMemoryArg(arg: string | undefined): number | undefined {
+  if (arg === undefined) return undefined
+  if (!/^\d+$/.test(arg)) {
+    throw new UsageError(
+      'BAD_MEMORY',
+      `--memory 要一个整数（单位 MB），收到：${arg}`,
+      '例：--memory 4096',
+    )
+  }
+  const mib = Number(arg)
+  if (mib < 512) {
+    throw new UsageError(
+      'BAD_MEMORY',
+      `--memory ${mib} 太小，游戏起不来`,
+      '至少 1024；大型整合包 4096 起',
+    )
+  }
+  if (mib > 65536) {
+    throw new UsageError(
+      'BAD_MEMORY',
+      `--memory ${mib} 超出合理范围`,
+      '不要超过物理内存的一半；8192 / 16384 已经够大',
+    )
+  }
+  return mib
+}
+
+/**
+ * 离线用户名的合法性提示（不阻断）。
+ *
+ * MC 的离线名只认字母、数字、下划线，长度 1–16。中文名单机能进，但联机时
+ * 服务端会拒绝或显示乱码——这是新手最常踩的坑之一，网上的教程都会特意提醒。
+ * 单人确实能玩，所以只提醒，不拦。
+ */
+function warnOfflineUsername(name: string): void {
+  if (/^[A-Za-z0-9_]{1,16}$/.test(name)) return
+  process.stderr.write(
+    `${C.yellow}注意${C.reset}：离线用户名「${name}」不符合规则（仅字母/数字/下划线，1–16 位），联机会被拒\n` +
+      `${C.dim}单人还能进；要联机请换成英文名，如 Steve${C.reset}\n`,
+  )
 }
 
 async function runPreflight(argv: readonly string[]): Promise<number> {
@@ -193,7 +361,7 @@ async function runPreflight(argv: readonly string[]): Promise<number> {
       result: (report) => {
         if (asJson) process.stdout.write(`${JSON.stringify(report, null, 2)}\n`)
         else process.stdout.write(renderHuman(report))
-        return report.verdict === 'blocked' ? 2 : 0
+        return verdictExit(report.verdict)
       },
     },
     signal,
@@ -248,7 +416,7 @@ async function runInstall(argv: readonly string[]): Promise<number> {
       )
     }
     process.stdout.write('\n')
-    return report.verdict === 'blocked' ? 2 : 0
+    return verdictExit(report.verdict)
   }
 
   const modsDir = join(process.cwd(), modsDirArg)
@@ -461,18 +629,24 @@ function renderLaunch(plan: LaunchPlan, raw: boolean): string {
 /** 三个子命令共用「挑 Java」用例；core 负责选，这里只渲染结局。 */
 async function pickJavaOrReport(
   versionId: string | undefined,
-  layoutRoot: string,
+  layout: Layout,
   signal: AbortSignal,
   explicit: string | undefined,
 ): Promise<string | undefined> {
   const outcome = await selectJava({
     ...(versionId === undefined ? {} : { versionId }),
-    layoutRoot,
+    layoutRoot: layout.root,
+    // 传整个 layout：只有它能读到 versions/<id>/<id>.json 里的 javaVersion
+    layout,
     signal,
     ...(explicit === undefined ? {} : { explicit }),
   })
   if (outcome.ok) return outcome.path
   process.stderr.write(`${C.red}${outcome.message}${C.reset}\n`)
+  // 只说「没有」而不说怎么办，用户下一步只能去搜。给一条能直接敲的命令
+  if (outcome.needMajor !== undefined) {
+    process.stderr.write(`${C.dim}可以装一个：blockpilot java install ${outcome.needMajor}${C.reset}\n`)
+  }
   return undefined
 }
 
@@ -614,20 +788,23 @@ async function runLaunch(argv: readonly string[]): Promise<number> {
   const raw = argv.includes('--raw')
   const signal = createInterrupt().signal
 
-  const javaPath = await pickJavaOrReport(versionId, layout.root, signal, argOf(argv, '--java'))
+  const javaPath = await pickJavaOrReport(versionId, layout, signal, argOf(argv, '--java'))
   if (javaPath === undefined) return 1
 
   const auth = await resolveAuth(argv, layout, signal)
   if (!auth.ok) return 1
 
-  const memArg = argOf(argv, '--memory')
+  const maxMemoryMiB = parseMemoryArg(argOf(argv, '--memory'))
+  const offlineUsername = argOf(argv, '--user') ?? 'Player'
+  // 有正版账号时名字来自账号，--user 不生效，别误报
+  if (auth.account === undefined) warnOfflineUsername(offlineUsername)
   const op = createLaunchPlan({
     versionId,
     layout,
     java: javaPath,
-    username: argOf(argv, '--user') ?? 'Player',
+    username: offlineUsername,
     ...(auth.account === undefined ? {} : { account: auth.account }),
-    ...(memArg === undefined ? {} : { maxMemoryMiB: Number(memArg) }),
+    ...(maxMemoryMiB === undefined ? {} : { maxMemoryMiB }),
     mirror: argv.includes('--china'),
   })
 
@@ -786,20 +963,23 @@ async function runGame(argv: readonly string[]): Promise<number> {
   const stopArg = argOf(argv, '--stop')
   const signal = createInterrupt().signal
 
-  const javaPath = await pickJavaOrReport(versionId, layout.root, signal, argOf(argv, '--java'))
+  const javaPath = await pickJavaOrReport(versionId, layout, signal, argOf(argv, '--java'))
   if (javaPath === undefined) return 1
 
   const auth = await resolveAuth(argv, layout, signal)
   if (!auth.ok) return 1
 
-  const memArg = argOf(argv, '--memory')
+  const maxMemoryMiB = parseMemoryArg(argOf(argv, '--memory'))
+  const offlineUsername = argOf(argv, '--user') ?? 'Player'
+  // 有正版账号时名字来自账号，--user 不生效，别误报
+  if (auth.account === undefined) warnOfflineUsername(offlineUsername)
   const planOp = createLaunchPlan({
     versionId,
     layout,
     java: javaPath,
-    username: argOf(argv, '--user') ?? 'Player',
+    username: offlineUsername,
     ...(auth.account === undefined ? {} : { account: auth.account }),
-    ...(memArg === undefined ? {} : { maxMemoryMiB: Number(memArg) }),
+    ...(maxMemoryMiB === undefined ? {} : { maxMemoryMiB }),
     mirror: argv.includes('--china'),
   })
 
@@ -970,7 +1150,7 @@ async function runDeploy(argv: readonly string[]): Promise<number> {
   process.stdout.write(`  ${C.dim}实例${C.reset}    ${instance} → ${layout.gameDir}\n\n`)
 
   // Forge 要跑 installer，得有 java。Fabric 用不到，但先检测一次省得后续分支判断
-  const javaPath = await pickJavaOrReport(undefined, layout.root, signal, argOf(argv, '--java'))
+  const javaPath = await pickJavaOrReport(undefined, layout, signal, argOf(argv, '--java'))
 
   const op = createDeploy({
     packPath,
@@ -1046,7 +1226,7 @@ async function runDeploy(argv: readonly string[]): Promise<number> {
   )
 }
 
-function renderCulprits(r: DiagResult): string[] {
+function renderCulprits(r: DiagResult, certain: boolean): string[] {
   const lines: string[] = []
   const top = r.culprits.slice(0, 3)
 
@@ -1060,8 +1240,8 @@ function renderCulprits(r: DiagResult): string[] {
   }
 
   lines.push(
-    `${C.bold}指向的模组${C.reset}` +
-      `${C.dim}（按证据强度排序，越靠前越可能是它）${C.reset}`,
+    `${C.bold}${certain ? '指向的模组' : '可能与这些模组有关'}${C.reset}` +
+      `${C.dim}（按证据强度排序${certain ? '，越靠前越可能是它' : '，仅供参考'}）${C.reset}`,
   )
   lines.push('')
 
@@ -1069,7 +1249,8 @@ function renderCulprits(r: DiagResult): string[] {
     const c = top[i]
     if (c === undefined) continue
     const first = i === 0
-    const mark = first ? `${C.red}✗${C.reset}` : `${C.yellow}?${C.reset}`
+    // 没有致命异常时不用红叉：红色在这里会被读成「就是它」
+    const mark = first && certain ? `${C.red}✗${C.reset}` : `${C.yellow}?${C.reset}`
     const label = `${c.modId}${c.name === undefined ? '' : ` · ${c.name}`}${
       c.version === undefined ? '' : ` ${c.version}`
     }`
@@ -1108,6 +1289,39 @@ function renderDiag(r: DiagResult): string {
     return lines.join('\n')
   }
 
+  // 有线索但没有致命异常：措辞必须留退路。
+  // 这里最容易犯的错是「看起来像崩溃」就写成「崩在谁」，用户照着删错模组。
+  if (r.verdict === 'inconclusive') {
+    lines.push(`${C.bold}可疑记录${C.reset}${C.dim}（日志里没有致命异常）${C.reset}`)
+    lines.push('')
+    if (r.primary !== null) {
+      lines.push(
+        `  ${C.yellow}?${C.reset} ${C.bold}${r.primary.kind}${C.reset}  ${C.dim}第 ${r.primary.line} 行${C.reset}`,
+      )
+      lines.push(`    ${r.primary.message}`)
+      lines.push(`    ${C.cyan}→ ${r.primary.hint}${C.reset}`)
+      lines.push('')
+
+      const after = r.lineCount - r.primary.line
+      if (after > 0) {
+        lines.push(`  ${C.dim}这条之后还有 ${after} 行日志。非致命告警在模组环境里很常见，`)
+        lines.push(`  先确认游戏到底有没有崩，再决定要不要动模组。${C.reset}`)
+        lines.push('')
+      }
+    }
+    lines.push(...renderCulprits(r, false))
+
+    if (r.primary !== null && r.primary.excerpt.length > 0) {
+      lines.push(`  ${C.dim}现场（第 ${r.primary.line} 行附近）${C.reset}`)
+      for (const l of r.primary.excerpt.slice(0, 6)) {
+        lines.push(`    ${C.dim}${l.slice(0, 140)}${C.reset}`)
+      }
+      lines.push('')
+    }
+
+    return lines.join('\n')
+  }
+
   const others = r.signals.filter((s) => s !== r.primary)
 
   if (r.primary !== null) {
@@ -1131,7 +1345,7 @@ function renderDiag(r: DiagResult): string {
     lines.push('')
   }
 
-  lines.push(...renderCulprits(r))
+  lines.push(...renderCulprits(r, true))
 
   if (r.primary !== null && r.primary.excerpt.length > 0) {
     lines.push(`  ${C.dim}现场（第 ${r.primary.line} 行附近）${C.reset}`)
@@ -1172,13 +1386,17 @@ async function runDiag(argv: readonly string[]): Promise<number> {
   const modsDir = existsSync(siblingMods) ? siblingMods : layout.mods
 
   const op = createDiagnose({ logPath, modsDir })
+  const asJson = argv.includes('--json')
   return consume(
     op,
     {
       progress: () => {},
       log: () => {},
       result: (r) => {
-        process.stdout.write(renderDiag(r))
+        // 诊断结论是给机器读的最有价值的一份数据，MCP 那边一直是结构化的，
+        // CLI 却只能拿到彩色文本——脚本还得正则解析，没道理
+        if (asJson) process.stdout.write(`${JSON.stringify(r, null, 2)}\n`)
+        else process.stdout.write(renderDiag(r))
         return r.verdict === 'crash' ? 2 : 0
       },
     },
@@ -1241,6 +1459,17 @@ async function main(): Promise<number> {
   }
 
   const cmd = argv[0]
+  const allowed = cmd === undefined ? undefined : COMMAND_FLAGS[cmd]
+  if (cmd !== undefined && allowed !== undefined) {
+    // --proxy 是全局的，main 上面已经取过了；--help 任何命令都该能问
+    const problem = validateFlags(argv.slice(1), { ...allowed, '--proxy': true, '--help': false })
+    if (problem !== undefined) {
+      process.stderr.write(`${C.red}${problem}${C.reset}\n`)
+      process.stderr.write(`${C.dim}${cmd} 接受：${Object.keys(allowed).join(' ')}${C.reset}\n`)
+      process.stderr.write(`${C.dim}完整用法：blockpilot --help${C.reset}\n`)
+      return 1
+    }
+  }
   if (cmd === 'preflight') return runPreflight(argv.slice(1))
   if (cmd === 'install') return runInstall(argv.slice(1))
   if (cmd === 'java') return runJava(argv.slice(1))
@@ -1272,6 +1501,18 @@ main().then(
       process.stderr.write(
         `${C.dim}检查网络；国内可加 --china 走镜像，或用 --proxy 指定代理${C.reset}\n`,
       )
+      process.exit(1)
+    }
+    if (err instanceof VersionNotFoundError) {
+      process.stderr.write(`${C.red}VERSION_NOT_FOUND${C.reset}: ${err.message}\n`)
+      process.stderr.write(
+        `${C.dim}先装一次：blockpilot deploy <整合包> 或 blockpilot setup <mc 版本>${C.reset}\n`,
+      )
+      process.exit(1)
+    }
+    if (err instanceof UsageError) {
+      process.stderr.write(`${C.red}${err.code}${C.reset}: ${err.message}\n`)
+      if (err.hint !== undefined) process.stderr.write(`${C.dim}${err.hint}${C.reset}\n`)
       process.exit(1)
     }
     process.stderr.write(`${C.red}unexpected error${C.reset}: ${String(err)}\n`)
