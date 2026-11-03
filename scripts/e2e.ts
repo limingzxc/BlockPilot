@@ -595,6 +595,8 @@ const CASES: readonly CaseDef[] = [
     async run(ctx) {
       // 用户会照教程填 8192，也会手滑填 abc / -1 / 0。以前这些值原样拼成
       // `-XmxNaNM` 传给 JVM，用户看到的是 `Unrecognized option`，联想不到是自己写错
+      //
+      // 参数校验发生在任何 I/O 之前，所以这一组不依赖 fixtures 里的大件
       for (const bad of ['abc', '-1', '0', '999999']) {
         const r = await ctx.cli(
           [
@@ -613,6 +615,8 @@ const CASES: readonly CaseDef[] = [
         assertText(r, 'BAD_MEMORY', '稳定错误码')
       }
 
+      // 合法值要真生成启动命令，只有本机有 mcroot 时才验（CI 上会跳过这一段）
+      if (!existsSync(MCROOT)) return
       const ok = await ctx.cli(
         ['launch', 'fabric-loader-0.19.3-1.21.1', '--root', MCROOT, '--instance', 'fo', '--memory', '4096'],
         { timeoutMs: 60_000 },

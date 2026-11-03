@@ -788,13 +788,16 @@ async function runLaunch(argv: readonly string[]): Promise<number> {
   const raw = argv.includes('--raw')
   const signal = createInterrupt().signal
 
+  // 参数校验放在所有 I/O 之前：--memory 写错时不该先去探测 Java、解析版本，
+  // 让用户等几秒才看到「其实是你参数写错了」
+  const maxMemoryMiB = parseMemoryArg(argOf(argv, '--memory'))
+
   const javaPath = await pickJavaOrReport(versionId, layout, signal, argOf(argv, '--java'))
   if (javaPath === undefined) return 1
 
   const auth = await resolveAuth(argv, layout, signal)
   if (!auth.ok) return 1
 
-  const maxMemoryMiB = parseMemoryArg(argOf(argv, '--memory'))
   const offlineUsername = argOf(argv, '--user') ?? 'Player'
   // 有正版账号时名字来自账号，--user 不生效，别误报
   if (auth.account === undefined) warnOfflineUsername(offlineUsername)
@@ -963,13 +966,16 @@ async function runGame(argv: readonly string[]): Promise<number> {
   const stopArg = argOf(argv, '--stop')
   const signal = createInterrupt().signal
 
+  // 参数校验放在所有 I/O 之前：--memory 写错时不该先去探测 Java、解析版本，
+  // 让用户等几秒才看到「其实是你参数写错了」
+  const maxMemoryMiB = parseMemoryArg(argOf(argv, '--memory'))
+
   const javaPath = await pickJavaOrReport(versionId, layout, signal, argOf(argv, '--java'))
   if (javaPath === undefined) return 1
 
   const auth = await resolveAuth(argv, layout, signal)
   if (!auth.ok) return 1
 
-  const maxMemoryMiB = parseMemoryArg(argOf(argv, '--memory'))
   const offlineUsername = argOf(argv, '--user') ?? 'Player'
   // 有正版账号时名字来自账号，--user 不生效，别误报
   if (auth.account === undefined) warnOfflineUsername(offlineUsername)
