@@ -11,6 +11,8 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 
+import type { Layout } from '../layout.js'
+import { resolveVersion } from '../version/resolve.js'
 import { detectJava } from './detect.js'
 import { pickJava, requiredJavaMajor } from './types.js'
 import type { JavaInstall, JavaScanResult } from './types.js'
@@ -51,11 +53,47 @@ export interface SelectJavaOptions {
   /** 已解析的版本 id（如 1.20.1、fabric-loader-…-1.20.1）。不给就按最高版本兜底 */
   readonly versionId?: string
   readonly layoutRoot: string
+  /**
+   * 完整布局。给了就能从版本 JSON 的 `javaVersion.majorVersion` 读真实需求；
+   * 不给只能按版本号查表——对 26.x 这类新版本号体系，查表只能给出下限。
+   */
+  readonly layout?: Layout
+  /** 调用方已经知道需求时直接给，跳过一切推导 */
+  readonly needMajor?: number
   readonly signal?: AbortSignal
   /** 用户显式指定的路径，直接通过 */
   readonly explicit?: string
   /** 测试注入：跳过真实探测 */
   readonly scan?: (opts: { signal?: AbortSignal; managedDir: string }) => Promise<JavaScanResult>
+}
+
+/**
+ * 版本真正需要的 Java 大版本。
+ *
+ * 权威来源是版本 JSON 的 `javaVersion.majorVersion`（Mojang 自己写的，
+ * 26.2 是 25）。版本号→Java 的映射表只作兜底：它写于 1.x 体系，对 26.x 只能给出下限。
+ *
+ * **只用本地 JSON**：版本没装时 resolveVersion 会联网，那会把「Java 没装」
+ * 变成一次 20 秒的网络等待，而这里只需要一个数字。
+ */
+async function inferNeedMajor(opts: SelectJavaOptions): Promise<number | undefined> {
+  const { layout, versionId } = opts
+  if (versionId === undefined) return undefined
+
+  if (layout !== undefined && existsSync(layout.versionJson(versionId))) {
+    try {
+      const resolved = await resolveVersion(versionId, {
+        layout,
+        ...(opts.signal === undefined ? {} : { signal: opts.signal }),
+      })
+      const major = resolved.json.javaVersion?.majorVersion
+      if (typeof major === 'number') return major
+    } catch {
+      // 版本 JSON 坏了不该阻断选 Java：用户可能只是想用 --java 手指定
+    }
+  }
+
+  return requiredJavaMajor(versionId)
 }
 
 export async function selectJava(opts: SelectJavaOptions): Promise<SelectJavaOutcome> {
@@ -68,7 +106,7 @@ export async function selectJava(opts: SelectJavaOptions): Promise<SelectJavaOut
     return { ok: true, path: opts.explicit }
   }
 
-  const needMajor = opts.versionId === undefined ? undefined : requiredJavaMajor(opts.versionId)
+  const needMajor = opts.needMajor ?? (await inferNeedMajor(opts))
   const managedDir = join(opts.layoutRoot, 'java')
   const scanFn = opts.scan ?? detectJava
   const scan = await scanFn({
@@ -79,7 +117,7 @@ export async function selectJava(opts: SelectJavaOptions): Promise<SelectJavaOut
   const foundMajors = scan.installs.map((j) => j.major)
   const picked = chooseJava(scan.installs, needMajor)
   if (picked === null) {
-    const need = needMajor === undefined ? '' : ` Java ${needMajor}`
+    const need = needMajor === undefined ? '' : ` ${needMajor}`
     return {
       ok: false,
       message: `没有找到可用的 Java${need}（本机：${foundMajors.join(', ') || '无'}）`,
