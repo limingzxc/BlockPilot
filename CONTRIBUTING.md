@@ -82,6 +82,9 @@ npm ci → typecheck → test → 造夹具 → e2e --tier 0
 而且表现为**零 job、创建与失败同一秒**——从日志里看不出任何线索，只能去 run 页面的
 Annotations 里找。
 
+另外 `npm test` 的 glob 必须带引号：`tsx --test "src/**/*.test.ts"`。不加引号时 bash 会把
+`**` 当 `*`、只展开一层目录，Linux 上会漏掉三分之二的测试文件——而结果是绿的。
+
 ## Issue
 
 Issue 与 triage 标签的用法见 `docs/agents/issue-tracker.md`、`docs/agents/triage-labels.md`。
