@@ -41,7 +41,25 @@ export interface Layout {
   versionJson(versionId: string): string
 }
 
+/**
+ * 实例名只能是单层目录名。
+ *
+ * 三个都是真实会撞上的：`--instance ""`（脚本里 `$NAME` 没设值）会让 gameDir 变成
+ * `instances/` 本身，overrides 直接盖到别人头上；`--instance ../x` 逃出 instances；
+ * 盘符路径会把名字当成另一棵树的起点。用户不会故意这么写，所以要在解析这一步
+ * 说清楚，而不是让他事后发现文件长在奇怪的地方。
+ */
+function assertInstanceId(id: string): void {
+  if (id === '') throw new LayoutError('实例名不能为空（--instance 后面要给名字）')
+  if (id === '.' || id === '..') throw new LayoutError(`实例名不能是 ${id}`)
+  if (/[\\/]/.test(id)) throw new LayoutError(`实例名不能包含路径分隔符：${id}`)
+  if (/^[A-Za-z]:/.test(id)) throw new LayoutError(`实例名不能是盘符路径：${id}`)
+  // Windows 上非法，Linux 上能用；实例目录要能跨平台拷走，统一禁掉
+  if (/[\u0000-\u001f<>:"|?*]/.test(id)) throw new LayoutError(`实例名含非法字符：${id}`)
+}
+
 export function resolveLayout(root: string, instanceId = 'default'): Layout {
+  assertInstanceId(instanceId)
   // 必须转绝对路径：相对路径会让 -cp 里的条目依赖进程 cwd，
   // 换个目录启动就是一堆「找不到主类」
   const base = resolve(root)
