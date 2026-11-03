@@ -5,7 +5,7 @@ import { defineOperation } from '../operation.js'
 import type { Operation } from '../operation.js'
 import { attributeCulprits, buildModIndex, EMPTY_INDEX } from './attribution.js'
 import type { Culprit, ModIndex } from './attribution.js'
-import { analyzeLog, primarySignal } from './crash.js'
+import { analyzeLog, primarySignal, survivedAfter } from './crash.js'
 import type { CrashSignal, CrashKind } from './crash.js'
 import { parseFrames } from './frames.js'
 
@@ -33,17 +33,25 @@ function modLabel(c: Culprit): string {
  *
  * 只改被归因影响的 kind：显卡驱动报错时把锅推给某个模组是错的。
  */
-function applyAttribution(primary: CrashSignal, top: Culprit | undefined): CrashSignal {
+function applyAttribution(
+  primary: CrashSignal,
+  top: Culprit | undefined,
+  crashed: boolean,
+): CrashSignal {
   if (top === undefined) return primary
   if (!ATTRIBUTABLE.has(primary.kind)) return primary
   // 证据太弱就不改结论。一条「包名看着像」不足以让用户去删模组
   if (top.score < 40) return primary
 
   const label = modLabel(top)
+  // 「崩在」是一个结论。没有致命异常时只能说「与它有关」——
+  // 否则用户会照着删掉一个其实没问题的模组
   const hint =
     primary.kind === 'mod-crash'
       ? `异常来自 ${label}，文件 ${top.fileName}。先禁用或更新它，看崩溃是否消失`
-      : `${primary.hint}。本次崩在 ${label}`
+      : crashed
+        ? `${primary.hint}。本次崩在 ${label}`
+        : `${primary.hint}。其中提到 ${label}，但日志里没有致命异常，未必是它导致的`
 
   return { ...primary, hint }
 }
@@ -105,16 +113,27 @@ export function createDiagnose(opts: DiagOptions): Operation<DiagResult> {
         : buildModIndex(opts.modsDir))
     const attribution = attributeCulprits({ lines, index, frames })
 
+    // 先定结论，再拼措辞：hint 里能不能说「崩在」取决于这个结论。
+    // 有 fatal 信号还不够——要看这条之后游戏有没有继续走到启动里程碑，
+    // 否则 Controlify 这种「mixin 被禁用但游戏照跑」会被报成崩溃。
+    const survived =
+      rawPrimary !== null && survivedAfter(lines, rawPrimary.line)
+    const verdict: DiagVerdict =
+      rawPrimary === null
+        ? 'clean'
+        : survived || rawPrimary.severity !== 'fatal'
+          ? 'inconclusive'
+          : 'crash'
+
     // 结论要带着「指向谁」一起说，否则用户读到的是一条没有主语的建议
     const primary =
-      rawPrimary === null ? null : applyAttribution(rawPrimary, attribution.culprits[0])
+      rawPrimary === null
+        ? null
+        : applyAttribution(rawPrimary, attribution.culprits[0], verdict === 'crash')
 
     // 把增强过的根因放回数组里。否则消费者按引用去重时，
     // 原始的那条会被当成「其他线索」再打印一次
     const signals = rawSignals.map((s) => (s === rawPrimary ? primary ?? s : s))
-
-    const verdict: DiagVerdict =
-      primary === null ? 'clean' : primary.severity === 'fatal' ? 'crash' : 'inconclusive'
 
     yield Op.log('info', 'diag.done', {
       lines: lines.length,

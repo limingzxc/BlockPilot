@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { analyzeLog, primarySignal } from './crash.js'
+import { analyzeLog, primarySignal, survivedAfter } from './crash.js'
 
 function analyze(text: string) {
   return analyzeLog(text.split('\n'))
@@ -132,4 +132,30 @@ test('不认的令牌归因到认证，而不是当成模组异常', () => {
   assert.equal(s[0]?.kind, 'auth-failed')
   assert.equal(s[0]?.severity, 'warning')
   assert.match(s[0]?.hint ?? '', /blockpilot login/)
+})
+
+test('survivedAfter：异常之后走到启动里程碑就算活着', () => {
+  const lines = [
+    '[1] [main/ERROR]: InvalidMixinException: bad shadow',
+    '[2] [main/WARN]: Force-disabling mixin FooMixin',
+    '[3] [Render thread/INFO]: Backend library: LWJGL version 3.3.3-snapshot',
+  ]
+  assert.equal(survivedAfter(lines, 1), true)
+})
+
+test('survivedAfter：异常之后只有栈帧，没走到里程碑', () => {
+  const lines = [
+    '[1] [main/ERROR]: InvalidMixinException: bad shadow',
+    '\tat org.spongepowered.asm.mixin.MixinInfo.validate(MixinInfo.java:375)',
+    '\tat net.minecraft.client.main.Main.main(Main.java:1)',
+  ]
+  assert.equal(survivedAfter(lines, 1), false)
+})
+
+test('survivedAfter：里程碑出现在异常之前不算数', () => {
+  const lines = [
+    '[1] [Render thread/INFO]: Backend library: LWJGL version 3.3.3-snapshot',
+    '[2] [main/ERROR]: InvalidMixinException: bad shadow',
+  ]
+  assert.equal(survivedAfter(lines, 2), false)
 })

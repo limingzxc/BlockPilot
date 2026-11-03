@@ -169,3 +169,31 @@ export function analyzeLog(lines: readonly string[]): readonly CrashSignal[] {
 export function primarySignal(signals: readonly CrashSignal[]): CrashSignal | null {
   return signals.find((s) => s.severity === 'fatal') ?? signals[0] ?? null
 }
+
+/**
+ * 这个位置之后，游戏是否还在正常推进。
+ *
+ * 只匹配异常文本是不够的：`InvalidMixinException` 有两种结局——真的把游戏拦死在
+ * 启动阶段，或者 Loader 把那个 mixin 禁掉继续跑。区别不在异常本身，而在**它之后
+ * 日志有没有走到下一个里程碑**。只看"出现了什么异常"会把后者误报成崩溃，而用户
+ * 收到"崩在 X"之后的第一反应就是去删 X。
+ *
+ * 里程碑取的是启动过程中确定要经过、且崩溃后不可能再出现的几条。
+ */
+const ALIVE_MARKERS: readonly RegExp[] = [
+  /Backend library: LWJGL/i,
+  /Sound engine started/i,
+  /Created: .*atlas/i,
+  /OpenAL initialized/i,
+  /Stopping! \(/i,
+]
+
+export function survivedAfter(lines: readonly string[], lineNo: number): boolean {
+  // lineNo 是 1-based，从它之后开始找
+  for (let i = lineNo; i < lines.length; i += 1) {
+    const line = lines[i]
+    if (line === undefined) continue
+    if (ALIVE_MARKERS.some((re) => re.test(line))) return true
+  }
+  return false
+}

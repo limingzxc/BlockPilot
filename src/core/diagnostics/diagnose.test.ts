@@ -118,3 +118,36 @@ test('index 生命周期是参数：注入的索引优先，不再扫 mods 目�
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('fatal 信号之后游戏仍在推进：降级 inconclusive，措辞不说「崩在」', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bp-diag-survived-'))
+  const logPath = join(dir, 'x.log')
+  // 前半段是一条 fatal 的 mixin 异常，后半段是启动继续推进到 LWJGL——
+  // 这正是「Controlify 的 mixin 被禁用但游戏照跑」的形状
+  const lines = [
+    '[1] [main/ERROR]: Mixin apply failed controlify.mixins.json:FooMixin',
+    'java.lang.RuntimeException: boom',
+    '\tat com.demo.mod.Main.boom(Main.java:42)',
+    ...Array.from({ length: 20 }, (_, i) => `[${i + 4}] [Render thread/INFO]: ticking ${i}`),
+    '[99] [Render thread/INFO]: Backend library: LWJGL version 3.3.3-snapshot',
+  ]
+  writeFileSync(logPath, lines.join('\n'))
+  mkdirSync(join(dir, 'mods'), { recursive: true })
+  writeFileSync(
+    join(dir, 'mods', 'demo-mod.jar'),
+    zipSync({
+      'fabric.mod.json': strToU8(JSON.stringify({ id: 'demo-mod', version: '1.0.0' })),
+      'com/demo/mod/Main.class': strToU8('x'),
+    }),
+  )
+  try {
+    const r = await collect(createDiagnose({ logPath, modsDir: join(dir, 'mods') }))
+    assert.equal(r.verdict, 'inconclusive')
+    // 仍然给嫌疑人，但措辞必须留退路
+    assert.equal(r.culprits.length > 0, true)
+    assert.doesNotMatch(r.primary?.hint ?? '', /本次崩在/)
+    assert.match(r.primary?.hint ?? '', /未必是它导致的/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
