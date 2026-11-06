@@ -49,35 +49,72 @@ export async function verifyExisting(
  * "Service Temporarily Unavailable" HTML。状态码完全不可信——
  * 这就是为什么每个文件都必须过哈希，而不是看 res.ok 就落盘。
  */
+/**
+ * 多久没收到任何字节就判定为卡住。
+ *
+ * JSON 请求有 20 s 超时（http.ts），文件下载却一直没有——一个半死不活的
+ * TCP 连接会让 `deploy` 停在 "23/51" 上不动，既不报错也不结束，用户只能
+ * 看着屏幕猜是不是自己网坏了。这里按「空闲」计时，不设总时长：
+ * 大文件可以慢慢下，但连续 30 s 一个字节都没有就换下一个源。
+ */
+const IDLE_TIMEOUT_MS = 30_000
+
 async function fetchToFile(
   url: string,
   partPath: string,
   algo: Algo,
   signal: AbortSignal,
+  idleTimeoutMs: number = IDLE_TIMEOUT_MS,
 ): Promise<{ bytes: number; digest: string; finalUrl: string }> {
-  const res = await fetch(url, {
-    signal,
-    redirect: 'follow',
-    headers: { 'User-Agent': USER_AGENT },
-  })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  if (res.body === null) throw new Error('empty response body')
+  const controller = new AbortController()
+  const onAbort = (): void => controller.abort()
+  signal.addEventListener('abort', onAbort, { once: true })
 
-  const hash = createHash(algo)
-  const out = createWriteStream(partPath)
-  let bytes = 0
-  try {
-    for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
-      hash.update(chunk)
-      bytes += chunk.byteLength
-      if (!out.write(chunk)) await once(out, 'drain')
-    }
-    out.end()
-    await once(out, 'finish')
-  } finally {
-    if (!out.closed) out.destroy()
+  let idleTimer: NodeJS.Timeout | undefined
+  let stalled = false
+  const arm = (): void => {
+    if (idleTimer !== undefined) clearTimeout(idleTimer)
+    idleTimer = setTimeout(() => {
+      stalled = true
+      controller.abort()
+    }, idleTimeoutMs)
   }
-  return { bytes, digest: hash.digest('hex'), finalUrl: res.url }
+
+  try {
+    arm()
+    const res = await fetch(url, {
+      signal: controller.signal,
+      redirect: 'follow',
+      headers: { 'User-Agent': USER_AGENT },
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    if (res.body === null) throw new Error('empty response body')
+
+    const hash = createHash(algo)
+    const out = createWriteStream(partPath)
+    let bytes = 0
+    try {
+      for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+        arm()
+        hash.update(chunk)
+        bytes += chunk.byteLength
+        if (!out.write(chunk)) await once(out, 'drain')
+      }
+      out.end()
+      await once(out, 'finish')
+    } finally {
+      if (!out.closed) out.destroy()
+    }
+    return { bytes, digest: hash.digest('hex'), finalUrl: res.url }
+  } catch (err) {
+    if (stalled) {
+      throw new Error(`超过 ${Math.round(idleTimeoutMs / 1000)} 秒没有收到数据，已中止`)
+    }
+    throw err
+  } finally {
+    if (idleTimer !== undefined) clearTimeout(idleTimer)
+    signal.removeEventListener('abort', onAbort)
+  }
 }
 
 /**
@@ -90,6 +127,8 @@ export async function downloadOne(
   task: DownloadTask,
   sources: readonly DownloadSource[],
   signal: AbortSignal,
+  /** 测试注入：把空闲超时调短，不用等 30 秒 */
+  opts: { readonly idleTimeoutMs?: number } = {},
 ): Promise<DownloadOutcome> {
   const cached = await verifyExisting(task)
   if (cached.ok) {
@@ -120,7 +159,13 @@ export async function downloadOne(
     if (target === null) continue
 
     try {
-      const { bytes, digest, finalUrl } = await fetchToFile(target, partPath, algo, signal)
+      const { bytes, digest, finalUrl } = await fetchToFile(
+        target,
+        partPath,
+        algo,
+        signal,
+        opts.idleTimeoutMs,
+      )
       // 先比大小：镜像返回 HTML 错误页时，这一步就能挡住，省掉一次哈希
       if (task.expectedSize > 0 && bytes !== task.expectedSize) {
         throw new Error(`size mismatch (${bytes} != ${task.expectedSize})，可能拿到了错误页`)

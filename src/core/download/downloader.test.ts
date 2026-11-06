@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -29,6 +29,11 @@ before(async () => {
         res.writeHead(200)
         res.end(OTHER)
         return
+      case '/stall':
+        // 头发完了就不动了：模拟半死不活的连接（没有 FIN，也没有 RST）
+        res.writeHead(200, { 'content-type': 'application/octet-stream' })
+        res.write(BODY.subarray(0, 4))
+        return
       default:
         res.writeHead(404)
         res.end()
@@ -41,6 +46,7 @@ before(async () => {
 })
 
 after(async () => {
+  server.closeAllConnections()
   await new Promise<void>((resolve) => server.close(() => resolve()))
   rmSync(workDir, { recursive: true, force: true })
 })
@@ -121,4 +127,14 @@ test('已有文件哈希不符时会重新下载覆盖', async () => {
   const out = await downloadOne(t, [direct], signal)
   assert.equal(out.skipped, false)
   assert.deepEqual(readFileSync(t.destPath), BODY)
+})
+
+test('连接卡住时按空闲超时中止，不留半成品', async () => {
+  const t = task('/stall', 'stall.jar')
+  await assert.rejects(
+    () => downloadOne(t, [direct], signal, { idleTimeoutMs: 500 }),
+    /没有收到数据/,
+  )
+  assert.equal(existsSync(t.destPath), false)
+  assert.equal(existsSync(`${t.destPath}.part`), false)
 })
