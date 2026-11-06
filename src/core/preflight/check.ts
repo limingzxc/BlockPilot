@@ -86,12 +86,25 @@ export function checkJava(instance: Instance, host: HostProfile): readonly Findi
       hint: `已检测到：${host.javaMajors.join(', ') || '无'} · 装一个再重试：blockpilot java install ${need}`,
     })
   } else if (!exact) {
-    findings.push({
-      severity: 'warning',
-      code: 'JAVA_NEWER_ONLY',
-      message: `没有 Java ${need}，但检测到更高的 Java ${newer.join(', ')}`,
-      hint: `多数情况下能启动；若加载器报版本错误，装一个 Java ${need}`,
-    })
+    if (need === 8) {
+      // 「更高的 Java 多数能跑」是 1.17+ 的经验。1.12 及更早的版本不行：
+      // 老 Forge 的类转换器与 MC 自己都依赖 Java 8 的类加载行为，Java 9+ 会在
+      // 启动阶段就死（UnsupportedClassVersionError / mixin 初始化失败）。
+      // 给 warning 等于告诉用户「可以试」，实际是白跑一次再回来。
+      findings.push({
+        severity: 'blocker',
+        code: 'JAVA_TOO_NEW',
+        message: `Minecraft ${instance.gameVersion} 只能用 Java 8，本机只有 Java ${newer.join(', ')}`,
+        hint: `1.12 及更早的版本在 Java 9+ 上起不来；装一个 Java 8：blockpilot java install 8`,
+      })
+    } else {
+      findings.push({
+        severity: 'warning',
+        code: 'JAVA_NEWER_ONLY',
+        message: `没有 Java ${need}，但检测到更高的 Java ${newer.join(', ')}`,
+        hint: `多数情况下能启动；若加载器报版本错误，装一个 Java ${need}`,
+      })
+    }
   } else if (older.length > 0) {
     findings.push({
       severity: 'info',

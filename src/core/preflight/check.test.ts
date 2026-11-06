@@ -183,6 +183,20 @@ test('Java：只有更高版本 → JAVA_NEWER_ONLY (warning)，不是 blocker',
   assert.ok(!findings.some((x) => x.severity === 'blocker'))
 })
 
+test('Java：1.12.2 只有 Java 21 → JAVA_TOO_NEW (blocker)，不能说「多数能启动」', () => {
+  // 老 Forge 在 Java 9+ 上起不来。给 warning 会让人白跑一次再回来
+  const findings = checkJava(instance({ gameVersion: '1.12.2' }), {
+    os: 'windows',
+    totalMemoryMiB: 16384,
+    javaMajors: [21],
+  })
+  const f = findings.find((x) => x.code === 'JAVA_TOO_NEW')
+  assert.ok(f)
+  assert.equal(f.severity, 'blocker')
+  assert.match(f.hint ?? '', /java install 8/)
+  assert.ok(!findings.some((x) => x.code === 'JAVA_NEWER_ONLY'))
+})
+
 test('Java：精确匹配且存在更低版本 → 只记一条 info', () => {
   const findings = checkJava(instance({ gameVersion: '1.20.1' }), {
     os: 'windows',
