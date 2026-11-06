@@ -105,7 +105,6 @@ export interface MirrorConfig {
   /** 展示给用户的署名。第三方镜像的协议可能同样要求标注。 */
   readonly credit: string
 }
-
 /**
  * 用配置拼一个镜像源。
  *
@@ -127,14 +126,64 @@ export function createMirrorSource(cfg: MirrorConfig): DownloadSource {
 }
 
 /**
+ * Adoptium（Temurin）运行时的国内镜像。
+ *
+ * `java install` 走 Adoptium API，返回的是 GitHub Release 地址：
+ *
+ *   github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5%2B8/OpenJDK25U-jre_x64_windows_hotspot_25.0.5_8.zip
+ *
+ * 国内实测 6–16 KB/s，56 MB 要 1–2 小时（2026-11-06）。清华 TUNA 镜像放的是同一个
+ * 字节流，按 `<feature>/<image>/<arch>/<os>/<文件名>` 组织：
+ *
+ *   mirrors.tuna.tsinghua.edu.cn/Adoptium/25/jre/x64/windows/OpenJDK25U-jre_x64_windows_hotspot_25.0.5_8.zip
+ *
+ * 文件名自己就带 feature / image / arch / os，所以直接解析 URL，不需要把 API 的上下文
+ * 传进来。镜像没有的构建返回 null，下载器会照常落到 GitHub 直连——不会因为镜像滞后而装不上。
+ * 内容正确性由 Adoptium API 给的 sha256 兜底：镜像给错文件会在哈希这一步被挡下。
+ */
+const ADOPTIUM_MIRROR_BASE = 'https://mirrors.tuna.tsinghua.edu.cn/Adoptium'
+
+/** `OpenJDK25U-jre_x64_windows_hotspot_25.0.5_8.zip` 这一层文件名 */
+const ADOPTIUM_ASSET_PATH =
+  /\/adoptium\/[^/]+\/releases\/download\/[^/]+\/(OpenJDK(\d+)U-(jre|jdk)_([a-z0-9]+)_([a-z-]+)_hotspot_[^/]+\.(?:zip|tar\.gz))$/i
+
+/** GitHub Release 地址 → 镜像内的相对路径。不是 Adoptium 的包就返回 null。 */
+export function adoptiumMirrorPath(url: URL): string | null {
+  if (url.hostname !== 'github.com' && url.hostname !== 'www.github.com') return null
+  const m = ADOPTIUM_ASSET_PATH.exec(url.pathname)
+  if (m === null) return null
+  const [, file, feature, image, arch, os] = m
+  if (
+    file === undefined ||
+    feature === undefined ||
+    image === undefined ||
+    arch === undefined ||
+    os === undefined
+  ) {
+    return null
+  }
+  return `/${feature}/${image}/${arch}/${os}/${file}`
+}
+
+export const adoptiumTunaSource: DownloadSource = {
+  name: 'adoptium-tuna',
+  credit: 'TUNA · mirrors.tuna.tsinghua.edu.cn/Adoptium',
+  rewrite: (url) => {
+    const path = adoptiumMirrorPath(url)
+    return path === null ? null : `${ADOPTIUM_MIRROR_BASE}${path}`
+  },
+}
+
+/**
  * 默认源列表：BMCLAPI 管 Mojang 域，forgecdn 管 NeoForge 域，
  * MCIM 排在直连之后（理由见 mcimSource 注释——官方自己都说「下载失败后再用镜像」）。
+ * Adoptium 镜像排最后：只在 GitHub 真的失败时兜底，正常情况下仍走官方。
  */
 export function defaultSources(): readonly DownloadSource[] {
-  return [bmclapiSource, neoforgeCdnSource, directSource, mcimSource]
+  return [bmclapiSource, neoforgeCdnSource, directSource, mcimSource, adoptiumTunaSource]
 }
 
 /** 国内网络优先：镜像先上，直连兜底。 */
 export function chinaFirstSources(): readonly DownloadSource[] {
-  return [bmclapiSource, neoforgeCdnSource, mcimSource, directSource]
+  return [adoptiumTunaSource, bmclapiSource, neoforgeCdnSource, mcimSource, directSource]
 }

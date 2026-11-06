@@ -118,7 +118,12 @@ export function createJavaInstall(opts: JavaInstallOptions): Operation<JavaInsta
       signal,
     )
 
-    yield Op.log('info', 'java.extract', { bytes: outcome.bytes })
+    yield Op.log('info', 'java.extract', {
+      bytes: outcome.bytes,
+      cached: outcome.skipped,
+      source: outcome.source,
+      ...(outcome.credit === undefined ? {} : { credit: outcome.credit }),
+    })
     const entries =
       binary.archive === 'tar.gz'
         ? extractTarGz(archivePath, javaRoot)

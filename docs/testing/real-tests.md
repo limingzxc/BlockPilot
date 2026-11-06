@@ -162,7 +162,14 @@ FO 14.1.2 + MC 26.2，本机无 Java）。
 | `deploy-counts-resourcepacks` | 「模组 51 个」实际是 49 模组 + 2 资源包 | `files` 与 `mods` 分开计 |
 | `deploy-java-without-version` | 选 Java 时不知道包要哪个版本，只有 Java 8 也会被选中 | 先读包里的 `gameVersion` 再选 |
 
-单测 283 → 287，T0 15/15、T1 7/7。
+单测 283 → 289，T0 15/15、T1 7/7。
+
+当晚又补了两处（不属于缺陷，是可用性与契约）：
+
+- `java install` 加 Adoptium 的 TUNA 镜像源，`--china` 时排第一。同一个 55.9 MB 的 JRE 25：
+  GitHub 6–16 KB/s → 镜像 **7.3 s**。哈希仍按 Adoptium API 的 sha256 校验，镜像给错文件会被挡。
+- `install` 的退出码改成只对「装」负责（0 = 没有要补的或全部装好，2 = 有文件失败），
+  预检结论不再影响它；`E2E-106` 因此改回不带 `--no-host`，顺便钉住「没 Java 也能补模组」。
 
 ## 6. 不测什么
 

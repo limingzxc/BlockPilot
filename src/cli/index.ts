@@ -417,7 +417,15 @@ async function runInstall(argv: readonly string[]): Promise<number> {
       )
     }
     process.stdout.write('\n')
-    return verdictExit(report.verdict)
+    // 本命令只对「装」负责：没有要补的依赖就是成功，哪怕预检因为宿主机没 Java 判了
+    // BLOCKED（那是「能不能跑」的问题，归 preflight / run 管）。预检结论照旧打印在上面；
+    // 脚本要按它判定，用 `preflight --json`。
+    if (report.verdict === 'blocked' || report.verdict === 'unknown') {
+      process.stdout.write(
+        `${C.dim}预检结论 ${report.verdict} 说的是「这包能不能跑」，不影响本命令的退出码。${C.reset}\n\n`,
+      )
+    }
+    return 0
   }
 
   const modsDir = join(process.cwd(), modsDirArg)
@@ -542,11 +550,18 @@ async function runJavaInstall(argv: readonly string[]): Promise<number> {
     op,
     {
       log: (ev) => {
-        const d = ev.data as { release?: string; size?: number; bytes?: number } | undefined
+        const d = ev.data as
+          | { release?: string; size?: number; bytes?: number; cached?: boolean; credit?: string }
+          | undefined
         if (ev.code === 'java.download') {
           process.stderr.write(`${C.dim}· ${d?.release ?? ''} · ${humanBytes(d?.size ?? 0)}${C.reset}\n`)
         } else if (ev.code === 'java.extract') {
-          process.stderr.write(`${C.dim}· 下载完成 ${humanBytes(d?.bytes ?? 0)}，解压中…${C.reset}\n`)
+          // 命中本地缓存时一个字节都没下，别说成「下载完成」
+          const how = d?.cached === true ? '使用已下载的包' : '下载完成'
+          const from = d?.credit === undefined ? '' : ` · ${d.credit}`
+          process.stderr.write(
+            `${C.dim}· ${how} ${humanBytes(d?.bytes ?? 0)}${from}，解压中…${C.reset}\n`,
+          )
         }
       },
       result: (r) => {

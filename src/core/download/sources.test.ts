@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import {
+  adoptiumMirrorPath,
+  adoptiumTunaSource,
   bmclapiSource,
   chinaFirstSources,
   createMirrorSource,
@@ -57,13 +59,13 @@ test('直连源原样返回，永不返回 null', () => {
 
 test('默认源列表里 BMCLAPI 在 Modrinth 之前，MCIM 在直连之后', () => {
   const names = defaultSources().map((s) => s.name)
-  assert.deepEqual(names, ['bmclapi', 'neoforge-cdn', 'direct', 'mcim'])
+  assert.deepEqual(names, ['bmclapi', 'neoforge-cdn', 'direct', 'mcim', 'adoptium-tuna'])
 })
 
-test('国内优先列表把 MCIM 提到直连之前', () => {
+test('国内优先列表把 Adoptium 镜像与 MCIM 都提到直连之前', () => {
   assert.deepEqual(
     chinaFirstSources().map((s) => s.name),
-    ['bmclapi', 'neoforge-cdn', 'mcim', 'direct'],
+    ['adoptium-tuna', 'bmclapi', 'neoforge-cdn', 'mcim', 'direct'],
   )
 })
 
@@ -93,5 +95,56 @@ test('neoforge-cdn 只换域名，路径原样（实测 200 的规则）', () =>
   assert.equal(
     neoforgeCdnSource.rewrite(new URL('https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml')),
     'https://neoforged.forgecdn.net/releases/net/neoforged/neoforge/maven-metadata.xml',
+  )
+})
+
+test('Adoptium GitHub Release → 清华镜像路径', () => {
+  const win = new URL(
+    'https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5%2B8/OpenJDK25U-jre_x64_windows_hotspot_25.0.5_8.zip',
+  )
+  assert.equal(
+    adoptiumTunaSource.rewrite(win),
+    'https://mirrors.tuna.tsinghua.edu.cn/Adoptium/25/jre/x64/windows/OpenJDK25U-jre_x64_windows_hotspot_25.0.5_8.zip',
+  )
+
+  // Linux / macOS 是 tar.gz，架构也进了路径
+  const linux = new URL(
+    'https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5%2B8/OpenJDK25U-jre_aarch64_linux_hotspot_25.0.5_8.tar.gz',
+  )
+  assert.equal(
+    adoptiumTunaSource.rewrite(linux),
+    'https://mirrors.tuna.tsinghua.edu.cn/Adoptium/25/jre/aarch64/linux/OpenJDK25U-jre_aarch64_linux_hotspot_25.0.5_8.tar.gz',
+  )
+
+  const mac = new URL(
+    'https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5%2B8/OpenJDK25U-jdk_aarch64_mac_hotspot_25.0.5_8.tar.gz',
+  )
+  assert.equal(
+    adoptiumMirrorPath(mac),
+    '/25/jdk/aarch64/mac/OpenJDK25U-jdk_aarch64_mac_hotspot_25.0.5_8.tar.gz',
+  )
+})
+
+test('Adoptium 镜像不碰其他 GitHub 包，也不碰非 GitHub 域', () => {
+  // 同一个 GitHub 账号下的别的仓库，不是 Adoptium 运行时
+  assert.equal(
+    adoptiumTunaSource.rewrite(
+      new URL('https://github.com/adoptium/temurin25-binaries/releases/download/v1/readme.txt'),
+    ),
+    null,
+  )
+  // Release 资产会 302 到 release-assets.githubusercontent.com，那一步不归这个源管
+  assert.equal(
+    adoptiumTunaSource.rewrite(
+      new URL('https://release-assets.githubusercontent.com/github-production-release-asset/x/y.zip'),
+    ),
+    null,
+  )
+  // 文件名不像 Adoptium 的包（没有 OpenJDK..U-jre/jdk 前缀）
+  assert.equal(
+    adoptiumMirrorPath(
+      new URL('https://github.com/adoptium/temurin25-binaries/releases/download/x/OpenJDK25-jre_x64_windows.zip'),
+    ),
+    null,
   )
 })
