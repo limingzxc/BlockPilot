@@ -13,7 +13,7 @@ import type { DownloadSource, DownloadTask } from '../download/types.js'
 import { writeInstanceMarker } from '../instance/marker.js'
 import type { Layout } from '../layout.js'
 import { fetchVersionJson } from '../version/fetch.js'
-import type { VersionJson } from '../version/types.js'
+import type { Library, VersionJson } from '../version/types.js'
 import { detectEnv, type LaunchEnv } from '../launch/env.js'
 import { pickLibraries } from '../launch/command.js'
 
@@ -87,10 +87,40 @@ export function buildVanillaTasks(
   return tasks
 }
 
+/**
+ * 26.x 起 Mojang 把原生库按用途拆进子目录，JVM 参数直接写
+ * `-Djava.library.path=${natives_directory}/java`（JNA / Netty 同理）。
+ *
+ * 仍然把 DLL 全倒进 natives 根目录的话，LWJGL 在 `natives/java` 下找不到
+ * `lwjgl.dll`，首启就死在 `UnsatisfiedLinkError: Failed to locate library`。
+ * 判断依据用版本 JSON 自己写的参数，不猜版本号。
+ */
+export function usesSplitNatives(version: VersionJson): boolean {
+  const jvm = version.arguments?.jvm ?? []
+  return jvm.some((a) => typeof a === 'string' && a.includes('${natives_directory}/java'))
+}
+
+/** 原生库该落在哪个子目录。老版本（不拆分）一律返回空串，仍解到 natives 根。 */
+export function nativeSubdir(lib: Library): string {
+  const group = lib.name.split(':')[0] ?? ''
+  if (group.startsWith('org.lwjgl')) return 'java'
+  if (group.startsWith('net.java.dev.jna')) return 'jna'
+  if (group.startsWith('io.netty')) return 'netty'
+  return ''
+}
+
 /** 解压原生库。跳过 META-INF 和带 .. 的路径（防 zip slip）。 */
 export function extractNatives(version: VersionJson, env: LaunchEnv, layout: Layout): number {
-  const dir = layout.nativesDir(version.id)
-  mkdirSync(dir, { recursive: true })
+  const base = layout.nativesDir(version.id)
+  const split = usesSplitNatives(version)
+  mkdirSync(base, { recursive: true })
+  if (split) {
+    // 参数里只引用 java / jna / lwjgl / netty 四个目录。jna 与 netty 是
+    // 「自己解压到这里」的临时目录，先把目录建好，省得运行时才报错
+    for (const sub of ['java', 'jna', 'lwjgl', 'netty']) {
+      mkdirSync(join(base, sub), { recursive: true })
+    }
+  }
 
   let count = 0
   const { natives } = pickLibraries(version, env)
@@ -99,6 +129,7 @@ export function extractNatives(version: VersionJson, env: LaunchEnv, layout: Lay
     if (art === undefined) continue
     const jarPath = join(layout.libraries, ...art.path.split('/'))
     if (!existsSync(jarPath)) continue
+    const dir = split ? join(base, nativeSubdir(lib)) : base
 
     let entries: Record<string, Uint8Array>
     try {
