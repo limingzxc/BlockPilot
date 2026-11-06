@@ -32,6 +32,7 @@ import { createFabricSetup } from '../core/setup/fabric.js'
 import type { FabricSetupResult } from '../core/setup/fabric.js'
 import { createDeploy } from '../core/deploy.js'
 import type { DeployResult } from '../core/deploy.js'
+import { readPackFile } from '../core/preflight/read-pack.js'
 import { detectHost } from '../core/host.js'
 import { ModrinthSource } from '../sources/modrinth.js'
 import { C, consume, createInterrupt, humanBytes } from './ui.js'
@@ -1155,8 +1156,16 @@ async function runDeploy(argv: readonly string[]): Promise<number> {
   process.stdout.write(`  ${C.dim}整合包${C.reset}  ${packPath}\n`)
   process.stdout.write(`  ${C.dim}实例${C.reset}    ${instance} → ${layout.gameDir}\n\n`)
 
-  // Forge 要跑 installer，得有 java。Fabric 用不到，但先检测一次省得后续分支判断
-  const javaPath = await pickJavaOrReport(undefined, layout, signal, argOf(argv, '--java'))
+  // Forge 要跑 installer，得有 java。Fabric 用不到，但先检测一次省得后续分支判断。
+  // 必须把包里的游戏版本传进去：26.2 要 Java 25，不知道版本就只能「捡最高的那个用」，
+  // 机器上只有 Java 8 时也会被当成可用，Forge installer 随后炸得莫名其妙。
+  let packGameVersion: string | undefined
+  try {
+    packGameVersion = readPackFile(packPath).instance.gameVersion
+  } catch {
+    // 包本身读不出来由 createDeploy 报 BAD_MODPACK，这里不抢它的活
+  }
+  const javaPath = await pickJavaOrReport(packGameVersion, layout, signal, argOf(argv, '--java'))
 
   const op = createDeploy({
     packPath,
@@ -1196,7 +1205,7 @@ async function runDeploy(argv: readonly string[]): Promise<number> {
           `  ${C.green}装好了${C.reset}  ${r.gameVersion} + ${r.loaderKind} ${r.loaderVersion}\n`,
         )
         process.stdout.write(
-          `  ${C.dim}模组 ${r.mods} 个（下载 ${r.modsDownloaded} / 跳过 ${r.modsSkipped} 失败 ${r.failed.length}）· overrides ${r.overrides} 个文件${C.reset}\n`,
+          `  ${C.dim}模组 ${r.mods} 个（文件 ${r.files} 个：下载 ${r.modsDownloaded} / 跳过 ${r.modsSkipped} / 失败 ${r.failed.length}）· overrides ${r.overrides} 个文件${C.reset}\n`,
         )
 
         // 部署后自检：装在完 ≠ 能跑

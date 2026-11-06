@@ -1,3 +1,5 @@
+import { join, sep } from 'node:path'
+
 import { Op } from './events.js'
 import type { OpEvent } from './events.js'
 import { defineOperation } from './operation.js'
@@ -103,6 +105,9 @@ export interface DeployResult {
   readonly loaderVersion: string
   /** 装完之后用来启动的版本 id */
   readonly playableVersionId: string
+  /** 清单里要下载的文件总数（模组、资源包、光影……） */
+  readonly files: number
+  /** 其中落在 mods/ 下的个数。整合包常带资源包，两个数不该混着报 */
   readonly mods: number
   readonly modsDownloaded: number
   readonly modsSkipped: number
@@ -241,6 +246,8 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
     // ---- 3. 整合包文件 ----
     yield Op.log('info', 'deploy.step', { step: 'files' })
     const tasks = buildPackTasks(index, opts.layout)
+    const modsPrefix = `${join(opts.layout.gameDir, 'mods')}${sep}`
+    const mods = tasks.filter((t) => t.destPath.startsWith(modsPrefix)).length
     const { downloaded, skipped, failed } = yield* runDownloadBatch({
       tasks,
       sources,
@@ -289,7 +296,8 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
       loaderKind: instance.loader.kind,
       loaderVersion: instance.loader.version,
       playableVersionId,
-      mods: tasks.length,
+      files: tasks.length,
+      mods,
       modsDownloaded: downloaded,
       modsSkipped: skipped,
       overrides,
