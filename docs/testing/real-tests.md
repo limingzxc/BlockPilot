@@ -148,6 +148,22 @@ T2 之后会写盘、占用带宽、开游戏窗口，**不作为默认**。CI �
 
 前四条由 E2E 复现；后五条是修复与重型用例真实运行时暴露的。
 
+### 5.1 第四轮（2026-11-06）：26.2 真实用户实测
+
+完整记录见 `docs/testing/2026-11-06-real-user.md`（Modrinth 下载量第一的
+FO 14.1.2 + MC 26.2，本机无 Java）。
+
+| 编号 | 现象 | 修法 |
+|---|---|---|
+| `natives-split-layout` | 26.x 首次启动 `UnsatisfiedLinkError: lwjgl.dll`：JVM 参数指向 `natives/<ver>/java`，解压还在往根目录放 | 按版本 JSON 的 `${natives_directory}/java` 判定布局，LWJGL/JNA/Netty 分目录。见 ADR-0027 |
+| `java-table-21` | 预检对 26.2 报「需要 Java 21」；只有 Java 21 的机器会被判为精确匹配、一条 finding 都没有 | `requiredJavaMajor` 只留一份，26.x → 25；hint 给 `java install 25` |
+| `version-mismatch-direction` | 官方包被一个 7 KB 调试模组判 BLOCKED/exit 2（ADR-0026 停在 Proposed） | 落地 ADR-0026：高于声明 → `VERSION_UNVERIFIED` warning |
+| `download-no-idle-timeout` | 半死连接让 `deploy` 永远停在 `23/51` | 连续 30 s 无字节即中止并换源 |
+| `deploy-counts-resourcepacks` | 「模组 51 个」实际是 49 模组 + 2 资源包 | `files` 与 `mods` 分开计 |
+| `deploy-java-without-version` | 选 Java 时不知道包要哪个版本，只有 Java 8 也会被选中 | 先读包里的 `gameVersion` 再选 |
+
+单测 283 → 287，T0 15/15、T1 7/7。
+
 ## 6. 不测什么
 
 - **微软正版登录全流程**：缺 Azure 应用 id 与正版账号。只测未配置时的报错，以及单测里
