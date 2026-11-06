@@ -5,6 +5,7 @@ import type {
   DependencyKind,
   DependencyResolver,
   DepFilter,
+  ProjectNamer,
   VersionInfo,
 } from '../core/sources.js'
 
@@ -68,7 +69,13 @@ function toVersionInfo(raw: RawVersion): VersionInfo {
 /** Modrinth 的 project / version id 都是 8 位 base62。非法 id 会让整批请求 400。 */
 const ID_RE = /^[0-9A-Za-z]{8}$/
 
-export class ModrinthSource implements ContentSource, DependencyResolver {
+interface RawProject {
+  readonly id: string
+  readonly title?: string
+  readonly slug?: string
+}
+
+export class ModrinthSource implements ContentSource, DependencyResolver, ProjectNamer {
   readonly name = 'modrinth'
   private readonly api: string
 
@@ -112,6 +119,37 @@ export class ModrinthSource implements ContentSource, DependencyResolver {
     const url = `${this.api}/versions?ids=${encodeURIComponent(JSON.stringify(ids))}`
     const rows = await fetchJson<RawVersion[]>(url, { signal, headers: { 'User-Agent': UA } })
     return rows.map(toVersionInfo)
+  }
+
+  /**
+   * projectId → 项目标题。只用于文案，失败不抛错。
+   *
+   * `/projects?ids=[...]` 一次最多 100 个；不存在的 id 会被 Modrinth 直接忽略，
+   * 返回的数组可能比请求的短，所以按返回结果建 map，不全就当没查到。
+   */
+  async getProjectNames(
+    projectIds: readonly string[],
+    signal: AbortSignal,
+  ): Promise<ReadonlyMap<string, string>> {
+    const valid = [...new Set(projectIds.filter((id) => ID_RE.test(id)))]
+    const out = new Map<string, string>()
+    for (let i = 0; i < valid.length; i += BATCH) {
+      if (signal.aborted) break
+      const chunk = valid.slice(i, i + BATCH)
+      try {
+        const rows = await fetchJson<RawProject[]>(
+          `${this.api}/projects?ids=${encodeURIComponent(JSON.stringify(chunk))}`,
+          { signal, headers: { 'User-Agent': UA } },
+        )
+        for (const p of rows) {
+          if (typeof p.title === 'string' && p.title !== '') out.set(p.id, p.title)
+        }
+      } catch (err) {
+        // 名字是锦上添花：整批失败就放弃这批，不让预检因此变红
+        if (err instanceof NetworkError && signal.aborted) throw err
+      }
+    }
+    return out
   }
 
   /**

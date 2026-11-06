@@ -58,3 +58,17 @@ export interface DependencyResolver {
     signal: AbortSignal,
   ): Promise<VersionInfo | null>
 }
+
+/**
+ * 可选能力：把 projectId 翻成用户看得懂的名字（Modrinth 的 project title）。
+ *
+ * 依赖闭包只能拿到 id——缺的那个依赖在实例里没有 jar，元数据里也只有 projectId。
+ * 只给 id 的提示用户无法处理：「TIo1UXXV 需要前置模组 ordsPcFz」既不知道是谁，
+ * 也不知道该去搜什么。名字只影响文案，不影响判定，所以拿不到时静默降级。
+ */
+export interface ProjectNamer {
+  getProjectNames(
+    projectIds: readonly string[],
+    signal: AbortSignal,
+  ): Promise<ReadonlyMap<string, string>>
+}

@@ -28,6 +28,8 @@ export type ManualReason = 'no-compatible-version' | 'no-download-file'
 export interface ManualFix {
   readonly projectId: string
   readonly reason: ManualReason
+  /** 人看得懂的项目名。拿不到就不填，渲染时退回 projectId */
+  readonly displayName?: string
 }
 
 export interface RepairPlan {
@@ -38,6 +40,8 @@ export interface RepairPlan {
 export interface PlanOptions {
   /** 与 closureToFindings 的 verified 同义：false 时所有安装项标为 unverified */
   readonly verified?: boolean
+  /** projectId → 名字，仅用于 manual 项的展示 */
+  readonly nameOf?: (projectId: string) => string | undefined
 }
 
 /**
@@ -56,13 +60,22 @@ export function buildRepairPlan(
 
   for (const dep of closure.missing) {
     const version = dep.resolved
+    const displayName = opts.nameOf?.(dep.projectId)
     if (version === null) {
-      manual.push({ projectId: dep.projectId, reason: 'no-compatible-version' })
+      manual.push({
+        projectId: dep.projectId,
+        reason: 'no-compatible-version',
+        ...(displayName === undefined ? {} : { displayName }),
+      })
       continue
     }
     const file = version.files.find((f) => f.primary) ?? version.files[0]
     if (file === undefined) {
-      manual.push({ projectId: dep.projectId, reason: 'no-download-file' })
+      manual.push({
+        projectId: dep.projectId,
+        reason: 'no-download-file',
+        ...(displayName === undefined ? {} : { displayName }),
+      })
       continue
     }
     installs.push({

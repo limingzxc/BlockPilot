@@ -147,7 +147,9 @@ function renderHuman(r: PreflightReport): string {
         m.reason === 'no-compatible-version'
           ? '找不到兼容当前游戏版本与加载器的版本'
           : '该版本没有可下载文件'
-      lines.push(`  ${C.yellow}?${C.reset} ${m.projectId}  ${C.dim}${why}${C.reset}`)
+      // 名字给人看，id 留给搜索与脚本
+      const label = m.displayName === undefined ? m.projectId : `${m.displayName} (${m.projectId})`
+      lines.push(`  ${C.yellow}?${C.reset} ${label}  ${C.dim}${why}${C.reset}`)
     }
     lines.push('')
   }

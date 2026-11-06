@@ -5,7 +5,7 @@ import { defineOperation } from '../operation.js'
 import type { Operation } from '../operation.js'
 import type { HostProfile, Instance, LoaderKind } from '../instance.js'
 import { NetworkError } from '../http.js'
-import type { ContentSource, DependencyResolver, VersionInfo } from '../sources.js'
+import type { ContentSource, DependencyResolver, ProjectNamer, VersionInfo } from '../sources.js'
 import { closureToFindings, computeClosure } from '../deps/closure.js'
 import type { ClosureResult } from '../deps/closure.js'
 import { buildRepairPlan } from '../deps/plan.js'
@@ -22,7 +22,7 @@ export interface PreflightOptions {
   /** `.mrpack` 文件，或一个实例目录（MultiMC/Prism 实例、裸 .minecraft、任何带 mods/ 的目录） */
   readonly target: string
   /** 内容源。若同时实现 DependencyResolver，预检会做递归依赖闭包。 */
-  readonly source: ContentSource & Partial<DependencyResolver>
+  readonly source: ContentSource & Partial<DependencyResolver> & Partial<ProjectNamer>
   readonly host?: HostProfile
   /** 扫描目录时，目录内没有版本信息则用这个兜底 */
   readonly fallback?: {
@@ -156,6 +156,7 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
 
       const resolveFn = opts.source.resolve
       let closure: ClosureResult | null = null
+      let nameOf: ((projectId: string) => string | undefined) | undefined
       if (typeof resolveFn === 'function') {
         yield Op.log('info', 'deps.closure.start', { roots: knownVersions.length })
         try {
@@ -177,7 +178,33 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
         }
         // 整合包里没有 jar，依赖到底在不在无法证实——见 FindingOptions 的注释。
         // 宁可降级成 warning，也不要把「没看见」说成「不存在」。
-        findings.push(...closureToFindings(closure, { verified: false }))
+        // 缺的依赖只有 projectId，顺手查一次项目名：只影响文案，查不到照旧用 id。
+        if (closure.missing.length > 0) {
+          const fromVersions = new Map(knownVersions.map((v) => [v.projectId, v.name]))
+          // 缺失的依赖，以及「是谁需要它」——后者也只有 id。元数据里的 name 是
+          // 版本名（可能就叫 "0.2.0"），项目标题才认得出来，所以一并查。
+          const ids = [
+            ...new Set([
+              ...closure.missing.map((m) => m.projectId),
+              ...closure.missing.flatMap((m) => m.requiredBy),
+            ]),
+          ]
+          let projectNames: ReadonlyMap<string, string> = new Map()
+          if (typeof opts.source.getProjectNames === 'function') {
+            try {
+              projectNames = await opts.source.getProjectNames(ids, signal)
+            } catch {
+              // 名字是锦上添花，拿不到不影响判定
+            }
+          }
+          nameOf = (projectId) => projectNames.get(projectId) ?? fromVersions.get(projectId)
+        }
+        findings.push(
+          ...closureToFindings(closure, {
+            verified: false,
+            ...(nameOf === undefined ? {} : { nameOf }),
+          }),
+        )
         yield Op.log('info', 'deps.closure.done', {
           visited: closure.visited.length,
           missing: closure.missing.length,
@@ -188,7 +215,13 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
         yield Op.log('warn', 'deps.closure.skipped', { reason: 'source cannot resolve by projectId' })
       }
 
-      plan = closure === null ? EMPTY_PLAN : buildRepairPlan(closure, { verified: false })
+      plan =
+        closure === null
+          ? EMPTY_PLAN
+          : buildRepairPlan(closure, {
+              verified: false,
+              ...(nameOf === undefined ? {} : { nameOf }),
+            })
       mods = instance.mods.length
       resolved = map.size
       // map 里没有的，就是没查到的——本地文件和坏 id 都在里面，不要重复计。

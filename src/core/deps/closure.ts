@@ -114,6 +114,11 @@ export interface FindingOptions {
    * 默认 true（有 jar 可比对时才叫确定缺失）。
    */
   readonly verified?: boolean
+  /**
+   * projectId → 人看得懂的名字。可选：拿不到时退回裸 id，判定不受影响。
+   * 见 ProjectNamer：闭包里只有 id，而「需要前置模组 ordsPcFz」用户没法处理。
+   */
+  readonly nameOf?: (projectId: string) => string | undefined
 }
 
 /** 把闭包结果翻译成 findings。文案给人看，code 给机器用。 */
@@ -123,9 +128,14 @@ export function closureToFindings(
 ): readonly Finding[] {
   const out: Finding[] = []
   const verified = opts.verified !== false
+  /** 有名字就写「名字 (id)」：名字给人看，id 给脚本与搜索用 */
+  const label = (projectId: string): string => {
+    const name = opts.nameOf?.(projectId)
+    return name === undefined || name === '' ? projectId : `${name} (${projectId})`
+  }
 
   for (const m of result.missing) {
-    const by = m.requiredBy.slice(0, 3).join('、')
+    const by = m.requiredBy.slice(0, 3).map(label).join('、')
     const more = m.requiredBy.length > 3 ? ` 等 ${m.requiredBy.length} 个模组` : ''
     if (!verified) {
       out.push({
@@ -133,8 +143,8 @@ export function closureToFindings(
         code: 'UNVERIFIED_DEPENDENCY',
         message:
           m.resolved === null
-            ? `${by}${more} 需要前置模组 ${m.projectId}，元数据里没有兼容版本（也可能已内置在某个模组里）`
-            : `${by}${more} 需要前置模组 ${m.projectId}，整合包里没有它（可能已内置在某个模组里）`,
+            ? `${by}${more} 需要前置模组 ${label(m.projectId)}，元数据里没有兼容版本（也可能已内置在某个模组里）`
+            : `${by}${more} 需要前置模组 ${label(m.projectId)}，整合包里没有它（可能已内置在某个模组里）`,
         subject: m.projectId,
         hint: '整合包常把依赖打在 jar-in-jar 里；装完跑一次 preflight <实例目录> 确认，确有缺失再补装',
       })
@@ -144,7 +154,7 @@ export function closureToFindings(
       out.push({
         severity: 'blocker',
         code: 'MISSING_DEPENDENCY',
-        message: `${by}${more} 需要前置模组 ${m.projectId}，它不在实例中`,
+        message: `${by}${more} 需要前置模组 ${label(m.projectId)}，它不在实例中`,
         subject: m.projectId,
         hint: `可安装 ${m.resolved.name}`,
       })
@@ -152,7 +162,7 @@ export function closureToFindings(
       out.push({
         severity: 'blocker',
         code: 'UNSATISFIABLE_DEPENDENCY',
-        message: `${by}${more} 需要前置模组 ${m.projectId}，但找不到兼容当前游戏版本与加载器的版本`,
+        message: `${by}${more} 需要前置模组 ${label(m.projectId)}，但找不到兼容当前游戏版本与加载器的版本`,
         subject: m.projectId,
         hint: '需要降级游戏版本、更换加载器，或找替代模组',
       })

@@ -46,6 +46,45 @@ test('单层缺失依赖，且能找到可用版本', async () => {
   assert.match(f.hint ?? '', /b display/)
 })
 
+test('给了 nameOf：文案用名字，subject 仍是 id', async () => {
+  // 真实场景：Homestead 里「TIo1UXXV 需要前置模组 ordsPcFz」，两个都是裸 id
+  const a = ver('TIo1UXXV', [['ordsPcFz', 'required']])
+  const result = await computeClosure({
+    roots: [a],
+    filter,
+    resolver: resolverOf({}),
+    signal,
+  })
+  const names = new Map([
+    ['TIo1UXXV', 'Hybrid Aquamirai'],
+    ['ordsPcFz', 'KotlinLangForge'],
+  ])
+  const findings = closureToFindings(result, {
+    verified: false,
+    nameOf: (id) => names.get(id),
+  })
+  const f = findings[0]
+  assert.ok(f)
+  assert.match(f.message, /KotlinLangForge \(ordsPcFz\)/)
+  assert.match(f.message, /Hybrid Aquamirai \(TIo1UXXV\)/)
+  // 机器码字段不跟着变：脚本按 subject 反查
+  assert.equal(f.subject, 'ordsPcFz')
+})
+
+test('修复计划的 manual 项也带名字', async () => {
+  const { buildRepairPlan } = await import('./plan.js')
+  const a = ver('a', [['b', 'required']])
+  const result = await computeClosure({
+    roots: [a],
+    filter,
+    resolver: resolverOf({}),
+    signal,
+  })
+  const plan = buildRepairPlan(result, { verified: false, nameOf: (id) => (id === 'b' ? 'Bee' : undefined) })
+  assert.equal(plan.manual[0]?.projectId, 'b')
+  assert.equal(plan.manual[0]?.displayName, 'Bee')
+})
+
 test('两层递归：a → b → c，两个都要报', async () => {
   const a = ver('a', [['b', 'required']])
   const b = ver('b', [['c', 'required']])
