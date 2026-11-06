@@ -1,5 +1,7 @@
 import type { HostProfile, Instance, LoaderKind } from '../instance.js'
 import type { VersionInfo } from '../sources.js'
+import { compareVersions } from '../semver.js'
+import { requiredJavaMajor } from '../java/types.js'
 import type { Finding } from './types.js'
 
 export interface CheckInput {
@@ -13,22 +15,50 @@ function loaderToken(kind: LoaderKind): string | null {
 }
 
 /**
- * 从 MC 版本号推断所需 Java 大版本。
+ * 目标游戏版本与模组声明版本的关系。
  *
- * 覆盖两代版本号体系：`1.x` 与日历版（如 `26.3`）。
- * 后者一律按 21 处理——不确定时给更高版本，宁可多装不可少装。
+ * 不是「在不在列表里」这么简单：Modrinth 的 `game_versions` 是作者发版时
+ * **手动勾选**的清单，和 jar 内 `depends.minecraft` 是两份独立数据。作者升了兼容性
+ * 却没回去补勾，是生态里极常见的情况——ADR-0026 的口径：
+ *
+ * - `below`：目标版本低于模组声明过的最低版本。模组用到的 API 那个版本里可能
+ *   根本不存在，**必崩**，维持 blocker。
+ * - `above`：目标版本高于最高版本。可能真没适配，也可能只是没勾，降为 warning。
+ * - `declared`：正常命中。
+ * - `gap`：落在声明区间中间但没勾（如声明 1.20.1 与 1.21.1，目标是 1.20.4）。
+ *   方向不明，保守起见仍按 blocker 处理。
  */
-export function requiredJavaMajor(gameVersion: string): number {
-  const m = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?/.exec(gameVersion)
-  if (!m) return 21
-  const major = Number(m[1])
-  const minor = m[2] === undefined ? 0 : Number(m[2])
-  const patch = m[3] === undefined ? 0 : Number(m[3])
-  if (major !== 1) return 21
-  if (minor <= 16) return 8
-  if (minor < 20) return 17
-  if (minor === 20 && patch < 5) return 17
-  return 21
+type VersionFit =
+  | { readonly fit: 'declared' }
+  | { readonly fit: 'below' | 'above'; readonly bound: string }
+  | { readonly fit: 'gap' }
+
+function judgeGameVersion(target: string, declared: readonly string[]): VersionFit {
+  if (declared.includes(target)) return { fit: 'declared' }
+
+  let min: string | undefined
+  let max: string | undefined
+  for (const candidate of declared) {
+    if (min === undefined || max === undefined) {
+      min = candidate
+      max = candidate
+      continue
+    }
+    const lo = compareVersions(candidate, min)
+    const hi = compareVersions(candidate, max)
+    // 看不懂的写法（预发布、加料版本号）不参与定界，否则会把边界算歪
+    if (lo === null || hi === null) continue
+    if (lo < 0) min = candidate
+    if (hi > 0) max = candidate
+  }
+  if (min === undefined || max === undefined) return { fit: 'gap' }
+
+  const belowMin = compareVersions(target, min)
+  const aboveMax = compareVersions(target, max)
+  if (belowMin === null || aboveMax === null) return { fit: 'gap' }
+  if (belowMin < 0) return { fit: 'below', bound: min }
+  if (aboveMax > 0) return { fit: 'above', bound: max }
+  return { fit: 'gap' }
 }
 
 /**
@@ -52,7 +82,8 @@ export function checkJava(instance: Instance, host: HostProfile): readonly Findi
       severity: 'blocker',
       code: 'JAVA_MISSING',
       message: `Minecraft ${instance.gameVersion} 需要 Java ${need}，本机未检测到`,
-      hint: `已检测到：${host.javaMajors.join(', ') || '无'}`,
+      // 「已检测到：无」是个死胡同。保留现场，同时给一条能直接敲的命令
+      hint: `已检测到：${host.javaMajors.join(', ') || '无'} · 装一个再重试：blockpilot java install ${need}`,
     })
   } else if (!exact) {
     findings.push({
@@ -97,7 +128,26 @@ export function checkInstance(input: CheckInput): readonly Finding[] {
     }
     known.push(info)
 
-    if (!info.gameVersions.includes(instance.gameVersion)) {
+    const fit = judgeGameVersion(instance.gameVersion, info.gameVersions)
+    if (fit.fit === 'below') {
+      findings.push({
+        severity: 'blocker',
+        code: 'VERSION_MISMATCH',
+        message: `${info.name} 最低要求 Minecraft ${fit.bound}，不会在 ${instance.gameVersion} 上工作`,
+        subject: info.projectId,
+        hint: `该模组支持的版本：${info.gameVersions.slice(0, 5).join(', ') || '未知'}`,
+      })
+    } else if (fit.fit === 'above') {
+      // 作者标注的清单里没有这个版本。可能真没适配，也可能只是没回去补勾——
+      // 判 blocker 会让官方整合包因为一个调试模组整体「装不上」，见 ADR-0026
+      findings.push({
+        severity: 'warning',
+        code: 'VERSION_UNVERIFIED',
+        message: `${info.name} 作者标注的版本里没有 Minecraft ${instance.gameVersion}（最高到 ${fit.bound}）`,
+        subject: info.projectId,
+        hint: '可能还没适配，也可能只是发版时没勾；装完跑一次 preflight <实例目录>，那时读的是真 jar',
+      })
+    } else if (fit.fit === 'gap') {
       findings.push({
         severity: 'blocker',
         code: 'VERSION_MISMATCH',

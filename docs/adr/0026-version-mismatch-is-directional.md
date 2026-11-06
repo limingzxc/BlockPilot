@@ -1,11 +1,15 @@
 # 0026. 「版本不匹配」要分级：作者没勾，不等于跑不了
 
-- **Status**: Proposed
+- **Status**: Accepted（2026-11-06 落地，见下）
 - **Date**: 2026-10-29
 - **Deciders**: @liming
 - **Depends on**: ADR-0002、ADR-0013、ADR-0025
 
-> 待决：本文只提出判定级别的调整，代码未改。落地前需要 @liming 确认。
+> 落地记录（2026-11-06）：`check.ts` 新增 `judgeGameVersion`，按方向给出
+> `blocker/VERSION_MISMATCH`（低于最低声明）、`warning/VERSION_UNVERIFIED`（高于最高声明）；
+> 目标落在声明区间中间但没勾（gap，如声明 1.20.1 与 1.21.1、目标是 1.20.4）方向不明，
+> 仍按 blocker 处理。真包验证：`Fabulously.Optimized-v14.1.2.mrpack`（26.2）从
+> `BLOCKED / exit 2` 变为 `WARN / exit 0`，finding 为 `VERSION_UNVERIFIED`。
 
 ## Context
 

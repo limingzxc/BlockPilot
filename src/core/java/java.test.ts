@@ -36,7 +36,9 @@ test('MC 版本 → Java 大版本', () => {
   assert.equal(requiredJavaMajor('1.17'), 17)
   assert.equal(requiredJavaMajor('1.20.4'), 17)
   assert.equal(requiredJavaMajor('1.20.5'), 21)
-  assert.equal(requiredJavaMajor('26.3'), 21)
+  // 26.x 的版本 JSON 写的是 majorVersion 25：给 21 会让「Java 21 够用」这种结论骗人
+  assert.equal(requiredJavaMajor('26.2'), 25)
+  assert.equal(requiredJavaMajor('26.3'), 25)
 })
 
 function j(major: number, path = `/jdk-${major}/bin/java`): JavaInstall {

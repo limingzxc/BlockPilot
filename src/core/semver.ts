@@ -42,6 +42,20 @@ function compare(a: readonly number[], b: readonly number[]): number {
   return 0
 }
 
+/**
+ * 比较两个版本号。看不懂的写法返回 null，让调用方自己决定怎么办。
+ *
+ * 只比数字段：`26.2` 与 `26.1.2` 能正确分出大小，`26.4-snapshot-1` 按 `26.4` 处理。
+ * 预发布标签的先后关系没有权威定义，这里不做精确排序——用来判断
+ * 「目标版本是否高于模组声明过的最高版本」已经够用。
+ */
+export function compareVersions(a: string, b: string): number | null {
+  const va = parseVersion(a)
+  const vb = parseVersion(b)
+  if (va === null || vb === null) return null
+  return compare(va, vb)
+}
+
 /** Maven 范围：[1.20.1,1.21) / [0.6.10,) / (,1.21] / [1.20.1] */
 function satisfiesMaven(version: number[], range: string): RangeVerdict {
   const m = /^([[（(])([^,\])]*)(,?)([^,\])]*)([\]）)])$/.exec(range.trim())
