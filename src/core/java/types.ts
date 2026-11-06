@@ -60,6 +60,10 @@ export function pickJava(installs: readonly JavaInstall[], needMajor: number): J
   if (exact.length > 0) {
     return exact.find((j) => j.source === 'managed') ?? exact[0] ?? null
   }
+  // Java 8 是唯一「更高版本一定不行」的一档：1.12 及更早的 Forge / MC 在 Java 9+ 上
+  // 起不来。这里返回 null 让调用方报「没有 Java 8」，而不是挑个 21 去撞
+  // UnsupportedClassVersionError。
+  if (needMajor <= 8) return null
   const newer = installs.filter((j) => j.major > needMajor).sort((a, b) => a.major - b.major)
   return newer[0] ?? null
 }

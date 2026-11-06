@@ -50,6 +50,11 @@ test('pickJava 优先精确匹配', () => {
   assert.equal(picked?.major, 17)
 })
 
+test('pickJava 对 Java 8 不做「更高版本」兜底', () => {
+  // 1.12 及更早只能 Java 8，挑 21 只会换来一次 UnsupportedClassVersionError
+  assert.equal(pickJava([j(17), j(21)], 8), null)
+})
+
 test('pickJava 没有精确版本时取最小的更高版本', () => {
   const picked = pickJava([j(8), j(21), j(25)], 17)
   assert.equal(picked?.major, 21)
