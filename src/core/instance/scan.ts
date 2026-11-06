@@ -65,10 +65,17 @@ function readVersionFromMmcPack(dir: string): {
   }
 }
 
+/** 1.12.2 及更早的 Forge 用 mcmod.info，1.13+ 用 mods.toml。 */
+function isLegacyMinecraft(gameVersion: string): boolean {
+  const m = /^1\.(\d+)/.exec(gameVersion)
+  return m !== null && Number(m[1]) <= 12
+}
+
 export function scanInstanceDir(dir: string, opts: ScanOptions): ScanResult {
   const fromPack = readVersionFromMmcPack(dir)
   const gameVersion = fromPack.gameVersion ?? opts.fallbackGameVersion
   const loader = fromPack.loader ?? opts.fallbackLoader
+  const legacy = isLegacyMinecraft(gameVersion)
 
   const modsDir = findModsDir(dir)
   const mods: ScannedMod[] = []
@@ -82,7 +89,7 @@ export function scanInstanceDir(dir: string, opts: ScanOptions): ScanResult {
       if (!statSync(full).isFile()) continue
       let meta: ModMetadata | null = null
       try {
-        meta = readModMetadata(new Uint8Array(readFileSync(full)))
+        meta = readModMetadata(new Uint8Array(readFileSync(full)), { legacy })
       } catch {
         meta = null
       }

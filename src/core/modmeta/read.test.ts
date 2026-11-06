@@ -228,3 +228,88 @@ test('嵌套 jar 里的 lenient JSON 也能读到', () => {
   const meta = readModMetadata(buf)
   assert.equal(meta?.nested[0]?.modId, 'midnightlib')
 })
+
+test('读 1.12.2 的 mcmod.info（数组形式）', () => {
+  const buf = jar({
+    'mcmod.info': JSON.stringify([
+      {
+        modid: 'creativecore',
+        name: 'CreativeCore',
+        version: '1.10.70',
+        mcversion: '1.12.2',
+        dependencies: ['forge', 'minecraft'],
+      },
+    ]),
+  })
+  const meta = readModMetadata(buf, { legacy: true })
+  assert.ok(meta)
+  assert.equal(meta.modId, 'creativecore')
+  assert.equal(meta.version, '1.10.70')
+  assert.equal(meta.loader, 'forge')
+  assert.equal(meta.mcVersionRange, '[1.12.2]')
+})
+
+test('mcmod.info 的 { modList: [...] } 与单个对象也能读', () => {
+  const list = jar({
+    'mcmod.info': JSON.stringify({ modList: [{ modid: 'a', version: '1', mcversion: '1.7.10' }] }),
+  })
+  assert.equal(readModMetadata(list, { legacy: true })?.modId, 'a')
+
+  const single = jar({
+    'mcmod.info': JSON.stringify({ modid: 'b', version: '2', mcversion: '1.12.2' }),
+  })
+  assert.equal(readModMetadata(single, { legacy: true })?.modId, 'b')
+})
+
+test('老的 mcmod.info 与残留的 mods.toml 同时存在时，按实例版本选', () => {
+  // RLCraft 的 SpartanShields：mods.toml 是 1.13 模板残留，写着 minecraft [1.13.2]
+  const buf = jar({
+    'mcmod.info': JSON.stringify([
+      { modid: 'spartanshields', version: '1.5.5', mcversion: '1.12.2', dependencies: [] },
+    ]),
+    'META-INF/mods.toml': [
+      'modLoader="javafml"',
+      'loaderVersion="[25,)"',
+      '[[mods]]',
+      'modId="spartanshields"',
+      'version="1.5.5"',
+      '[[dependencies.spartanshields]]',
+      'modId="minecraft"',
+      'mandatory=true',
+      'versionRange="[1.13.2]"',
+    ].join('\n'),
+  })
+
+  const legacy = readModMetadata(buf, { legacy: true })
+  assert.equal(legacy?.mcVersionRange, '[1.12.2]')
+
+  const modern = readModMetadata(buf, { legacy: false })
+  assert.equal(modern?.mcVersionRange, '[1.13.2]')
+})
+
+test('mcmod.info 的 mcversion 1.12 是前缀，不是精确 1.12', () => {
+  const buf = jar({
+    'mcmod.info': JSON.stringify([{ modid: 'old', version: '1', mcversion: '1.12' }]),
+  })
+  const meta = readModMetadata(buf, { legacy: true })
+  assert.equal(meta?.mcVersionRange, '>=1.12 <1.13')
+})
+
+test('1.12.2 的 required-after: / optional: 依赖语法', () => {
+  const buf = jar({
+    'mcmod.info': JSON.stringify([
+      {
+        modid: 'enhancedvisuals',
+        version: '1.4.4',
+        mcversion: '1.12.2',
+        dependencies: ['required-after:creativecore', 'after:minecraft', 'optional:jei'],
+      },
+    ]),
+  })
+  const meta = readModMetadata(buf, { legacy: true })
+  assert.ok(meta)
+  const ids = meta.dependencies.map((d) => d.modId).sort()
+  // mcmod.info 的 dependencies 只是展示信息，不是硬依赖；minecraft 走 mcVersionRange
+  assert.deepEqual(ids, ['creativecore'])
+  assert.equal(meta.dependencies[0]?.mandatory, false)
+})

@@ -45,6 +45,8 @@ export const NON_MOD_DEPENDENCY_IDS: ReadonlySet<string> = new Set([
   'fabricloader',
   'fabric-loader',
   'forge',
+  // 1.12.2 的 mcmod.info 里，Forge 本身被写成 mod_MinecraftForge（大小写不统一）
+  'mod_minecraftforge',
   'neoforge',
   'quilt_loader',
   'quilt-loader',

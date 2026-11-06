@@ -46,11 +46,13 @@ export function checkLocalDeps(
   mods: readonly LocalDepInput[],
   ctx: LocalDepContext = {},
 ): readonly LocalDepIssue[] {
+  /** Forge 的 modId 不区分大小写（mcmod.info 里有写 ForgeEndertech 的），比较前统一小写 */
+  const key = (id: string): string => id.toLowerCase()
   const present = new Map<string, string | undefined>()
   for (const m of mods) {
-    present.set(m.modId, m.version)
-    for (const p of m.provides ?? []) present.set(p, m.version)
-    for (const n of m.nested ?? []) present.set(n.modId, n.version)
+    present.set(key(m.modId), m.version)
+    for (const p of m.provides ?? []) present.set(key(p), m.version)
+    for (const n of m.nested ?? []) present.set(key(n.modId), n.version)
   }
 
   const missing = new Map<string, Set<string>>()
@@ -59,43 +61,44 @@ export function checkLocalDeps(
   for (const mod of mods) {
     for (const dep of mod.dependencies) {
       if (!dep.mandatory) continue
+      const depId = key(dep.modId)
 
       // 虚拟 id 不查「在不在」，查「版本够不够」
-      if (NON_MOD_DEPENDENCY_IDS.has(dep.modId)) {
+      if (NON_MOD_DEPENDENCY_IDS.has(depId)) {
         if (dep.versionRange === undefined) continue
         const actual =
-          dep.modId === 'minecraft'
+          depId === 'minecraft'
             ? ctx.gameVersion
-            : dep.modId === 'fabricloader' || dep.modId === 'quilt_loader'
+            : depId === 'fabricloader' || depId === 'quilt_loader'
               ? ctx.loaderVersion
               : undefined
         if (actual === undefined) continue
         if (satisfiesRange(actual, dep.versionRange) !== 'violated') continue
-        const entry = mismatched.get(dep.modId)
+        const entry = mismatched.get(depId)
         if (entry === undefined) {
-          mismatched.set(dep.modId, { by: new Set([mod.modId]), range: dep.versionRange, actual })
+          mismatched.set(depId, { by: new Set([mod.modId]), range: dep.versionRange, actual })
         } else {
           entry.by.add(mod.modId)
         }
         continue
       }
 
-      if (!present.has(dep.modId)) {
-        let set = missing.get(dep.modId)
+      if (!present.has(depId)) {
+        let set = missing.get(depId)
         if (set === undefined) {
           set = new Set()
-          missing.set(dep.modId, set)
+          missing.set(depId, set)
         }
         set.add(mod.modId)
         continue
       }
 
-      const existing = present.get(dep.modId)
+      const existing = present.get(depId)
       if (dep.versionRange === undefined || existing === undefined) continue
       if (satisfiesRange(existing, dep.versionRange) !== 'violated') continue
-      const entry = mismatched.get(dep.modId)
+      const entry = mismatched.get(depId)
       if (entry === undefined) {
-        mismatched.set(dep.modId, {
+        mismatched.set(depId, {
           by: new Set([mod.modId]),
           range: dep.versionRange,
           actual: existing,

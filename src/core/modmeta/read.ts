@@ -7,6 +7,12 @@ const FABRIC = 'fabric.mod.json'
 const QUILT = 'quilt.mod.json'
 const NEOFORGE = 'META-INF/neoforge.mods.toml'
 const FORGE = 'META-INF/mods.toml'
+/**
+ * 1.12.2 及更早的 Forge 元数据。1.13+ 不再读它，所以「jar 里有 mcmod.info」
+ * 基本可以判定这是个老版本模组——反过来，老 jar 里带一份多余的 mods.toml 却很常见
+ * （作者复用了 1.13 的构建模板），RLCraft 里的 SpartanShields 就是这种。
+ */
+const MCMOD = 'mcmod.info'
 /** Fabric 用 JiJ（jars/），Forge 用 JarJar（jarjar/）。两套前缀都要扫。 */
 const JIJ_PREFIXES = ['META-INF/jars/', 'META-INF/jarjar/'] as const
 
@@ -15,7 +21,7 @@ function isNestedJar(name: string): boolean {
 }
 
 /** 按加载器优先级排列。多加载器 jar 里 fabric 声明通常最准确。 */
-const CANDIDATES = [FABRIC, QUILT, NEOFORGE, FORGE] as const
+const CANDIDATES = [FABRIC, QUILT, NEOFORGE, FORGE, MCMOD] as const
 
 type TomlShape = {
   modLoader?: string
@@ -187,6 +193,93 @@ function fromQuilt(text: string): ModMetadata | null {
   }
 }
 
+/** 1.12.2 的 mcmod.info：可能是数组、`{ modList: [...] }`，也可能是单个对象。 */
+type McmodEntry = {
+  modid?: string
+  name?: string
+  version?: string
+  mcversion?: string
+  dependencies?: unknown
+}
+
+function pickMcmodEntry(raw: Record<string, unknown>): McmodEntry | null {
+  if (Array.isArray(raw)) return (raw[0] as McmodEntry | undefined) ?? null
+  const list = raw['modList']
+  if (Array.isArray(list)) return (list[0] as McmodEntry | undefined) ?? null
+  return raw as McmodEntry
+}
+
+/** mcversion 可能是 `1.12.2`、`1.12`、`1.12.x`，也可能是 `[1.12.2,1.13)`。统一成范围表达式。 */
+function asRange(mcversion: string): string {
+  const v = mcversion.trim()
+  if (/^[[(]/.test(v)) return v
+  // 1.12.x / 1.12.* 都是「1.12 这一代」，先去掉通配段再当前缀处理
+  const cleaned = v.replace(/\.(x|X|\*)$/, '')
+  const parts = cleaned.split('.')
+  if (parts.length === 2) {
+    const next = Number(parts[1]) + 1
+    return `>=${cleaned} <${parts[0]}.${next}`
+  }
+  return `[${cleaned}]`
+}
+
+/**
+ * 1.12.2 的依赖写法：`required-after:modid[@[1.0,)]`、`after:modid`、`optional:modid`。
+ *
+ * 注意：`mcmod.info` 里的 dependencies **不是 Forge 的硬依赖**——真正生效的是
+ * `@Mod(dependencies=...)` 注解，这份只是模组列表的展示信息，作者常年不维护。
+ * 实证：RLCraft 2.9.3 里 WolfArmor 声明了三个不存在的前置（twilightforest 等），
+ * 这个包照样能进游戏。把它们当 required 会让每个 1.12.2 整合包满屏假 blocker。
+ *
+ * 所以全部记为 non-mandatory：保留信息，不参与「缺没缺」的判定。
+ */
+function parseForgeDeps(raw: unknown): ModDependency[] {
+  if (!Array.isArray(raw)) return []
+  const out: ModDependency[] = []
+  for (const item of raw) {
+    if (typeof item !== 'string') continue
+    // 一个数组项就是一条依赖。**不能按逗号切**：`@[1.0,)` 里的逗号是版本范围的一部分，
+    // 切完会多出一个叫 ")" 的模组（RLCraft 的 betternether 就是这样）。
+    for (const part of item.split(';')) {
+      const token = part.trim()
+      if (token === '') continue
+      const colon = token.indexOf(':')
+      const kind = (colon === -1 ? 'required' : token.slice(0, colon)).trim().toLowerCase()
+      const rest = colon === -1 ? token : token.slice(colon + 1).trim()
+      const at = rest.indexOf('@')
+      // Forge 的 modId 一律小写；mcmod.info 里常写成 ForgeEndertech / Forge
+      const modId = (at === -1 ? rest : rest.slice(0, at)).trim().toLowerCase()
+      const range = at === -1 ? undefined : rest.slice(at + 1).trim()
+      if (modId === '') continue
+      if (kind === 'before' || kind === 'after' || kind === 'optional') continue
+      out.push(normDep(modId, false, range === '' ? undefined : range))
+    }
+  }
+  return out
+}
+
+function fromMcmodInfo(text: string): ModMetadata | null {
+  const raw = parseModJson(text)
+  if (raw === null) return null
+  const entry = pickMcmodEntry(raw)
+  if (entry === null || typeof entry.modid !== 'string' || entry.modid === '') return null
+
+  const deps = parseForgeDeps(entry.dependencies)
+  const mc = typeof entry.mcversion === 'string' && entry.mcversion !== '' ? entry.mcversion : undefined
+
+  return {
+    modId: entry.modid,
+    version: typeof entry.version === 'string' ? entry.version : 'unknown',
+    ...(typeof entry.name === 'string' && entry.name !== '' ? { name: entry.name } : {}),
+    loader: 'forge',
+    // mcversion 同样只是展示信息，放进字段供人参考，不升级成 minecraft 依赖
+    ...(mc === undefined ? {} : { mcVersionRange: asRange(mc) }),
+    dependencies: deps,
+    provides: [],
+    nested: [],
+  }
+}
+
 function fromForgeToml(text: string, loader: ModLoaderKind): ModMetadata | null {
   let raw: TomlShape
   try {
@@ -269,7 +362,21 @@ function readNestedJars(entries: Record<string, Uint8Array>): { modId: string; v
  * 全解会吃掉时间和内存。读不出来就返回 null：损坏的 jar、资源包、
  * 甚至伪装成 mod 的文件都会走这条路。
  */
-export function readModMetadata(jar: Uint8Array): ModMetadata | null {
+export interface ReadModMetadataOptions {
+  /**
+   * 实例是否 ≤1.12.2。
+   *
+   * 老版本只认 mcmod.info，新版本只认 mods.toml。两者同时存在时（作者复用了构建模板），
+   * 按实例版本挑对的那一份：RLCraft 的 SpartanShields 里 mods.toml 写的是
+   * `minecraft [1.13.2]`（1.13 模板残留），mcmod.info 写的才是 `1.12.2`。
+   */
+  readonly legacy?: boolean
+}
+
+export function readModMetadata(
+  jar: Uint8Array,
+  opts: ReadModMetadataOptions = {},
+): ModMetadata | null {
   let entries: Record<string, Uint8Array>
   try {
     entries = unzipSync(jar, {
@@ -285,10 +392,25 @@ export function readModMetadata(jar: Uint8Array): ModMetadata | null {
   const withNested = (meta: ModMetadata | null): ModMetadata | null =>
     meta === null ? null : { ...meta, nested }
 
-  if (entries[FABRIC] !== undefined) return withNested(fromFabric(strFromU8(entries[FABRIC])))
-  if (entries[QUILT] !== undefined) return withNested(fromQuilt(strFromU8(entries[QUILT])))
-  if (entries[NEOFORGE] !== undefined)
-    return withNested(fromForgeToml(strFromU8(entries[NEOFORGE]), 'neoforge'))
-  if (entries[FORGE] !== undefined) return withNested(fromForgeToml(strFromU8(entries[FORGE]), 'forge'))
+  const order =
+    opts.legacy === true
+      ? ([FABRIC, QUILT, MCMOD, NEOFORGE, FORGE] as const)
+      : ([FABRIC, QUILT, NEOFORGE, FORGE, MCMOD] as const)
+
+  for (const name of order) {
+    const buf = entries[name]
+    if (buf === undefined) continue
+    const text = strFromU8(buf)
+    const meta =
+      name === FABRIC
+        ? fromFabric(text)
+        : name === QUILT
+          ? fromQuilt(text)
+          : name === MCMOD
+            ? fromMcmodInfo(text)
+            : fromForgeToml(text, name === NEOFORGE ? 'neoforge' : 'forge')
+    // 这一份读不出来就试下一份：坏掉的 mods.toml 不该让可用的 mcmod.info 一起消失
+    if (meta !== null) return withNested(meta)
+  }
   return null
 }
