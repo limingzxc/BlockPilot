@@ -88,6 +88,11 @@ function renderHuman(r: PreflightReport): string {
   lines.push('')
   lines.push(`${C.bold}BlockPilot preflight${C.reset}`)
   lines.push('')
+  if (r.target !== undefined) {
+    const loader =
+      r.target.loader.kind === 'vanilla' ? '' : ` + ${r.target.loader.kind} ${r.target.loader.version}`
+    lines.push(`  目标      ${r.target.gameVersion}${loader}`)
+  }
   lines.push(`  verdict   ${VERDICT_TEXT[r.verdict]}`)
   lines.push(
     `  mods      ${r.stats.mods}  ${C.dim}(resolved ${r.stats.resolved}, unresolved ${r.stats.unresolved})${C.reset}`,

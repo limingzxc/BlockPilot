@@ -238,6 +238,7 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
       verdict,
       findings,
       stats: { mods, resolved, unresolved },
+      target: { gameVersion: instance.gameVersion, loader: instance.loader },
       plan,
       generatedAt: new Date().toISOString(),
     }
