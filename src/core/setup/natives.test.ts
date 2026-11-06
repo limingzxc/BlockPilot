@@ -8,7 +8,7 @@ import { strToU8, zipSync } from 'fflate'
 import { resolveLayout } from '../layout.js'
 import { detectEnv } from '../launch/env.js'
 import type { Library, VersionJson } from '../version/types.js'
-import { extractNatives, nativeSubdir, usesSplitNatives } from './vanilla.js'
+import { extractNatives, nativeArtifact, nativeSubdir, usesSplitNatives } from './vanilla.js'
 
 const NATIVE_LIB: Library = {
   name: 'org.lwjgl:lwjgl:3.4.1:natives-windows',
@@ -98,4 +98,34 @@ test('老布局：DLL 仍落在 natives/<ver> 根下', () => {
   } finally {
     cleanup()
   }
+})
+
+test('1.12 的老式 natives 走 downloads.classifiers', () => {
+  const lib: Library = {
+    name: 'org.lwjgl.lwjgl:lwjgl-platform:2.9.4-nightly-20150209',
+    natives: { windows: 'natives-windows', linux: 'natives-linux' },
+    downloads: {
+      artifact: { path: 'main.jar', sha1: 'x', size: 1, url: 'u' },
+      classifiers: {
+        'natives-windows': { path: 'win.jar', sha1: 'x', size: 1, url: 'u' },
+        'natives-linux': { path: 'linux.jar', sha1: 'x', size: 1, url: 'u' },
+      },
+    },
+  }
+  const win = nativeArtifact(lib, { os: 'windows', arch: 'x86_64', features: {} })
+  assert.equal(win?.path, 'win.jar')
+  const linux = nativeArtifact(lib, { os: 'linux', arch: 'x86_64', features: {} })
+  assert.equal(linux?.path, 'linux.jar')
+  // 没有对应 classifier 时退回 artifact，不报错
+  const mac = nativeArtifact(lib, { os: 'osx', arch: 'x86_64', features: {} })
+  assert.equal(mac?.path, 'main.jar')
+})
+
+test('1.19+ 的 natives 仍然读 artifact', () => {
+  const lib: Library = {
+    name: 'org.lwjgl:lwjgl:3.4.1:natives-windows',
+    downloads: { artifact: { path: 'lwjgl-natives.jar', sha1: 'x', size: 1, url: 'u' } },
+  }
+  const art = nativeArtifact(lib, { os: 'windows', arch: 'x86_64', features: {} })
+  assert.equal(art?.path, 'lwjgl-natives.jar')
 })

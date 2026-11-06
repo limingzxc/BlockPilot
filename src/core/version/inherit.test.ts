@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { libraryKey, mergeVersionJson } from './inherit.js'
+import { buildClasspath } from '../launch/command.js'
 import type { Library, VersionJson } from './types.js'
 
 function lib(name: string): Library {
@@ -90,4 +91,59 @@ test('子版本没给的字段保留父版本的', () => {
   const merged = mergeVersionJson(base(), child())
   assert.ok(merged.downloads?.client, '子 profile 没有 downloads，必须继承')
   assert.equal(merged.assetIndex?.id, '5')
+})
+
+test('同一 artifact 的 OS 变体不能被合并掉（1.12.2 的 lwjgl）', () => {
+  const parent: VersionJson = { ...base(), libraries: [
+    {
+      name: 'org.lwjgl.lwjgl:lwjgl:2.9.4-nightly-20150209',
+      rules: [{ action: 'allow' }, { action: 'disallow', os: { name: 'osx' } }],
+    },
+    {
+      name: 'org.lwjgl.lwjgl:lwjgl:2.9.2-nightly-20140822',
+      rules: [{ action: 'allow', os: { name: 'osx' } }],
+    },
+  ] }
+  const merged = mergeVersionJson(parent, { ...child(), libraries: [] })
+  assert.equal(merged.libraries.length, 2, '两个 OS 变体都要保留')
+  assert.notEqual(
+    libraryKey(merged.libraries[0]!),
+    libraryKey(merged.libraries[1]!),
+  )
+})
+
+test('Windows 上挑中的是 2.9.4，不是只允许 osx 的 2.9.2', () => {
+  const parent: VersionJson = { ...base(), libraries: [
+    {
+      name: 'org.lwjgl.lwjgl:lwjgl:2.9.4-nightly-20150209',
+      rules: [{ action: 'allow' }, { action: 'disallow', os: { name: 'osx' } }],
+      downloads: {
+        artifact: {
+          path: 'org/lwjgl/lwjgl/lwjgl/2.9.4-nightly-20150209/lwjgl-2.9.4-nightly-20150209.jar',
+          sha1: 'x',
+          size: 1,
+          url: 'u',
+        },
+      },
+    },
+    {
+      name: 'org.lwjgl.lwjgl:lwjgl:2.9.2-nightly-20140822',
+      rules: [{ action: 'allow', os: { name: 'osx' } }],
+      downloads: {
+        artifact: {
+          path: 'org/lwjgl/lwjgl/lwjgl/2.9.2-nightly-20140822/lwjgl-2.9.2-nightly-20140822.jar',
+          sha1: 'x',
+          size: 1,
+          url: 'u',
+        },
+      },
+    },
+  ] }
+  const merged = mergeVersionJson(parent, { ...child(), libraries: [] })
+  const cp = buildClasspath(merged, { os: 'windows', arch: 'x86_64', features: {} }, 'libs', null)
+  const lwjgl = cp.entries.filter((e) => e.includes('lwjgl'))
+  assert.deepEqual(
+    lwjgl.map((p) => p.split(/[\\/]/).pop()),
+    ['lwjgl-2.9.4-nightly-20150209.jar'],
+  )
 })

@@ -1,20 +1,30 @@
 import type { ArgEntry, Library, VersionJson } from './types.js'
 
 /**
- * library 的身份是 `group:artifact:classifier`——**版本和 classifier 的区别要分清**：
+ * library 的身份是 `group:artifact:classifier`，**再加上 OS 变体**——**版本和 classifier 的区别要分清**：
  *
  * - 版本不进 key：这样加载器的 asm:9.10.1 才能覆盖原版的 asm:9.7
  * - classifier **必须**进 key：`org.lwjgl:lwjgl` 和 `org.lwjgl:lwjgl:natives-windows`
  *   是同一个 artifact 的两个不同产物。只按 group:artifact 去重会把 88 个库压成 53 个，
  *   lwjgl 主 jar 被 natives 变体覆盖，启动时报
  *   `NoClassDefFoundError: org/lwjgl/system/MemoryUtil`。
+ * - OS 变体也必须进 key：1.12.2 的版本 JSON 里同一个 `org.lwjgl.lwjgl:lwjgl` 有两份，
+ *   2.9.4（allow 全部、disallow osx）与 2.9.2（只 allow osx）。压成一份的话，
+ *   留在 Windows 上的是「只允许 osx」的 2.9.2，被规则过滤掉之后一个 lwjgl 都没有，
+ *   启动直接 `NoClassDefFoundError: org/lwjgl/opengl/Display`。
  */
 export function libraryKey(lib: Library): string {
   const parts = lib.name.split(':')
   const group = parts[0] ?? ''
   const artifact = parts[1] ?? ''
   const classifier = parts[3] ?? ''
-  return `${group}:${artifact}${classifier === '' ? '' : `:${classifier}`}`
+  const variant = (lib.rules ?? [])
+    .filter((r) => r.os !== undefined)
+    .map((r) => `${r.action}:${r.os?.name ?? '*'}:${r.os?.arch ?? '*'}`)
+    .join(',')
+  return `${group}:${artifact}${classifier === '' ? '' : `:${classifier}`}${
+    variant === '' ? '' : `|${variant}`
+  }`
 }
 
 function mergeLibraries(

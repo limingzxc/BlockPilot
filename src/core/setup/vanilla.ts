@@ -13,7 +13,7 @@ import type { DownloadSource, DownloadTask } from '../download/types.js'
 import { writeInstanceMarker } from '../instance/marker.js'
 import type { Layout } from '../layout.js'
 import { fetchVersionJson } from '../version/fetch.js'
-import type { Library, VersionJson } from '../version/types.js'
+import type { Library, VersionFileRef, VersionJson } from '../version/types.js'
 import { detectEnv, type LaunchEnv } from '../launch/env.js'
 import { pickLibraries } from '../launch/command.js'
 
@@ -35,6 +35,25 @@ export interface VanillaSetupResult {
   readonly failed: readonly { readonly fileName: string; readonly error: string }[]
   readonly nativesExtracted: number
   readonly totalBytes: number
+}
+
+/**
+ * 原生库的下载条目。
+ *
+ * 两种时代两种写法：
+ * - 1.19+：classifier 写在 name 里（`org.lwjgl:lwjgl:3.4.1:natives-windows`），
+ *   `downloads.artifact` 就是那个 jar。
+ * - 1.12 及更早：`natives: { windows: "natives-windows" }` +
+ *   `downloads.classifiers["natives-windows"]`。只读 artifact 会拿到主 jar（甚至为空），
+ *   原生 DLL 永远下不到，启动时报 `UnsatisfiedLinkError: no lwjgl64 in java.library.path`。
+ */
+export function nativeArtifact(lib: Library, env: LaunchEnv): VersionFileRef | undefined {
+  const classifier = lib.natives?.[env.os]
+  if (classifier !== undefined) {
+    const ref = lib.downloads?.classifiers?.[classifier]
+    if (ref !== undefined) return ref
+  }
+  return lib.downloads?.artifact
 }
 
 /**
@@ -62,8 +81,19 @@ export function buildVanillaTasks(
   }
 
   const { jars, natives } = pickLibraries(version, env)
-  for (const lib of [...jars, ...natives]) {
+  for (const lib of jars) {
     const art = lib.downloads?.artifact
+    if (art === undefined) continue
+    tasks.push({
+      url: art.url,
+      fileName: basename(art.path),
+      destPath: join(layout.libraries, ...art.path.split('/')),
+      expectedSize: art.size,
+      hashes: { sha1: art.sha1 },
+    })
+  }
+  for (const lib of natives) {
+    const art = nativeArtifact(lib, env)
     if (art === undefined) continue
     tasks.push({
       url: art.url,
@@ -125,7 +155,7 @@ export function extractNatives(version: VersionJson, env: LaunchEnv, layout: Lay
   let count = 0
   const { natives } = pickLibraries(version, env)
   for (const lib of natives) {
-    const art = lib.downloads?.artifact
+    const art = nativeArtifact(lib, env)
     if (art === undefined) continue
     const jarPath = join(layout.libraries, ...art.path.split('/'))
     if (!existsSync(jarPath)) continue
