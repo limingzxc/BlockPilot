@@ -742,8 +742,10 @@ const CASES: readonly CaseDef[] = [
     tier: 1,
     async run(ctx) {
       const modsDir = join(ctx.tmp, 'mods')
+      // --no-host：这条用例验的是「未验证依赖默认不装」，与这台机器有没有 Java 无关。
+      // 不带它时，没装 Java 的机器会因为 JAVA_MISSING 判 BLOCKED，install 跟着退 2
       const r = await ctx.cli(
-        ['install', join(FIX, 'fo-6.5.0.mrpack'), '--mods-dir', modsDir, '--dry-run'],
+        ['install', join(FIX, 'fo-6.5.0.mrpack'), '--mods-dir', modsDir, '--dry-run', '--no-host'],
         { timeoutMs: 180_000 },
       )
       assertCode(r, 0, 'install --dry-run')
@@ -752,7 +754,15 @@ const CASES: readonly CaseDef[] = [
       assert(!existsSync(modsDir), '--dry-run 不应创建 mods 目录')
 
       const forced = await ctx.cli(
-        ['install', join(FIX, 'fo-6.5.0.mrpack'), '--mods-dir', modsDir, '--dry-run', '--include-unverified'],
+        [
+          'install',
+          join(FIX, 'fo-6.5.0.mrpack'),
+          '--mods-dir',
+          modsDir,
+          '--dry-run',
+          '--include-unverified',
+          '--no-host',
+        ],
         { timeoutMs: 180_000 },
       )
       assertCode(forced, 0, 'install --include-unverified --dry-run')
