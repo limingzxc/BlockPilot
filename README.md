@@ -56,6 +56,16 @@ Fabric、Forge、NeoForge 都支持，按包里的声明自动选。Forge 类要
 
 **同一个实例可以反复 deploy**：已经下过的文件会跳过，不会重装一遍。
 
+CurseForge 的包（`.zip` 带 `manifest.json`）也能装，但要先给一个 API key——
+清单里只有 `projectID/fileID`，没有 key 拿不到下载地址与哈希：
+
+```bash
+export BLOCKPILOT_CF_API_KEY=<在 console.curseforge.com 免费申请的 key>
+blockpilot deploy ~/Downloads/MyPack.zip --root D:/mc --instance mypack
+```
+
+少数作者关闭了「第三方下载」，这些文件会失败并逐个列出（退出码 2），其余照装。
+
 ## 装之前，先看它能不能跑
 
 ```bash
@@ -207,7 +217,9 @@ blockpilot run ... --offline          # 强制离线
 ## 现在还不能做的
 
 - **没有图形界面**，也不打算做——这是内核，界面交给上层
-- **CurseForge 整合包只能检查不能装**：清单里没有下载地址，装要 CurseForge 的 API key
+- **CurseForge 整合包要你自己的 API key**：清单里只有 projectID/fileID，没有 key 拿不到下载地址
+  与哈希。申请（免费）后设为 `BLOCKPILOT_CF_API_KEY`，`deploy` 就能装；少数作者关闭了第三方
+  下载的文件会失败并列出，其余照装
 - **Linux / macOS 没跑过端到端**：CI 两个平台都跑测试，但没在目标平台真启动过游戏
 - 不自动挑「最合适的模组版本」——元数据里没有版本范围，猜一个不如不猜
 

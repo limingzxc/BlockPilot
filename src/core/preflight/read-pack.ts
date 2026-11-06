@@ -14,6 +14,7 @@ import type { Instance } from '../instance.js'
 import { mrpackToInstance, readMrpackIndex } from './mrpack.js'
 import type { MrpackIndex } from './mrpack.js'
 import { readCurseforgePack } from './curseforge.js'
+import type { CurseforgeManifest } from './curseforge.js'
 
 export type PackFileKind = 'mrpack' | 'curseforge'
 
@@ -30,6 +31,8 @@ export interface PackFileRead {
   readonly ability: PackAbility
   /** mrpack 才有：CF 的文件清单只有 projectID/fileID，没有 URL */
   readonly mrpackIndex?: MrpackIndex
+  /** CurseForge 才有：deploy 要拿它的 files 去换下载地址 */
+  readonly curseforgeManifest?: CurseforgeManifest
 }
 
 /**
@@ -59,6 +62,7 @@ export function readPackFile(path: string): PackFileRead {
       kind: 'curseforge',
       instance: pack.instance,
       ability: { givesDownloadUrls: false, checksMods: false },
+      curseforgeManifest: pack.manifest,
     }
   } catch {
     throw new Error(

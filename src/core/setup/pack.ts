@@ -5,6 +5,8 @@ import { unzipSync } from 'fflate'
 import type { DownloadTask } from '../download/types.js'
 import type { Layout } from '../layout.js'
 import type { MrpackIndex } from '../preflight/mrpack.js'
+import type { CurseforgeManifest } from '../preflight/curseforge.js'
+import type { CfFileInfo } from '../../sources/curseforge.js'
 
 /**
  * 服务端专用的文件不该装到客户端。
@@ -34,6 +36,68 @@ export function buildPackTasks(index: MrpackIndex, layout: Layout): DownloadTask
     })
   }
   return tasks
+}
+
+/**
+ * CurseForge 包 → 下载任务。
+ *
+ * 清单只说「要哪个 fileID」，URL 与哈希要先调 API 换回来（见 CurseforgeSource）。
+ * 换不到的不能静默丢弃：作者关掉第三方下载、文件已下架、API 没给 sha1，
+ * 三种情况都要作为失败项报出来——否则「装完了」是个假结论。
+ */
+export interface CurseforgeTaskResult {
+  readonly tasks: readonly DownloadTask[]
+  readonly unresolved: readonly { readonly fileName: string; readonly error: string }[]
+}
+
+export function buildCurseforgeTasks(
+  manifest: CurseforgeManifest,
+  files: ReadonlyMap<number, CfFileInfo>,
+  layout: Layout,
+): CurseforgeTaskResult {
+  const tasks: DownloadTask[] = []
+  const unresolved: { fileName: string; error: string }[] = []
+  const used = new Set<string>()
+
+  for (const entry of manifest.files) {
+    if (entry.required === false) continue
+    const info = files.get(entry.fileID)
+    const fallback = `project-${entry.projectID}-file-${entry.fileID}`
+    if (info === undefined) {
+      unresolved.push({
+        fileName: fallback,
+        error: 'CurseForge 没有返回这个文件（可能已下架，或 key 没有该文件的权限）',
+      })
+      continue
+    }
+    if (info.downloadUrl === null) {
+      unresolved.push({
+        fileName: info.fileName,
+        error: '作者关闭了第三方下载，只能从 CurseForge 网页手动下载',
+      })
+      continue
+    }
+    if (Object.keys(info.hashes).length === 0) {
+      unresolved.push({ fileName: info.fileName, error: 'CurseForge 没有给 sha1，无法校验来源' })
+      continue
+    }
+
+    // CF 包的文件名理论上唯一；撞名时加 fileID 前缀，宁可难看也不要互相覆盖
+    const name = used.has(info.fileName.toLowerCase())
+      ? `${entry.fileID}-${info.fileName}`
+      : info.fileName
+    used.add(name.toLowerCase())
+
+    tasks.push({
+      url: info.downloadUrl,
+      fileName: name,
+      destPath: join(layout.mods, name),
+      expectedSize: info.size,
+      hashes: info.hashes,
+    })
+  }
+
+  return { tasks, unresolved }
 }
 
 /**

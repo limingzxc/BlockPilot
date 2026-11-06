@@ -18,7 +18,10 @@ import { writeInstanceMarker } from './instance/marker.js'
 import { createVanillaSetup } from './setup/vanilla.js'
 import { createFabricSetup } from './setup/fabric.js'
 import { createForgeSetup } from './setup/forge.js'
-import { buildPackTasks, extractOverrides } from './setup/pack.js'
+import { buildCurseforgeTasks, buildPackTasks, extractOverrides } from './setup/pack.js'
+import { CurseforgeError, CurseforgeSource } from '../sources/curseforge.js'
+import type { CfFileInfo } from '../sources/curseforge.js'
+import { NetworkError } from './http.js'
 
 export interface DeployOptions {
   readonly packPath: string
@@ -31,6 +34,8 @@ export interface DeployOptions {
   readonly proxy?: string
   /** 元数据与文件都走国内镜像（CLI 的 --china） */
   readonly mirror?: boolean
+  /** CurseForge API 客户端。缺省读 BLOCKPILOT_CF_API_KEY */
+  readonly curseforge?: CurseforgeSource
   /**
    * 步骤工厂，注入点。缺省用真实的 setup modules。
    * 测试传假的 Operation 就能离线验证编排契约，不用下载任何东西。
@@ -136,23 +141,48 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
     const instance = pack.instance
 
     // CurseForge：fileID → 下载 URL 必须查 CF 的 API（要 key）。
-    // 事件码与 preflight 统一为 CF_API_REQUIRED，消费者可一处匹配
-    if (pack.mrpackIndex === undefined || !pack.ability.givesDownloadUrls) {
-      yield Op.failed(
-        'CF_API_REQUIRED',
-        '这是 CurseForge 整合包，下载它的文件需要 CurseForge API key',
-        '文件清单只有 projectID/fileID，要拿到 URL 与校验值必须调 API；' +
-          '可以先跑 preflight 看 MC 版本与加载器',
-      )
-      return
-    }
+    // 有 key 就走完整安装：换 URL → 与 mrpack 相同的下载 / 解压 / 检查流程。
     const index = pack.mrpackIndex
+    let cfFiles: ReadonlyMap<number, CfFileInfo> | undefined
+    if (index === undefined) {
+      const manifest = pack.curseforgeManifest
+      if (manifest === undefined) {
+        yield Op.failed('BAD_MODPACK', '这个包既不是 .mrpack，也没有 CurseForge 的 manifest.json')
+        return
+      }
+      const cf = opts.curseforge ?? new CurseforgeSource()
+      if (!cf.configured) {
+        yield Op.failed(
+          'CF_API_REQUIRED',
+          '这是 CurseForge 整合包，下载它的文件需要 CurseForge API key',
+          '文件清单只有 projectID/fileID，要拿到 URL 与校验值必须调 API；' +
+            '设置环境变量 BLOCKPILOT_CF_API_KEY（console.curseforge.com 免费申请）后重试',
+        )
+        return
+      }
+      try {
+        cfFiles = await cf.getFiles(
+          manifest.files.map((f) => f.fileID),
+          signal,
+        )
+      } catch (err) {
+        if (err instanceof CurseforgeError) {
+          yield Op.failed(err.code, err.message, '检查 BLOCKPILOT_CF_API_KEY 是否有效、是否还有配额')
+          return
+        }
+        if (err instanceof NetworkError) {
+          yield Op.failed('NETWORK_ERROR', err.message, '检查网络；国内可加 --china 走镜像，或用 --proxy 指定代理')
+          return
+        }
+        throw err
+      }
+    }
 
     yield Op.log('info', 'deploy.pack', {
-      name: index.name,
+      name: instance.name,
       gameVersion: instance.gameVersion,
       loader: instance.loader,
-      files: index.files.length,
+      files: index !== undefined ? index.files.length : (pack.curseforgeManifest?.files.length ?? 0),
     })
 
     const supported = new Set(['fabric', 'forge', 'neoforge'])
@@ -245,16 +275,27 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
 
     // ---- 3. 整合包文件 ----
     yield Op.log('info', 'deploy.step', { step: 'files' })
-    const tasks = buildPackTasks(index, opts.layout)
+    const built =
+      index !== undefined
+        ? {
+            tasks: buildPackTasks(index, opts.layout),
+            unresolved: [] as { fileName: string; error: string }[],
+          }
+        : buildCurseforgeTasks(pack.curseforgeManifest!, cfFiles!, opts.layout)
+    const tasks = built.tasks
     const modsPrefix = `${join(opts.layout.gameDir, 'mods')}${sep}`
     const mods = tasks.filter((t) => t.destPath.startsWith(modsPrefix)).length
-    const { downloaded, skipped, failed } = yield* runDownloadBatch({
+    const batch = yield* runDownloadBatch({
       tasks,
       sources,
       concurrency,
       signal,
       codes: { ok: 'deploy.ok', cached: 'deploy.cached', failed: 'deploy.failed', progressId: 'deploy' },
     })
+    const downloaded = batch.downloaded
+    const skipped = batch.skipped
+    // API 换不到 URL 的文件也算失败：不能因为「没进下载队列」就当作装好了
+    const failed = [...built.unresolved, ...batch.failed]
 
     // ---- 4. overrides ----
     yield Op.log('info', 'deploy.step', { step: 'overrides' })
@@ -291,7 +332,7 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
     })
 
     yield Op.result({
-      packName: index.name,
+      packName: instance.name,
       gameVersion: instance.gameVersion,
       loaderKind: instance.loader.kind,
       loaderVersion: instance.loader.version,
