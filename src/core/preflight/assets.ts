@@ -81,6 +81,9 @@ export function checkAssets(
 
   const missing = probe.sampled - probe.present
   const nothingInstalled = probe.present === 0
+  // 提示里必须给 **MC 版本**，不是 index id：1.20.1 的 index 叫 `5`，
+  // 而 `blockpilot assets 5` 会去取 5.json 版本清单，直接 404。
+  const cmdVersion = gameVersion === '' || gameVersion === 'unknown' ? 'MC 版本' : gameVersion
   return [
     {
       // 一个对象都没有 = 一次都没跑过 assets，必崩；部分缺失先按 warning
@@ -90,7 +93,7 @@ export function checkAssets(
         ? `assets 一个都没装（index ${indexId} 里有 ${probe.total} 个对象）`
         : `assets 不完整：抽查 ${probe.sampled} 个对象，缺 ${missing} 个（index ${indexId}）`,
       subject: indexId,
-      hint: `1.19+ 的原版资源就在 assets 里，缺了会崩在标题画面。补：blockpilot assets ${indexId} --root <root>`,
+      hint: `1.19+ 的原版资源就在 assets 里，缺了会崩在标题画面。补：blockpilot assets ${cmdVersion} --root <root>`,
     },
   ]
 }

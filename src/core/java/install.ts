@@ -39,14 +39,27 @@ function detectOs(): JavaOs {
 
 const EXE = process.platform === 'win32' ? 'java.exe' : 'java'
 
-/** 已装好的运行时里找 java 可执行文件。Adoptium 的 zip 顶层只有一个目录。 */
-function findJavaExecutable(javaDir: string): string | null {
-  if (!existsSync(javaDir)) return null
+/**
+ * 已装好的运行时里找 java 可执行文件。Adoptium 的 zip 顶层只有一个目录，
+ * 但 `<root>/java` 下可以有多套（17 与 21 共存），所以返回全部候选。
+ */
+function findJavaExecutables(javaDir: string): string[] {
+  if (!existsSync(javaDir)) return []
+  const out: string[] = []
   const direct = join(javaDir, 'bin', EXE)
-  if (existsSync(direct)) return direct
+  if (existsSync(direct)) out.push(direct)
   for (const name of readdirSync(javaDir)) {
     const candidate = join(javaDir, name, 'bin', EXE)
-    if (existsSync(candidate)) return candidate
+    if (existsSync(candidate)) out.push(candidate)
+  }
+  return out
+}
+
+/** 找与目标大版本**恰好一致**的那套。`java install 17` 不该因为装了 21 就跳过。 */
+async function findExactMajor(javaDir: string, major: number): Promise<JavaInstall | null> {
+  for (const path of findJavaExecutables(javaDir)) {
+    const probed = await probeJava(path, 'managed')
+    if (probed !== null && probed.major === major) return probed
   }
   return null
 }
@@ -76,16 +89,19 @@ export function createJavaInstall(opts: JavaInstallOptions): Operation<JavaInsta
     const javaRoot = join(opts.layout.root, 'java')
     mkdirSync(javaRoot, { recursive: true })
 
-    // 已经装过就不重复下载
-    const existing = findJavaExecutable(javaRoot)
+    /**
+     * 已经装过**同一大版本**就不重复下载。
+     *
+     * 以前的条件是 `major >= opts.major`，于是 `java install 17` 在只装了 21 的机器上
+     * 直接回「已存在 Java 21」——用户要 17 却拿到 21，而 Forge 1.20.1 这类老包
+     * 恰恰在 21 上有毛病（实测会在标题画面自行退出）。
+     */
+    const existing = await findExactMajor(javaRoot, opts.major)
     if (existing !== null) {
-      const probed = await probeJava(existing, 'managed')
-      if (probed !== null && probed.major >= opts.major) {
-        yield Op.log('info', 'java.already_installed', { path: existing, major: probed.major })
-        yield Op.result({ java: probed, release: probed.version, bytes: 0, skipped: true })
-        yield Op.done()
-        return
-      }
+      yield Op.log('info', 'java.already_installed', { path: existing.path, major: existing.major })
+      yield Op.result({ java: existing, release: existing.version, bytes: 0, skipped: true })
+      yield Op.done()
+      return
     }
 
     const os = opts.runtimeOs ?? detectOs()
@@ -133,13 +149,15 @@ export function createJavaInstall(opts: JavaInstallOptions): Operation<JavaInsta
       ...(entries.symlinks > 0 ? { symlinks: entries.symlinks } : {}),
     })
 
-    const javaPath = findJavaExecutable(javaRoot)
-    if (javaPath === null) {
+    // 目录里可能已经有别的版本（17 与 21 共存），挑出刚装的那套
+    const installed = await findExactMajor(javaRoot, opts.major)
+    const javaPath = installed?.path ?? findJavaExecutables(javaRoot)[0]
+    if (javaPath === undefined) {
       yield Op.failed('JAVA_EXECUTABLE_MISSING', '解压完了但找不到 bin/java')
       return
     }
 
-    const probed = await probeJava(javaPath, 'managed')
+    const probed = installed ?? (await probeJava(javaPath, 'managed'))
     if (probed === null) {
       yield Op.failed('JAVA_PROBE_FAILED', `解压出来的 java 跑不起来：${javaPath}`)
       return

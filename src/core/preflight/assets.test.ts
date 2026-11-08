@@ -71,3 +71,26 @@ test('没有 assets 目录时一声不响（别人的安装不归我们管）', 
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('提示里给的是 MC 版本，不是 asset index id（1.20.1 的 index 叫 5）', () => {
+  const root = mkdtempSync(join(tmpdir(), 'bp-assets-indexid-'))
+  try {
+    const instanceDir = join(root, 'instances', 'pack')
+    mkdirSync(instanceDir, { recursive: true })
+    mkdirSync(join(root, 'assets', 'indexes'), { recursive: true })
+    writeFileSync(
+      join(root, 'assets', 'indexes', '5.json'),
+      JSON.stringify({ objects: { 'a/b.ogg': { hash: HASH, size: 1 } } }),
+    )
+
+    // 版本号与 index id 不一致：照 index id 敲 `assets 5` 会 404
+    const f = checkAssets(instanceDir, '1.20.1').find((x) => x.code === 'ASSETS_MISSING')
+    assert.ok(f)
+    assert.match(f.hint ?? '', /blockpilot assets 1\.20\.1/)
+    assert.doesNotMatch(f.hint ?? '', /assets 5 /)
+    // 但消息里仍要说清用的是哪份 index，方便核对
+    assert.match(f.message, /index 5/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
