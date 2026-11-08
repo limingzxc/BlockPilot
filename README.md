@@ -60,17 +60,26 @@ Fabric、Forge、NeoForge 都支持，按包里的声明自动选。Forge 类要
 
 **同一个实例可以反复 deploy**：已经下过的文件会跳过，不会重装一遍。
 
-CurseForge 的包（`.zip` 带 `manifest.json`）也能装。清单里只有 `projectID/fileID`，
-换下载地址要一个免费 key：
+CurseForge 的包（`.zip` 带 `manifest.json`）也能装，**不需要填任何 key**：
 
 ```bash
-export BLOCKPILOT_CF_API_KEY=<在 console.curseforge.com 免费申请的 key>
 blockpilot deploy ~/Downloads/MyPack.zip --root D:/mc --instance mypack
 ```
 
-**没有 key 也照样装**：原版、加载器、`overrides/` 都会落地，只有清单里那些文件
-列成「需要你自己下载」（退出码 2）。配好 key 再跑同一条命令，已下的会跳过。
-少数作者关闭了「第三方下载」，这些文件同样单独列出，其余照装。
+清单里只有 `projectID/fileID`，要换成下载地址就得查 CurseForge。官方接口要 key，
+但启动器不该把这件事推给用户，所以默认走 **MCIM 的 CurseForge 代理**
+（`mod.mcimirror.top`，与官方 API 同路径、不需要 key）——RLCraft 2.9.3 的 187 个文件
+实测 3.8 秒全部解析，结果与官方接口一致。
+
+有 key 的话可以喂给它，走官方批量接口（271 个文件 3 次请求，比逐个查快）：
+
+```bash
+export BLOCKPILOT_CF_API_KEY=<console.curseforge.com 免费申请>
+# 或者一次性：--curseforge-key <key>
+```
+
+少数作者关闭了「第三方下载」，这些文件会单独列出（退出码 2），其余照装。
+`--no-cf-mirror` 可以关掉镜像回落（排查问题时用）。
 
 `overrides/mods` 里的 jar 不属于清单，但解压后就在 `mods/` 里——
 `deploy` 与 `preflight` 都会把它单独报出来，不会让你对不上游戏里的模组数。

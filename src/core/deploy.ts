@@ -20,8 +20,8 @@ import { createVanillaSetup } from './setup/vanilla.js'
 import { createFabricSetup } from './setup/fabric.js'
 import { createForgeSetup } from './setup/forge.js'
 import { buildCurseforgeTasks, buildPackTasks, extractOverrides } from './setup/pack.js'
-import { CurseforgeError, CurseforgeSource } from '../sources/curseforge.js'
-import type { CfFileInfo } from '../sources/curseforge.js'
+import { CurseforgeError, resolveCurseforge } from '../sources/curseforge.js'
+import type { CfFileInfo, CurseforgeLike } from '../sources/curseforge.js'
 import { NetworkError } from './http.js'
 
 export interface DeployOptions {
@@ -35,8 +35,13 @@ export interface DeployOptions {
   readonly proxy?: string
   /** 元数据与文件都走国内镜像（CLI 的 --china） */
   readonly mirror?: boolean
-  /** CurseForge API 客户端。缺省读 BLOCKPILOT_CF_API_KEY */
-  readonly curseforge?: CurseforgeSource
+  /**
+   * CurseForge 解析器。缺省按「有 key 走官方、没有走镜像」自动选
+   * （见 resolveCurseforge）。测试可注入假实现。
+   */
+  readonly curseforge?: CurseforgeLike
+  /** false 时禁用 MCIM 回落（`--no-cf-mirror`）：没 key 就按老行为降级 */
+  readonly cfMirror?: boolean
   /**
    * 步骤工厂，注入点。缺省用真实的 setup modules。
    * 测试传假的 Operation 就能离线验证编排契约，不用下载任何东西。
@@ -155,7 +160,9 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
         yield Op.failed('BAD_MODPACK', '这个包既不是 .mrpack，也没有 CurseForge 的 manifest.json')
         return
       }
-      const cf = opts.curseforge ?? new CurseforgeSource()
+      const cf =
+        opts.curseforge ??
+        resolveCurseforge(opts.cfMirror === false ? { allowMirror: false } : {})
       if (!cf.configured) {
         /**
          * 没有 key 时**降级而不是拒绝**：加载器与 overrides 照样装，
@@ -168,9 +175,10 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
         cfFiles = new Map()
         yield Op.log('warn', 'deploy.cf_no_key', { files: manifest.files.length })
       } else {
+        yield Op.log('info', 'deploy.cf_source', { source: cf.label })
         try {
           cfFiles = await cf.getFiles(
-            manifest.files.map((f) => f.fileID),
+            manifest.files.map((f) => ({ projectId: f.projectID, fileId: f.fileID })),
             signal,
           )
         } catch (err) {

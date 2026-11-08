@@ -162,9 +162,12 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
       unresolved = instance.mods.length
       findings.push({
         severity: 'warning',
-        code: 'CF_API_REQUIRED',
-        message: `整合包声明了 ${instance.mods.length} 个 CurseForge 文件，但没有 API key 无法解析名称与兼容性`,
-        hint: '到 console.curseforge.com 申请 key 后才能做 mod 级校验；Java 与加载器版本仍然可参考',
+        code: 'CF_NO_MOD_CHECK',
+        message: `整合包声明了 ${instance.mods.length} 个 CurseForge 文件；预检这一步不做 mod 级校验`,
+        hint:
+          '装的时候不需要 key（没 key 会自动走 MCIM 镜像逐个解析）。' +
+          '想在预检里也查每个 mod 的版本/依赖，才需要 BLOCKPILOT_CF_API_KEY；' +
+          'Java 与加载器版本这里仍然可参考',
       })
     } else {
       // ---- 在线模式：有 projectId，可以查元数据和递归闭包 ----

@@ -713,7 +713,8 @@ const CASES: readonly CaseDef[] = [
         timeoutMs: 120_000,
       })
       assertCode(r, 0, 'CF 包预检')
-      assertText(r, 'CF_API_REQUIRED', 'CF 应明确说明需要 API key')
+      // 预检不再要求 key（装的时候也不需要），但必须说清「这一步没做 mod 级校验」
+      assertText(r, 'CF_NO_MOD_CHECK', 'CF 应说明预检没做 mod 级校验')
       assertNoText(r, 'BLOCKED', 'CF 包不应被硬判 blocked')
     },
   },

@@ -33,6 +33,7 @@ import { assetsRequiredToBoot, probeAssets } from '../core/preflight/assets.js'
 import { createFabricSetup } from '../core/setup/fabric.js'
 import { createForgeSetup } from '../core/setup/forge.js'
 import { createDeploy } from '../core/deploy.js'
+import { resolveCurseforge } from '../sources/curseforge.js'
 import type { DeployResult } from '../core/deploy.js'
 import { readPackFile } from '../core/preflight/read-pack.js'
 import { detectHost } from '../core/host.js'
@@ -216,7 +217,10 @@ function usage(): void {
             之后用 launch / run 加 fabric-loader-<ver>-<mc> 启动
   forge     安装 Forge：先跑原版 setup（natives），再跑官方 installer
   neoforge  同上，换 NeoForge。两者都支持 --loader <ver> 指定版本
-  deploy    从 .mrpack 一次装完：原版 → 加载器 → 模组 → overrides
+  deploy    从 .mrpack / CurseForge .zip 一次装完：原版 → 加载器 → 模组 → overrides
+            CurseForge 包不需要 key：没有 key 时自动走 MCIM 镜像逐个解析
+            --curseforge-key <key> 有 key 则走官方批量接口（更快）
+            --no-cf-mirror 禁用镜像回落，没 key 时只装加载器与 overrides
             装完直接给出可用的启动命令
   launch    生成启动命令（只打印，不启动）
   run       真的启动游戏，转发日志并落盘到 <实例>/logs/
@@ -268,7 +272,15 @@ const COMMAND_FLAGS: Record<string, Readonly<Record<string, boolean>>> = {
     // 1.6.x / 1.7.10 / 1.12.2 只有 Legacy Fabric 有 loader；缺省自动探测
     '--legacy': false,
   },
-  deploy: { '--root': true, '--instance': true, '--china': false, '--java': true },
+  deploy: {
+    '--root': true,
+    '--instance': true,
+    '--china': false,
+    '--java': true,
+    // 有 key 走官方批量接口；没有就走 MCIM 镜像（默认），--no-cf-mirror 关掉回落
+    '--curseforge-key': true,
+    '--no-cf-mirror': false,
+  },
   launch: {
     '--root': true,
     '--instance': true,
@@ -1374,6 +1386,10 @@ async function runDeploy(argv: readonly string[]): Promise<number> {
     mirror: china,
     ...(javaPath === undefined ? {} : { java: javaPath }),
     ...(proxyUrl === undefined ? {} : { proxy: proxyUrl }),
+    ...(argOf(argv, '--curseforge-key') === undefined
+      ? {}
+      : { curseforge: resolveCurseforge({ apiKey: argOf(argv, '--curseforge-key') }) }),
+    ...(argv.includes('--no-cf-mirror') ? { cfMirror: false } : {}),
   })
 
   return consume(
@@ -1397,6 +1413,9 @@ async function runDeploy(argv: readonly string[]): Promise<number> {
           process.stderr.write(`  ${C.green}↓${C.reset} ${d.file}  ${C.dim}${d.source ?? ''}${C.reset}\n`)
         } else if (ev.code === 'deploy.failed') {
           process.stderr.write(`  ${C.red}✗${C.reset} ${d?.file ?? ''}  ${d?.error ?? ''}\n`)
+        } else if (ev.code === 'deploy.cf_source') {
+          const src = (ev.data as { source?: string } | undefined)?.source
+          if (src !== undefined) process.stderr.write(`${C.dim}· CurseForge 解析源：${src}${C.reset}\n`)
         } else if (ev.code === 'deploy.cf_no_key') {
           const n = (ev.data as { files?: number } | undefined)?.files ?? 0
           process.stderr.write(

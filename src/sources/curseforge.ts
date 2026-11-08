@@ -2,15 +2,30 @@
  * CurseForge 的文件元数据。
  *
  * CF 的 `manifest.json` 只有 `projectID/fileID` 两个数字，没有 URL 也没有哈希。
- * 要变成可下载的任务，必须调 `POST /v1/mods/files`（一次最多 100 个 fileID），
- * 请求头带 `x-api-key`。这就是 ADR-0021 说的「CF 需要 API key」。
+ * 官方接口 `POST /v1/mods/files`（一次最多 100 个 fileID）要 `x-api-key`。
  *
- * key 从环境变量 `BLOCKPILOT_CF_API_KEY` 取，不落盘、不进日志。
+ * **但用户不该被迫去申请 key。** Prism/ATLauncher 之所以「不问 key」，是因为
+ * 它们随启动器内置了一个；开源项目内置 key 会泄露并被吊销，所以正确做法是
+ * 走镜像——国内启动器（PCL2 等）都是这么做的。
+ *
+ * 于是这里有两条实现，由 {@link resolveCurseforge} 选：
+ * - {@link CurseforgeSource}：有 key 时走官方批量接口（快、权威）
+ * - {@link MirrorCurseforgeSource}：没 key 时走 MCIM 的 `/curseforge` 代理，
+ *   逐个 `GET /v1/mods/{id}/files/{fid}`（镜像没代理批量 POST）
+ *
+ * key 从环境变量 `BLOCKPILOT_CF_API_KEY` 或 `--curseforge-key` 取，不落盘、不进日志。
  */
 import { NetworkError } from '../core/http.js'
 import { USER_AGENT } from '../core/user-agent.js'
 
 export const CURSEFORGE_API = 'https://api.curseforge.com/v1'
+/**
+ * MCIM 的 CurseForge API 代理。路径与官方一致（`/curseforge` 前缀 + `/v1/...`），
+ * 不需要 key。实测 2026-11-09：`GET /mods/238222` 与
+ * `GET /mods/238222/files/3040523` 都返回 200 且带 downloadUrl；
+ * 批量 `POST /mods/files` 没有代理（404），所以只能逐个查。
+ */
+export const CURSEFORGE_MIRROR = 'https://mod.mcimirror.top/curseforge/v1'
 const BATCH = 100
 const TIMEOUT_MS = 20_000
 
@@ -93,15 +108,33 @@ function toFileInfo(raw: RawFile): CfFileInfo | null {
   }
 }
 
+/** 一个待解析的文件。官方接口只用 fileId，镜像接口两者都要（URL 里带 projectId）。 */
+export interface CfFileQuery {
+  readonly projectId: number
+  readonly fileId: number
+}
+
+/** 官方与镜像的共同契约。deploy 只依赖这个。 */
+export interface CurseforgeLike {
+  readonly configured: boolean
+  /** 日志/署名用，如 `MCIM · mod.mcimirror.top` */
+  readonly label: string
+  getFiles(
+    files: readonly CfFileQuery[],
+    signal: AbortSignal,
+  ): Promise<ReadonlyMap<number, CfFileInfo>>
+}
+
 export interface CurseforgeOptions {
   readonly apiKey?: string
   /** 测试注入 */
   readonly apiBase?: string
 }
 
-export class CurseforgeSource {
+export class CurseforgeSource implements CurseforgeLike {
   private readonly key: string | undefined
   private readonly api: string
+  readonly label = 'api.curseforge.com'
 
   constructor(opts: CurseforgeOptions = {}) {
     this.key = opts.apiKey ?? process.env['BLOCKPILOT_CF_API_KEY']
@@ -119,9 +152,10 @@ export class CurseforgeSource {
    * 两者对用户的含义完全不同：一个是去换 key，一个是去查网络。
    */
   async getFiles(
-    fileIds: readonly number[],
+    files: readonly CfFileQuery[],
     signal: AbortSignal,
   ): Promise<ReadonlyMap<number, CfFileInfo>> {
+    const fileIds = files.map((f) => f.fileId)
     if (!this.configured) {
       throw new CurseforgeError(
         'CF_API_KEY_MISSING',
@@ -180,4 +214,93 @@ export class CurseforgeSource {
     const body = (await res.json()) as { readonly data?: readonly RawFile[] }
     return body.data ?? []
   }
+}
+
+/**
+ * 免 key 的 CurseForge 解析：走 MCIM 的代理，逐个文件查。
+ *
+ * 代价是请求数：271 个文件的包要 271 次 GET（并发 6，实测 30–60 秒），
+ * 而有 key 时官方批量接口是 3 次。所以只在没有 key 时用。
+ */
+export class MirrorCurseforgeSource implements CurseforgeLike {
+  readonly configured = true
+  readonly label = 'MCIM · mod.mcimirror.top'
+
+  constructor(
+    private readonly api: string = CURSEFORGE_MIRROR,
+    private readonly concurrency = 6,
+  ) {}
+
+  async getFiles(
+    files: readonly CfFileQuery[],
+    signal: AbortSignal,
+  ): Promise<ReadonlyMap<number, CfFileInfo>> {
+    const seen = new Set<number>()
+    const queue: CfFileQuery[] = []
+    for (const f of files) {
+      if (!Number.isFinite(f.fileId) || f.fileId <= 0) continue
+      if (seen.has(f.fileId)) continue
+      seen.add(f.fileId)
+      queue.push(f)
+    }
+
+    const out = new Map<number, CfFileInfo>()
+    let cursor = 0
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        if (signal.aborted) return
+        const next = queue[cursor]
+        cursor += 1
+        if (next === undefined) return
+        const info = await this.one(next, signal)
+        if (info !== null) out.set(info.fileId, info)
+      }
+    }
+    const width = Math.max(1, Math.min(this.concurrency, queue.length))
+    await Promise.all(Array.from({ length: width }, worker))
+    return out
+  }
+
+  private async one(f: CfFileQuery, signal: AbortSignal): Promise<CfFileInfo | null> {
+    const url = `${this.api}/mods/${f.projectId}/files/${f.fileId}`
+    let res: Response
+    try {
+      res = await fetch(url, {
+        headers: { Accept: 'application/json', 'User-Agent': USER_AGENT },
+        signal: AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), signal]),
+      })
+    } catch (err) {
+      if (signal.aborted) throw err
+      throw new NetworkError(url, err instanceof Error ? err.message : String(err))
+    }
+
+    // 镜像里没有这个文件（老文件未收录，或作者已删）：让调用方按「拿不到」处理
+    if (res.status === 404) return null
+    if (res.status === 429) {
+      throw new CurseforgeError(
+        'CF_API_RATE_LIMIT',
+        'CurseForge 镜像限流（HTTP 429）；等一会儿重试，或设置 BLOCKPILOT_CF_API_KEY 走官方接口',
+      )
+    }
+    if (!res.ok) {
+      throw new CurseforgeError('CF_API_ERROR', `CurseForge 镜像返回 HTTP ${res.status}`)
+    }
+    const body = (await res.json()) as { readonly data?: RawFile }
+    return body.data === undefined ? null : toFileInfo(body.data)
+  }
+}
+
+/**
+ * 选一条路：有 key 走官方，没有就走镜像。
+ *
+ * `allowMirror === false`（CLI 的 `--no-cf-mirror`）时不做回落——
+ * 用于排查「到底是谁没给文件」，也保证 ADR-0021 的旧行为还能复现。
+ */
+export function resolveCurseforge(
+  opts: { readonly apiKey?: string; readonly allowMirror?: boolean } = {},
+): CurseforgeLike {
+  const official = new CurseforgeSource(opts.apiKey === undefined ? {} : { apiKey: opts.apiKey })
+  if (official.configured) return official
+  if (opts.allowMirror === false) return official
+  return new MirrorCurseforgeSource()
 }
