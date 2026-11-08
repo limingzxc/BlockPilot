@@ -188,7 +188,16 @@ export function checkInstance(input: CheckInput): readonly Finding[] {
     }
     known.push(info)
 
-    const fit = judgeGameVersion(instance.gameVersion, info.gameVersions)
+    /**
+     * 来源没给版本清单时不要判版本。
+     *
+     * 空数组会被 judgeGameVersion 读成「声明里没有一个版本」，直接产出 blocker。
+     * CurseForge 上确实有作者没填 gameVersions 的文件，那种包不该被判成「不支持 1.12.2」。
+     */
+    const fit =
+      info.gameVersions.length === 0
+        ? ({ fit: 'declared' } as VersionFit)
+        : judgeGameVersion(instance.gameVersion, info.gameVersions)
     if (fit.fit === 'below') {
       findings.push({
         severity: 'blocker',
@@ -217,8 +226,9 @@ export function checkInstance(input: CheckInput): readonly Finding[] {
       })
     }
 
+    // 同理：加载器清单为空 = 来源没提供，不等于「不支持这个加载器」
     const token = loaderToken(instance.loader.kind)
-    if (token !== null && !info.loaders.includes(token)) {
+    if (token !== null && info.loaders.length > 0 && !info.loaders.includes(token)) {
       findings.push({
         severity: 'blocker',
         code: 'LOADER_MISMATCH',

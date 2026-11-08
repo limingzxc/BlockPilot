@@ -4,9 +4,11 @@ import type { AddressInfo } from 'node:net'
 import { after, before, test } from 'node:test'
 
 import {
+  cfFileToVersionInfo,
   MirrorCurseforgeSource,
   resolveCurseforge,
 } from './curseforge.js'
+import type { CfFileInfo } from './curseforge.js'
 
 let base = ''
 let server: ReturnType<typeof createServer>
@@ -105,4 +107,53 @@ test('resolveCurseforge：有 key 走官方，没 key 走镜像，--no-cf-mirror
   } finally {
     if (saved !== undefined) process.env['BLOCKPILOT_CF_API_KEY'] = saved
   }
+})
+
+test('CF 的 gameVersions 拆成 MC 版本与加载器（混在一起的数组）', () => {
+  const info: CfFileInfo = {
+    fileId: 42,
+    modId: 7,
+    fileName: 'mod.jar',
+    displayName: 'Some Mod',
+    size: 1000,
+    downloadUrl: 'https://edge.forgecdn.net/files/0000/042/mod.jar',
+    hashes: { sha1: 'a'.repeat(40) },
+    gameVersions: ['1.12.2', 'Forge', 'Java 8'],
+    dependencies: [
+      { modId: 99, relation: 'required' },
+      { modId: 100, relation: 'optional' },
+      { modId: 101, relation: 'incompatible' },
+    ],
+  }
+  const v = cfFileToVersionInfo(info)
+  assert.deepEqual(v.gameVersions, ['1.12.2'], 'Java 8 与 Forge 不是 MC 版本')
+  assert.deepEqual(v.loaders, ['forge'])
+  assert.equal(v.projectId, '7')
+  assert.equal(v.versionId, '42')
+  assert.equal(v.name, 'Some Mod')
+  // optional 不进 dependencies（预检不判它），incompatible 要留着
+  assert.deepEqual(
+    v.dependencies.map((d) => [d.projectId, d.kind]),
+    [
+      ['99', 'required'],
+      ['101', 'incompatible'],
+    ],
+  )
+})
+
+test('CF 文件没填 gameVersions / loaders 时给空数组，交给上层别乱判', () => {
+  const v = cfFileToVersionInfo({
+    fileId: 1,
+    modId: 2,
+    fileName: 'x.jar',
+    displayName: 'X',
+    size: 0,
+    downloadUrl: null,
+    hashes: {},
+    gameVersions: [],
+    dependencies: [],
+  })
+  assert.deepEqual(v.gameVersions, [])
+  assert.deepEqual(v.loaders, [])
+  assert.equal(v.files[0]?.url, '')
 })

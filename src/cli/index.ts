@@ -201,6 +201,8 @@ function usage(): void {
                         整合包可能把依赖打在 jar-in-jar 里，默认不装，装完先 preflight 实例确认
   preflight --json    输出结构化报告
             --no-host 跳过本机 Java / 内存检测（省 1–3 秒）
+            CurseForge 包免 key：没 key 时自动走 MCIM 镜像解析文件元数据
+            --no-cf-mirror 禁用镜像回落，此时 CF 包只做 Java/加载器这一层检查
   java      列出本机可用的 Java 运行时
   java install <major> [--root <dir>]   从 Adoptium 下载并解压 JRE 到 <root>/java
   login     用微软账号登录（设备码：给你一个网址和一个短码，在浏览器里输）
@@ -251,7 +253,7 @@ function argOf(argv: readonly string[], name: string): string | undefined {
  * 悄悄装进默认目录。**静默做错事比报错难查得多。**
  */
 const COMMAND_FLAGS: Record<string, Readonly<Record<string, boolean>>> = {
-  preflight: { '--json': false, '--no-host': false },
+  preflight: { '--json': false, '--no-host': false, '--no-cf-mirror': false },
   install: {
     '--mods-dir': true,
     '--dry-run': false,
@@ -394,6 +396,7 @@ async function runPreflight(argv: readonly string[]): Promise<number> {
     target,
     source: new ModrinthSource(),
     ...(host === undefined ? {} : { host }),
+    ...(argv.includes('--no-cf-mirror') ? { cfMirror: false } : {}),
   })
 
   return consume(

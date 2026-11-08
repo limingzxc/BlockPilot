@@ -43,9 +43,12 @@ RLCraft 2.9.3 的 187 个 fileID 用它逐个查：**187/187 全部解析、185 
    `--no-cf-mirror` 关闭回落，复现老行为（未配置 → 降级安装）。
 4. `deploy` 日志里打印 `CurseForge 解析源：MCIM · … / api.curseforge.com`，
    用户不用猜这次走的是哪条路。
-5. `preflight` 的 `CF_API_REQUIRED` 改名为 `CF_NO_MOD_CHECK`：预检这一步仍然不做
-   CF 的 mod 级校验（要逐文件查元数据，属于另一个量级的改动），但文案改成
-   「装的时候不需要 key」，不再让用户以为被卡住。
+5. `preflight` 也走这条路：解析出文件元数据后，映射成 `VersionInfo` 跑
+   `checkInstance`（版本/加载器/声明不兼容）+ `cfDependencyFindings`（声明依赖）。
+   - CF 的 `gameVersions` 是混合数组，映射时拆成「MC 版本」与「加载器」两列；
+   - 空清单（作者没填）**不判**版本/加载器，否则会产出假 blocker；
+   - 拿不到元数据的文件算 `unresolved`，verdict 落到 unknown；
+   - `--no-cf-mirror` 时不联网，退回 `CF_NO_MOD_CHECK`（同时保留「没做校验」的诚实说法）。
 
 ## Consequences
 

@@ -17,6 +17,7 @@
  */
 import { NetworkError } from '../core/http.js'
 import { USER_AGENT } from '../core/user-agent.js'
+import type { DependencyRef, VersionInfo } from '../core/sources.js'
 
 export const CURSEFORGE_API = 'https://api.curseforge.com/v1'
 /**
@@ -303,4 +304,58 @@ export function resolveCurseforge(
   if (official.configured) return official
   if (opts.allowMirror === false) return official
   return new MirrorCurseforgeSource()
+}
+
+/** CF 的 gameVersions 把加载器和 MC 版本混在一个数组里，这里只认这几种写法。 */
+const CF_LOADERS: Readonly<Record<string, string>> = {
+  forge: 'forge',
+  neoforge: 'neoforge',
+  fabric: 'fabric',
+  'legacy fabric': 'fabric',
+  quilt: 'quilt',
+}
+
+/**
+ * CF 的文件元数据 → 预检用的 VersionInfo。
+ *
+ * 两个坑：
+ * - `gameVersions` 是混合数组（`["1.12.2","Forge","Java 17"]`），要拆成
+ *   「MC 版本」与「加载器」两列，否则 `1.12.2` 会被当成一个加载器名。
+ * - 作者没填 gameVersions 的包确实存在。这时**不能**让上层去判版本——
+ *   空的声明列表会被读成「不支持任何版本」，直接产出一个假 blocker。
+ */
+export function cfFileToVersionInfo(info: CfFileInfo): VersionInfo {
+  const gameVersions: string[] = []
+  const loaders: string[] = []
+  for (const v of info.gameVersions) {
+    if (/^\d+\.\d+(\.\d+)?$/.test(v)) gameVersions.push(v)
+    else {
+      const loader = CF_LOADERS[v.toLowerCase()]
+      if (loader !== undefined && !loaders.includes(loader)) loaders.push(loader)
+    }
+  }
+
+  const dependencies: DependencyRef[] = []
+  for (const d of info.dependencies) {
+    if (d.relation !== 'required' && d.relation !== 'incompatible') continue
+    dependencies.push({ projectId: String(d.modId), versionId: null, kind: d.relation })
+  }
+
+  return {
+    projectId: String(info.modId),
+    versionId: String(info.fileId),
+    name: info.displayName,
+    gameVersions,
+    loaders,
+    dependencies,
+    files: [
+      {
+        url: info.downloadUrl ?? '',
+        filename: info.fileName,
+        size: info.size,
+        primary: true,
+        hashes: info.hashes,
+      },
+    ],
+  }
 }

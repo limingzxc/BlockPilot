@@ -16,8 +16,12 @@ import { scanInstanceDir } from '../instance/scan.js'
 import type { ScannedMod } from '../instance/scan.js'
 import { readPackFile } from './read-pack.js'
 import { checkInstance, checkJava } from './check.js'
+import { cfDependencyFindings } from './cf-deps.js'
 import type { JavaRequirement } from './check.js'
 import { depKey } from '../modmeta/types.js'
+import { cfFileToVersionInfo, resolveCurseforge } from '../../sources/curseforge.js'
+import type { CurseforgeLike } from '../../sources/curseforge.js'
+import type { CurseforgeManifest } from './curseforge.js'
 import { verdictOf } from './types.js'
 import type { Finding, PreflightReport } from './types.js'
 
@@ -43,6 +47,13 @@ export interface PreflightOptions {
   readonly target: string
   /** 内容源。若同时实现 DependencyResolver，预检会做递归依赖闭包。 */
   readonly source: ContentSource & Partial<DependencyResolver> & Partial<ProjectNamer>
+  /**
+   * CurseForge 解析器。缺省按「有 key 走官方、没有走镜像」自动选。
+   * 测试注入假实现就能离线验证 CF 的 mod 级校验。
+   */
+  readonly curseforge?: CurseforgeLike
+  /** false 时禁用 MCIM 回落（`--no-cf-mirror`） */
+  readonly cfMirror?: boolean
   readonly host?: HostProfile
   /** 扫描目录时，目录内没有版本信息则用这个兜底 */
   readonly fallback?: {
@@ -68,6 +79,8 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
     let skippedJars: string[] = []
     let corruptJars: string[] = []
     let overridesMods = 0
+    /** CurseForge 的清单，下面的 mod 级校验要用它拿 projectID/fileID 配对 */
+    let cfManifest: CurseforgeManifest | undefined
     /** CurseForge 包没有 API key 时，mod 级校验整个跳过 */
     let cfGated = false
 
@@ -96,6 +109,7 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
         // 能力声明由 readPackFile 一处给出，消费者不再各自判断格式
         cfGated = !pack.ability.checksMods
         overridesMods = pack.overridesMods
+        cfManifest = pack.curseforgeManifest
         yield Op.log('info', pack.kind === 'curseforge' ? 'modpack.curseforge' : 'modpack.parsed', {
           name: instance.name,
           gameVersion: instance.gameVersion,
@@ -156,19 +170,62 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
       resolved = localMods.length
       unresolved = skippedJars.length
     } else if (cfGated) {
-      // ---- CurseForge 模式：没有 key，mod 级校验整个做不了 ----
-      // 把 N 个文件全算成 unresolved，verdict 自然落到 unknown——
-      // 这正是契约里「有东西没校验过，结论不可信」的那一档
-      unresolved = instance.mods.length
-      findings.push({
-        severity: 'warning',
-        code: 'CF_NO_MOD_CHECK',
-        message: `整合包声明了 ${instance.mods.length} 个 CurseForge 文件；预检这一步不做 mod 级校验`,
-        hint:
-          '装的时候不需要 key（没 key 会自动走 MCIM 镜像逐个解析）。' +
-          '想在预检里也查每个 mod 的版本/依赖，才需要 BLOCKPILOT_CF_API_KEY；' +
-          'Java 与加载器版本这里仍然可参考',
-      })
+      /**
+       * ---- CurseForge：补上 mod 级校验 ----
+       *
+       * 以前这里只能说「做不了」。现在文件元数据可以免 key 拿到（镜像），
+       * 于是能判版本、判加载器、判声明依赖——判不了的（拿不到元数据的文件）
+       * 仍然算 unresolved，verdict 会落到 unknown，不会给假通过。
+       */
+      const cf =
+        opts.curseforge ??
+        resolveCurseforge(opts.cfMirror === false ? { allowMirror: false } : {})
+      const queries = (cfManifest?.files ?? [])
+        .filter((f) => f.required !== false)
+        .map((f) => ({ projectId: f.projectID, fileId: f.fileID }))
+
+      let infos: ReadonlyMap<number, import('../../sources/curseforge.js').CfFileInfo> = new Map()
+      if (cf.configured && queries.length > 0) {
+        yield Op.progress('cf.resolve', 0, queries.length, `解析 CurseForge 文件（${cf.label}）`)
+        try {
+          infos = await cf.getFiles(queries, signal)
+          yield Op.log('info', 'cf.resolved', {
+            source: cf.label,
+            files: queries.length,
+            resolved: infos.size,
+          })
+        } catch (err) {
+          // 解析失败不该让整个预检崩掉：退回到「这一步没做」的老结论
+          if (err instanceof NetworkError) {
+            yield Op.log('warn', 'cf.resolve_failed', { message: err.message })
+          } else throw err
+        }
+        yield Op.progress('cf.resolve', queries.length, queries.length, '解析 CurseForge 文件')
+      }
+
+      if (signal.aborted) return
+
+      const versions = [...infos.values()].map(cfFileToVersionInfo)
+      if (versions.length === 0) {
+        // 一个都没解析出来（没 key 且镜像不可用、或清单为空）：保持原来的诚实说法
+        unresolved = instance.mods.length
+        findings.push({
+          severity: 'warning',
+          code: 'CF_NO_MOD_CHECK',
+          message: `整合包声明了 ${instance.mods.length} 个 CurseForge 文件；这次没能解析它们的元数据`,
+          hint:
+            '没 key 时会走 MCIM 镜像逐个查；镜像不可用时可加 --china 或设置 ' +
+            'BLOCKPILOT_CF_API_KEY 后重试。Java 与加载器版本仍然可参考',
+        })
+      } else {
+        const map = new Map(versions.map((v) => [v.versionId, v]))
+        findings.push(...checkInstance({ instance, versions: map }))
+        findings.push(...cfDependencyFindings(instance, versions))
+        mods = instance.mods.length
+        resolved = map.size
+        // 没解析到的文件是「校验不了」，不是「有问题」——数字上要分开
+        unresolved = instance.mods.length - map.size
+      }
     } else {
       // ---- 在线模式：有 projectId，可以查元数据和递归闭包 ----
       const withVersion = instance.mods

@@ -706,14 +706,18 @@ const CASES: readonly CaseDef[] = [
   },
   {
     id: 'E2E-104',
-    title: 'CurseForge 边界：能查但明确受限',
+    title: 'CurseForge 边界：关掉镜像时不硬判 blocked，并说清「没做 mod 级校验」',
     tier: 1,
     async run(ctx) {
-      const r = await ctx.cli(['preflight', join(FIX, 'cf-pack.zip'), '--no-host'], {
-        timeoutMs: 120_000,
-      })
+      /**
+       * 刻意加 --no-cf-mirror：T0/T1 不该依赖第三方镜像的可用性。
+       * CF 的免 key 解析（逐个 GET）由单测覆盖；真实包的手工验证见表测报告。
+       */
+      const r = await ctx.cli(
+        ['preflight', join(FIX, 'cf-pack.zip'), '--no-host', '--no-cf-mirror'],
+        { timeoutMs: 120_000 },
+      )
       assertCode(r, 0, 'CF 包预检')
-      // 预检不再要求 key（装的时候也不需要），但必须说清「这一步没做 mod 级校验」
       assertText(r, 'CF_NO_MOD_CHECK', 'CF 应说明预检没做 mod 级校验')
       assertNoText(r, 'BLOCKED', 'CF 包不应被硬判 blocked')
     },
