@@ -15,8 +15,7 @@
     "e2e": "tsx scripts/e2e.ts",
     "preflight": "tsx src/cli/index.ts preflight",
     "mcp": "tsx src/mcp/server.ts",
-    "smoke": "tsx scripts/mcp-smoke.ts",
-    "issues": "tsx scripts/issues.ts"
+    "smoke": "tsx scripts/mcp-smoke.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",

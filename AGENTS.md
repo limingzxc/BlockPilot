@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Issues and specs live as GitHub issues. `gh` 没装时用 `npm run issues -- list|show|close`（见 `docs/agents/environment.md`）。See `docs/agents/issue-tracker.md`.
+Issues and specs live as GitHub issues, managed with the `gh` CLI（已装；路径/凭据见 `docs/agents/environment.md`）. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

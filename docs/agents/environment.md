@@ -32,18 +32,19 @@
 
 ## Issue 工作流
 
-`gh` 没装，用仓库自带脚本（走 api.github.com，token 取自 `GITHUB_TOKEN`
-或 `git credential fill`）：
+用 `gh`（已用 winget 装好）。**先 `gh issue list`，再按编号建任务清单**——
+漏过一条 issue（#10），原因是清单从记忆里列，不是从 open 列表生成的。
 
 ```bash
-npm run issues -- list              # 先跑这个，把编号写进任务清单
-npm run issues -- list --json
-npm run issues -- show 10
-npm run issues -- close 1 2 3 --comment "修复说明"
+gh issue list -R limingzxc/BlockPilot --state open
+gh issue view 10 -R limingzxc/BlockPilot
+gh issue close 10 -R limingzxc/BlockPilot -c "修复说明"
 ```
 
-**先 list 再建任务清单**：漏过一条 issue（#10），原因是清单从记忆里列，
-不是从 open 列表生成的。
+装完 gh 后当前 shell 的 PATH 可能是旧的，`gh` 找不到时用全路径
+`"/c/Program Files/GitHub CLI/gh.exe"`，或新开一个终端。
+凭据已写入 `%APPDATA%\GitHub CLI\hosts.yml`（token 来自 git 凭据，权限 600）；
+`gh auth status` 会提示缺 `read:org`——只影响 org 相关查询，repo 的 issue/PR 正常。
 
 ## 检查与测试
 
