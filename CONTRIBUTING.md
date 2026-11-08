@@ -38,14 +38,18 @@ npm run e2e -- --tier 0    # 只跑离线（CI 就是这条）
 
 - 证据落在 `.tmp-e2e/<时间>/<用例>/`，每次调用的 args、退出码、stdout、stderr 都在里面
 - 已知缺陷用 `knownIssue` 标记：失败记 KNOWN 不算红，修好变 XPASS 提示删标记
-- T2–T4（真实下载 / 真启动 / 故障注入）已设计未实现
+- T2–T4（真实下载 / 真启动 / 故障注入）已实现，默认不跑：需要网络、游戏窗口与本机实测目录
 
 **夹具**：`fixtures/` 被 gitignore，靠脚本现造：
 
 ```bash
 node scripts/make-fixture.mjs            # demo.mrpack / closure.mrpack
 node scripts/make-instance-fixture.mjs   # instance-ok / instance-miss
+node scripts/make-real-pack.mjs          # real-pack.mrpack（真实 URL 与 sha1）
+node scripts/make-cf-fixture.mjs         # cf-pack.zip（CurseForge 清单）
 ```
+
+E2E-103 / E2E-104 依赖后两个夹具，缺了会记 SKIP。
 
 `fixtures/mcroot` 这类大件（真实原版 jar、libraries）不在仓库里，依赖它的用例在干净环境
 会记 SKIP，不是假红。
@@ -62,7 +66,7 @@ node scripts/make-instance-fixture.mjs   # instance-ok / instance-miss
 改行为之前先看 `docs/adr/`——那里解释了为什么某个看起来奇怪的选择是对的，比如：
 
 - ADR-0025：整合包的「缺依赖」为什么只报 warning 不报 BLOCKED
-- ADR-0026（Proposed）：版本不匹配该不该按方向分级
+- ADR-0026：版本不匹配按方向分级（低于声明 = blocker，高于声明 = warning）
 
 新增决策写成 ADR，格式照现有的来：Context / Decision / Consequences / Alternatives / 验证。
 
