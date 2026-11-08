@@ -36,8 +36,21 @@ export interface ModMetadata {
 }
 
 /**
+ * 依赖 id 的比较键。
+ *
+ * 两个生态对同一个东西的拼写不一样：Fabric 写 `fabric-api`，Forge 写 `fabric_api`；
+ * 大小写也不统一（mcmod.info 里有写 `ForgeEndertech` 的）。
+ * 比较前统一成「小写 + 连字符」，否则 `fabric_api` 永远满足不了 `fabric-api`。
+ */
+export function depKey(id: string): string {
+  return id.toLowerCase().replace(/_/g, '-')
+}
+
+/**
  * 这些不是模组，是运行环境的虚拟 id。本地依赖检查必须排除它们，
  * 否则每个模组都会报「缺 minecraft」。
+ *
+ * 用连字符形式（与 {@link depKey} 的输出一致）。
  */
 export const NON_MOD_DEPENDENCY_IDS: ReadonlySet<string> = new Set([
   'minecraft',
@@ -46,8 +59,7 @@ export const NON_MOD_DEPENDENCY_IDS: ReadonlySet<string> = new Set([
   'fabric-loader',
   'forge',
   // 1.12.2 的 mcmod.info 里，Forge 本身被写成 mod_MinecraftForge（大小写不统一）
-  'mod_minecraftforge',
+  'mod-minecraftforge',
   'neoforge',
-  'quilt_loader',
   'quilt-loader',
 ])

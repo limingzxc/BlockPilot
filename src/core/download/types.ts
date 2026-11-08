@@ -25,6 +25,13 @@ export interface DownloadOutcome {
   /** 服务器的最终落点。镜像 302 回官方时能从这里看出来。 */
   readonly finalUrl?: string
   readonly skipped: boolean
+  /**
+   * 下载成功但字节数与索引里的 `expectedSize` 不一致。
+   *
+   * 不是失败：哈希已经对上了，内容就是它。这是索引元数据的漂移
+   * （Modrinth 上确实存在差 1 字节的条目），调用方最多提示一句。
+   */
+  readonly sizeMismatch?: boolean
   readonly attempts: readonly SourceAttempt[]
 }
 

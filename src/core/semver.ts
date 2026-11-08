@@ -12,6 +12,19 @@
 
 export type RangeVerdict = 'satisfied' | 'violated' | 'unknown'
 
+/**
+ * 版本区间写在哪个生态里。**同一个字符串，含义可能相反。**
+ *
+ * - `forge` / `neoforge`：裸版本号（`versionRange = "1.0.0"`）是「推荐版本」，
+ *   `VersionRange.createFromVersionSpec("1.0.0").hasRestrictions() == false`，
+ *   `containsVersion(2.6.1)` 返回 true。作者只是填了「我测试用的版本」。
+ * - `fabric`：`depends` 里的裸版本号就是精确匹配，`"1.0.0"` 不接受 `1.0.1`。
+ *
+ * 按 Fabric 的语义去读 Forge 的 `1.0.0`，会让 `citadel_fix`（要求 1.0.0、
+ * 实际 2.6.1）这类写法整包被判 BLOCKED，而游戏其实跑得好好的。
+ */
+export type RangeDialect = 'forge' | 'fabric' | 'any'
+
 function parseVersion(v: string): number[] | null {
   const cleaned = v.trim().replace(/^v/, '')
   if (cleaned === '') return null
@@ -125,14 +138,18 @@ function satisfiesTildeCaret(version: number[], token: string): boolean | null {
   return compare(version, lo) >= 0 && compare(version, hi) < 0
 }
 
-function satisfiesToken(version: number[], token: string): boolean | null {
+function satisfiesToken(
+  version: number[],
+  token: string,
+  dialect: RangeDialect,
+): boolean | null {
   if (token.startsWith('~') || token.startsWith('^')) {
     return satisfiesTildeCaret(version, token)
   }
 
   const m = OP_RE.exec(token)
   if (m === null) return null
-  const op = m[1] ?? '='
+  const op = m[1]
   const raw = (m[2] ?? '').trim()
   if (raw === '' || raw === '*' || raw === 'x') return true
 
@@ -149,6 +166,10 @@ function satisfiesToken(version: number[], token: string): boolean | null {
     }
     return true
   }
+
+  // Forge 的裸版本号不构成限制——它只是「作者测试过的版本」。
+  // 这一步必须在通配符判断之后（`1.12.x` 仍然按前缀比）。
+  if (op === undefined && dialect === 'forge') return true
 
   const target = parseVersion(raw)
   if (target === null) return null
@@ -167,7 +188,11 @@ function satisfiesToken(version: number[], token: string): boolean | null {
   }
 }
 
-export function satisfiesRange(version: string, range: string): RangeVerdict {
+export function satisfiesRange(
+  version: string,
+  range: string,
+  dialect: RangeDialect = 'any',
+): RangeVerdict {
   const v = parseVersion(version)
   if (v === null) return 'unknown'
   const trimmed = range.trim()
@@ -185,7 +210,7 @@ export function satisfiesRange(version: string, range: string): RangeVerdict {
     let allOk = true
     let unknown = false
     for (const token of tokens) {
-      const r = satisfiesToken(v, token)
+      const r = satisfiesToken(v, token, dialect)
       if (r === null) {
         // 看不动的 token 不中断——同组其他 token 可能已经给出明确的「不满足」
         unknown = true

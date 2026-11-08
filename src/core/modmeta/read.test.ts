@@ -313,3 +313,70 @@ test('1.12.2 的 required-after: / optional: 依赖语法', () => {
   assert.deepEqual(ids, ['creativecore'])
   assert.equal(meta.dependencies[0]?.mandatory, false)
 })
+
+test('Forge 的 [[mods]] provides 要读（Forgified Fabric API 场景）', () => {
+  const buf = jar({
+    'META-INF/mods.toml': [
+      'modLoader="javafml"',
+      'loaderVersion="[47,)"',
+      '[[mods]]',
+      'modId="fabric_api"',
+      'version="0.92.6+1.11.14+1.20.1"',
+      'displayName="Forgified Fabric API"',
+      'provides=["fabric", "fabric-api"]',
+      '[[dependencies.fabric_api]]',
+      'modId="minecraft"',
+      'mandatory=true',
+      'versionRange="[1.20.1,1.21)"',
+    ].join('\n'),
+  })
+  const meta = readModMetadata(buf)
+  assert.ok(meta)
+  assert.equal(meta.modId, 'fabric_api')
+  assert.deepEqual([...meta.provides].sort(), ['fabric', 'fabric-api'])
+  // 单个字符串也接受
+  const single = jar({
+    'META-INF/mods.toml': [
+      'modLoader="javafml"',
+      'loaderVersion="[47,)"',
+      '[[mods]]',
+      'modId="sinytra_connector"',
+      'version="2.0.0"',
+      'provides="connector"',
+    ].join('\n'),
+  })
+  assert.deepEqual(readModMetadata(single)?.provides, ['connector'])
+})
+
+test('Forge 的 jar-in-jar 在 META-INF/jarjar/，子模块要读出来', () => {
+  const sub = (id: string, version: string) =>
+    zipSync({
+      'META-INF/mods.toml': strToU8(
+        ['modLoader="javafml"', 'loaderVersion="[47,)"', '[[mods]]', `modId="${id}"`, `version="${version}"`].join('\n'),
+      ),
+    })
+
+  const buf = zipSync({
+    'META-INF/mods.toml': strToU8(
+      [
+        'modLoader="javafml"',
+        'loaderVersion="[47,)"',
+        '[[mods]]',
+        'modId="fabric_api"',
+        'version="0.92.6"',
+        'provides=["fabric", "fabric-api"]',
+      ].join('\n'),
+    ),
+    'META-INF/jarjar/fabric-api-base-0.4.31.jar': sub('fabric-api-base', '0.4.31'),
+    'META-INF/jarjar/fabric-resource-loader-v0-0.11.11.jar': sub(
+      'fabric-resource-loader-v0',
+      '0.11.11',
+    ),
+    'META-INF/jarjar/metadata.json': strToU8('{"jars":[]}'),
+  })
+
+  const meta = readModMetadata(buf)
+  assert.ok(meta)
+  const ids = (meta.nested ?? []).map((n) => n.modId).sort()
+  assert.deepEqual(ids, ['fabric-api-base', 'fabric-resource-loader-v0'])
+})

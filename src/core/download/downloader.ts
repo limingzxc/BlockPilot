@@ -12,6 +12,7 @@ import { createReadStream } from 'node:fs'
 import { dirname } from 'node:path'
 
 import type { DownloadOutcome, DownloadSource, DownloadTask, SourceAttempt } from './types.js'
+import { NetworkError } from '../http.js'
 import { USER_AGENT } from '../user-agent.js'
 
 type Algo = 'sha1' | 'sha256' | 'sha512'
@@ -166,13 +167,20 @@ export async function downloadOne(
         signal,
         opts.idleTimeoutMs,
       )
-      // 先比大小：镜像返回 HTML 错误页时，这一步就能挡住，省掉一次哈希
-      if (task.expectedSize > 0 && bytes !== task.expectedSize) {
-        throw new Error(`size mismatch (${bytes} != ${task.expectedSize})，可能拿到了错误页`)
-      }
+      // **哈希是唯一裁判**（ADR-0005）。`expectedSize` 只是索引里的元数据，
+      // 和 CDN 上的真实字节数本来就可能不一致：Modrinth 上确有 fileSize 差
+      // 1 字节、sha1 完全相同的文件（Better MC 的 balm / geckolib 等 14 个）。
+      // 以前先比 size 再比哈希，合法文件直接判死，热门整合包装不上。
       if (digest !== expected) {
-        throw new Error(`hash mismatch (${algo} ${digest.slice(0, 8)}… != ${expected.slice(0, 8)}…)`)
+        const sizeNote =
+          task.expectedSize > 0 && bytes !== task.expectedSize
+            ? `，体积 ${bytes} 与索引 ${task.expectedSize} 也不符`
+            : ''
+        throw new Error(
+          `hash mismatch (${algo} ${digest.slice(0, 8)}… != ${expected.slice(0, 8)}…)${sizeNote}，可能拿到了错误页`,
+        )
       }
+      const sizeMismatch = task.expectedSize > 0 && bytes !== task.expectedSize
       renameSync(partPath, task.destPath)
       attempts.push({ source: source.name, ok: true })
       return {
@@ -182,6 +190,7 @@ export async function downloadOne(
         credit: source.credit,
         finalUrl,
         skipped: false,
+        ...(sizeMismatch ? { sizeMismatch: true } : {}),
         attempts,
       }
     } catch (err) {
@@ -201,5 +210,11 @@ export async function downloadOne(
   }
 
   const detail = attempts.map((a) => `${a.source}: ${a.error ?? 'unknown'}`).join('; ')
-  throw new Error(`所有源都失败 — ${detail}`)
+  // 全源失败是最常见的网络故障，不是「unexpected error」：抛 NetworkError，
+  // 让 CLI 走那条带地址与建议的分支（issue #6）。
+  // 没有任何源覆盖这个 URL 时 attempts 为空，也要给出可读的原因。
+  throw new NetworkError(
+    task.url,
+    attempts.length === 0 ? '没有可用的下载源覆盖这个地址' : `所有源都失败 — ${detail}`,
+  )
 }

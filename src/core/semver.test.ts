@@ -88,3 +88,22 @@ test('看不懂的写法返回 unknown，不当作违规', () => {
   assert.equal(satisfiesRange('1.21.1', 'next-please'), 'unknown')
   assert.equal(satisfiesRange('1.21.1', '>1.0.0 next-please'), 'unknown')
 })
+
+test('Forge 的裸版本号是推荐版本，不是精确匹配', () => {
+  // VersionRange.createFromVersionSpec("1.0.0").hasRestrictions() === false
+  assert.equal(satisfiesRange('2.6.1', '1.0.0', 'forge'), 'satisfied')
+  assert.equal(satisfiesRange('0.9.0', '1.0.0', 'forge'), 'satisfied')
+  // Fabric 同一份写法是精确匹配
+  assert.equal(satisfiesRange('2.6.1', '1.0.0', 'fabric'), 'violated')
+  assert.equal(satisfiesRange('1.0.0', '1.0.0', 'fabric'), 'satisfied')
+})
+
+test('Forge 方言下显式比较符仍然生效', () => {
+  assert.equal(satisfiesRange('1.1.0', '>=1.2.0', 'forge'), 'violated')
+  assert.equal(satisfiesRange('1.2.0', '>=1.2.0', 'forge'), 'satisfied')
+  // 1.12.x 这类前缀写法在 Forge 下也照旧按前缀比
+  assert.equal(satisfiesRange('1.12.2', '1.12.x', 'forge'), 'satisfied')
+  assert.equal(satisfiesRange('1.13.0', '1.12.x', 'forge'), 'violated')
+  // Maven 范围不受方言影响
+  assert.equal(satisfiesRange('1.4.0', '[1.5,)', 'forge'), 'violated')
+})

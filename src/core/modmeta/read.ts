@@ -26,7 +26,12 @@ const CANDIDATES = [FABRIC, QUILT, NEOFORGE, FORGE, MCMOD] as const
 type TomlShape = {
   modLoader?: string
   loaderVersion?: string
-  mods?: Array<{ modId?: string; version?: string; displayName?: string }>
+  mods?: Array<{
+    modId?: string
+    version?: string
+    displayName?: string
+    provides?: unknown
+  }>
   dependencies?: Record<
     string,
     Array<{ modId?: string; mandatory?: boolean; versionRange?: string }>
@@ -300,6 +305,27 @@ function fromForgeToml(text: string, loader: ModLoaderKind): ModMetadata | null 
   const mc = deps.find((d) => d.modId === 'minecraft')
   const fl = deps.find((d) => d.modId === 'forge' || d.modId === 'neoforge')
 
+  /**
+   * Forge 的 `[[mods]]` 也有 `provides`，只是**必须加引号写成数组**：
+   *
+   *   [[mods]]
+   *     modId = "fabric_api"
+   *     provides = ["fabric", "fabric-api"]
+   *
+   * 这在 Sinytra Connector 生态里是通行做法——Forgified Fabric API 就靠它
+   * 让 `fabric` / `fabric-api` 这些依赖能匹配上 `fabric_api`。
+   * 早期版本这里写的是 `provides: []`，注释还写着「Forge 没有 provides 概念」，
+   * 那是错的：BMC4（229 万下载）因此整包被判 BLOCKED。
+   */
+  const provides: string[] = []
+  const rawProvides = first.provides
+  if (Array.isArray(rawProvides)) {
+    for (const p of rawProvides) if (typeof p === 'string' && p !== '') provides.push(p)
+  } else if (typeof rawProvides === 'string' && rawProvides !== '') {
+    // 单个字符串也接受（Toml 里写 provides = "x" 的情况）
+    provides.push(rawProvides)
+  }
+
   return {
     modId: first.modId,
     version: typeof first.version === 'string' ? first.version : 'unknown',
@@ -308,8 +334,7 @@ function fromForgeToml(text: string, loader: ModLoaderKind): ModMetadata | null 
     ...(mc?.versionRange === undefined ? {} : { mcVersionRange: mc.versionRange }),
     ...(fl?.versionRange === undefined ? {} : { loaderVersionRange: fl.versionRange }),
     dependencies: deps,
-    // Forge 没有 provides 概念，子模块用 jar-in-jar 解决
-    provides: [],
+    provides,
     nested: [],
   }
 }
@@ -371,6 +396,24 @@ export interface ReadModMetadataOptions {
    * `minecraft [1.13.2]`（1.13 模板残留），mcmod.info 写的才是 `1.12.2`。
    */
   readonly legacy?: boolean
+}
+
+/**
+ * 这个文件是不是**结构上损坏**的 jar（下载中断、被截断、根本不是 zip）。
+ *
+ * 与「读不出元数据」是两件事，处理方式也相反：
+ * - 损坏 → 删掉重下（而且大概率是下载环节的问题，值得报 warning）
+ * - 只是没有元数据（资源包、老 lib 伪装成 .jar）→ 正常现象，info 即可
+ *
+ * `unzipSync` 遇到坏数据会抛异常，正常 zip 只读中央目录，代价很低。
+ */
+export function isCorruptZip(jar: Uint8Array): boolean {
+  try {
+    unzipSync(jar, { filter: () => false })
+    return false
+  } catch {
+    return true
+  }
 }
 
 export function readModMetadata(

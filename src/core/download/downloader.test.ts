@@ -83,9 +83,23 @@ test('已存在且校验通过时跳过', async () => {
 
 test('内容与哈希不符时拒绝落盘', async () => {
   const t = task('/wrong', 'bad.jar')
-  // 先被大小检查挡下（30 != 44）；即使大小对得上，也会被哈希挡下
-  await assert.rejects(() => downloadOne(t, [direct], signal), /size mismatch|hash mismatch/)
+  // 内容不对时哈希一定不符，不再靠大小兜底：哈希是唯一裁判
+  await assert.rejects(() => downloadOne(t, [direct], signal), /hash mismatch/)
   assert.equal((await verifyExisting(t)).reason, 'missing')
+})
+
+test('索引里的 fileSize 与真实字节数不符，但哈希对得上时接受', async () => {
+  // Modrinth 上真实存在的漂移：index fileSize 比 CDN 少 1 字节，sha1 完全一致
+  const t: DownloadTask = { ...task('/good', 'drift.jar'), expectedSize: BODY.byteLength - 1 }
+  const out = await downloadOne(t, [direct], signal)
+  assert.equal(out.skipped, false)
+  assert.equal(out.sizeMismatch, true)
+  assert.deepEqual(readFileSync(t.destPath), BODY)
+})
+
+test('哈希与体积都不符时报错里带上体积差', async () => {
+  const t: DownloadTask = { ...task('/wrong', 'bad2.jar'), expectedSize: 1 }
+  await assert.rejects(() => downloadOne(t, [direct], signal), /体积 \d+ 与索引 1 也不符/)
 })
 
 test('一个源失败后降级到下一个源', async () => {
@@ -137,4 +151,20 @@ test('连接卡住时按空闲超时中止，不留半成品', async () => {
   )
   assert.equal(existsSync(t.destPath), false)
   assert.equal(existsSync(`${t.destPath}.part`), false)
+})
+
+test('所有源都失败时抛 NetworkError，带地址与各源原因（issue #6）', async () => {
+  const t = task('/missing', 'nope.jar')
+  await assert.rejects(
+    () => downloadOne(t, [direct], new AbortController().signal),
+    (err: Error & { url?: string }) => {
+      // 不是裸 Error：CLI 靠这个类型走「网络错误」分支，而不是 unexpected error
+      assert.equal(err.name, 'NetworkError')
+      assert.equal(err.url, t.url)
+      assert.match(err.message, /无法访问/)
+      assert.match(err.message, /所有源都失败/)
+      assert.match(err.message, /direct: HTTP 404/)
+      return true
+    },
+  )
 })
