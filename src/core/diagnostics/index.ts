@@ -125,15 +125,25 @@ export function createDiagnose(opts: DiagOptions): Operation<DiagResult> {
           ? 'inconclusive'
           : 'crash'
 
-    // 结论要带着「指向谁」一起说，否则用户读到的是一条没有主语的建议
+    // 结论要带着「指向谁」一起说，否则用户读到的是一条没有主语的建议。
+    // 可恢复的那条不指向任何人：Loader 已经把它处理掉了，点名只会让用户去删模组。
+    const recovered = rawPrimary !== null && rawPrimary.recoverable === true && verdict !== 'crash'
     const primary =
-      rawPrimary === null
-        ? null
+      rawPrimary === null || recovered
+        ? rawPrimary
         : applyAttribution(rawPrimary, attribution.culprits[0], verdict === 'crash')
 
     // 把增强过的根因放回数组里。否则消费者按引用去重时，
     // 原始的那条会被当成「其他线索」再打印一次
     const signals = rawSignals.map((s) => (s === rawPrimary ? primary ?? s : s))
+
+    const culprits = recovered ? [] : attribution.culprits
+    const attributionNotes = recovered
+      ? [
+          '命中的是可恢复的 mixin 校验失败（Loader 会禁用它继续启动），不指向任何模组',
+          ...attribution.notes,
+        ]
+      : attribution.notes
 
     yield Op.log('info', 'diag.done', {
       lines: lines.length,
@@ -141,7 +151,7 @@ export function createDiagnose(opts: DiagOptions): Operation<DiagResult> {
       verdict,
       primary: primary?.kind,
       frames: frames.length,
-      culprits: attribution.culprits.length,
+      culprits: culprits.length,
     })
 
     yield Op.result({
@@ -150,8 +160,8 @@ export function createDiagnose(opts: DiagOptions): Operation<DiagResult> {
       signals,
       primary,
       verdict,
-      culprits: attribution.culprits,
-      attributionNotes: attribution.notes,
+      culprits,
+      attributionNotes,
       frameCount: frames.length,
     })
     yield Op.done()

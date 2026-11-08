@@ -47,9 +47,10 @@ test('真正的依赖缺失仍然是 fatal', () => {
 
 test('Mixin 冲突', () => {
   const s = analyze(
-    'org.spongepowered.asm.mixin.transformer.throwables.InvalidMixinException: Found a remappable @Shadow annotation',
+    'org.spongepowered.asm.mixin.transformer.throwables.InvalidMixinException: Mixin apply failed create.mixins.json:BlockEntityMixin',
   )
   assert.equal(s[0]?.kind, 'mixin')
+  assert.equal(s[0]?.severity, 'fatal')
   assert.match(s[0]?.hint ?? '', /移除最近加的那个/)
 })
 
@@ -158,4 +159,49 @@ test('survivedAfter：里程碑出现在异常之前不算数', () => {
     '[2] [main/ERROR]: InvalidMixinException: bad shadow',
   ]
   assert.equal(survivedAfter(lines, 2), false)
+})
+
+test('损坏的 jar 单独归类，并给出文件名（不落到「缺前置」）', () => {
+  // issue #3：ModResolutionException 是总出口，zip 坏也走它
+  const s = analyze(
+    [
+      'net.fabricmc.loader.impl.FormattedException: Mod resolution encountered an incompatible mod set!',
+      'Caused by: java.lang.RuntimeException: Error analyzing [D://mc//mods//broken-mod-1.0.jar]:',
+      '  java.util.zip.ZipException: zip END header not found',
+    ].join('\n'),
+  )
+  assert.equal(s.length, 1)
+  assert.equal(s[0]?.kind, 'corrupt-jar')
+  assert.equal(s[0]?.severity, 'fatal')
+  assert.equal(s[0]?.subject, 'broken-mod-1.0.jar')
+  assert.match(s[0]?.hint ?? '', /重新下载/)
+})
+
+test('只有 zip 异常、没有 Error analyzing 时也能归到 corrupt-jar', () => {
+  const s = analyze('java.util.zip.ZipException: invalid entry CRC')
+  assert.equal(s[0]?.kind, 'corrupt-jar')
+  assert.equal(s[0]?.subject, undefined)
+})
+
+test('可恢复的 InvalidMixinException 降为 warning（FO 每次启动都有）', () => {
+  const s = analyze(
+    'org.spongepowered.asm.mixin.transformer.throwables.InvalidMixinException: Found a remappable @Shadow annotation on non-remappable field',
+  )
+  assert.equal(s[0]?.kind, 'mixin')
+  assert.equal(s[0]?.severity, 'warning')
+  assert.equal(s[0]?.recoverable, true)
+  assert.equal(primarySignal(s)?.severity, 'warning')
+})
+
+test('真崩的 mixin 仍然是 fatal；同日志里先出现可恢复变体也不能掩盖它', () => {
+  const s = analyze(
+    [
+      'org.spongepowered.asm.mixin.transformer.throwables.InvalidMixinException: Found a remappable @Shadow annotation',
+      'org.spongepowered.asm.mixin.transformer.throwables.InvalidMixinException: Critical injection failure',
+    ].join('\n'),
+  )
+  assert.equal(s.length, 1, '同一个 kind 只留一条')
+  assert.equal(s[0]?.severity, 'fatal')
+  assert.equal(s[0]?.recoverable, undefined)
+  assert.equal(s[0]?.line, 2, '留下的是后面那条真的')
 })

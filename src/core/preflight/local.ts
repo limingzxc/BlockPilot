@@ -23,6 +23,7 @@ export function checkLocalInstance(
       dependencies: m.meta.dependencies,
       provides: m.meta.provides,
       nested: m.meta.nested,
+      loader: m.meta.loader,
     })),
     { gameVersion: ctx.gameVersion, loaderVersion: ctx.loaderVersion },
   )
@@ -54,12 +55,27 @@ export function checkLocalInstance(
     })
   }
 
-  if (scan.skipped.length > 0) {
+  if (scan.corrupt.length > 0) {
+    findings.push({
+      severity: 'warning',
+      code: 'CORRUPT_JAR',
+      message: `${scan.corrupt.length} 个 jar 已损坏（不是完整的压缩包），游戏会因此启动失败`,
+      subject: scan.corrupt[0],
+      hint: `删掉重下：${scan.corrupt.slice(0, 5).join('、')}${
+        scan.corrupt.length > 5 ? ' 等' : ''
+      }。用 blockpilot install 装的文件会校验 sha1，一般不会出现这种情况`,
+    })
+  }
+
+  // 范围是 skipped 里「没坏、只是没有可识别元数据」的那部分。
+  // 这类文件是正常的（资源包、把老库改名成 .jar），报 warning 只会制造噪音。
+  const noMeta = scan.skipped.filter((f) => !scan.corrupt.includes(f))
+  if (noMeta.length > 0) {
     findings.push({
       severity: 'info',
       code: 'UNREADABLE_JAR',
-      message: `${scan.skipped.length} 个 jar 读不出模组元数据，未参与检查`,
-      hint: scan.skipped.slice(0, 5).join('、') + (scan.skipped.length > 5 ? ' 等' : ''),
+      message: `${noMeta.length} 个 jar 里没有可识别的模组元数据，未参与检查`,
+      hint: `${noMeta.slice(0, 5).join('、')}${noMeta.length > 5 ? ' 等' : ''}。资源包/非模组 jar 属于正常情况`,
     })
   }
 

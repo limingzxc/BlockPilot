@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
 import type { ModMetadata } from '../modmeta/types.js'
-import { readModMetadata } from '../modmeta/read.js'
+import { isCorruptZip, readModMetadata } from '../modmeta/read.js'
 import type { Instance, LoaderKind, ModRef } from '../instance.js'
 
 export interface ScannedMod {
@@ -15,6 +15,8 @@ export interface ScanResult {
   readonly mods: readonly ScannedMod[]
   /** 读不出元数据的 .jar（资源包、损坏文件、非模组） */
   readonly skipped: readonly string[]
+  /** skipped 里**结构损坏**的那部分。要删掉重下，不只是「没元数据」 */
+  readonly corrupt: readonly string[]
 }
 
 export interface ScanOptions {
@@ -80,6 +82,7 @@ export function scanInstanceDir(dir: string, opts: ScanOptions): ScanResult {
   const modsDir = findModsDir(dir)
   const mods: ScannedMod[] = []
   const skipped: string[] = []
+  const corrupt: string[] = []
   const refs: ModRef[] = []
 
   if (modsDir !== null) {
@@ -87,14 +90,23 @@ export function scanInstanceDir(dir: string, opts: ScanOptions): ScanResult {
       if (!name.toLowerCase().endsWith('.jar')) continue
       const full = join(modsDir, name)
       if (!statSync(full).isFile()) continue
+      let bytes: Uint8Array
+      try {
+        bytes = new Uint8Array(readFileSync(full))
+      } catch {
+        skipped.push(name)
+        continue
+      }
       let meta: ModMetadata | null = null
       try {
-        meta = readModMetadata(new Uint8Array(readFileSync(full)), { legacy })
+        meta = readModMetadata(bytes, { legacy })
       } catch {
         meta = null
       }
       if (meta === null) {
         skipped.push(name)
+        // 区分「不是模组」和「文件坏了」：后者要删掉重下
+        if (isCorruptZip(bytes)) corrupt.push(name)
         continue
       }
       mods.push({ fileName: name, meta })
@@ -116,5 +128,6 @@ export function scanInstanceDir(dir: string, opts: ScanOptions): ScanResult {
     },
     mods,
     skipped,
+    corrupt,
   }
 }

@@ -14,6 +14,7 @@ export type CrashKind =
   | 'java-version'
   | 'out-of-memory'
   | 'missing-dependency'
+  | 'corrupt-jar'
   | 'mod-load-failed'
   | 'mod-conflict'
   | 'mixin'
@@ -34,6 +35,16 @@ export interface CrashSignal {
   readonly excerpt: readonly string[]
   /** 可以照着做的建议 */
   readonly hint: string
+  /**
+   * 日志里点了名的文件（目前只有 corrupt-jar 用：`Error analyzing [xxx.jar]`）。
+   * 比栈帧归因可靠得多——这是日志自己说的。
+   */
+  readonly subject?: string
+  /**
+   * 这条异常 Loader 捕获后又降级处理了，游戏照常跑完。
+   * 它仍然值一提，但不能算致命，也不该指向任何模组（否则用户会去删它）。
+   */
+  readonly recoverable?: boolean
 }
 
 interface Rule {
@@ -41,6 +52,8 @@ interface Rule {
   readonly kind: CrashKind
   readonly severity: 'fatal' | 'warning'
   readonly hint: string
+  /** 同一行还匹配这个时，说明是可恢复的变体，severity 降为 warning */
+  readonly recoverableWhen?: RegExp
 }
 
 const RULES: readonly Rule[] = [
@@ -59,6 +72,15 @@ const RULES: readonly Rule[] = [
   },
 
   // ---- 依赖解析（Fabric / Forge 各有措辞）----
+  {
+    // **必须排在 missing-dependency 前面。** `ModResolutionException` 是 Fabric
+    // 「模组发现失败」的总出口，jar 读不出来也走那条路（issue #3）。顺序反了，
+    // 一个损坏的 jar 会被说成「缺前置」，用户照着提示去补依赖，永远修不好。
+    re: /Error analyzing \[(.+?)\]:|java\.util\.zip\.ZipException|zip END header not found/i,
+    kind: 'corrupt-jar',
+    severity: 'fatal',
+    hint: '这个 jar 不是完整的压缩包（多半是下载中断）。删掉它重新下载；用 blockpilot install 装可避免',
+  },
   {
     re: /Missing or unsupported mandatory dependencies|ModResolutionException|Incompatible mod set/i,
     kind: 'missing-dependency',
@@ -91,6 +113,13 @@ const RULES: readonly Rule[] = [
     re: /MixinApplyError|InvalidMixinException|InvalidInjectionException|Mixin apply failed|MixinTransformerError|Mixin transformation of .* failed/i,
     kind: 'mixin',
     severity: 'fatal',
+    /**
+     * `Found a remappable @Shadow annotation` 是 Loader 捕获后降级处理的校验失败：
+     * 它把这个 mixin 禁掉，游戏照常启动。判成 fatal 的后果很具体——FO（下载量最大的
+     * 整合包之一）每次启动都会打这一条，于是每次 diag 都给一条假崩溃，脚本消费
+     * `--json` 会当成真崩了（issue #8）。
+     */
+    recoverableWhen: /Found a remappable @Shadow annotation/i,
     hint: '模组之间的字节码改写冲突。通常是两个模组改同一个类，试着移除最近加的那个',
   },
 
@@ -134,9 +163,23 @@ const RULES: readonly Rule[] = [
 
 const MAX_EXCERPT = 8
 
-/** 同一个 kind 只报告第一次命中，后面的是连锁反应。 */
+/** `Error analyzing [D:\...\mods\xxx.jar]:` → `xxx.jar`。Windows 与 POSIX 分隔符都要认。 */
+function jarFromAnalyzing(line: string): string | undefined {
+  const m = /Error analyzing \[(.+?)\]/i.exec(line)
+  const p = m?.[1]
+  if (p === undefined) return undefined
+  const name = p.split(/[\\/]/).pop()
+  return name === undefined || name === '' ? undefined : name
+}
+
+/**
+ * 同一个 kind 只报告一次，后面的是连锁反应。
+ *
+ * 唯一的例外是「先出现可恢复变体、后来真的崩了」：那条更弱的记录会被替换掉，
+ * 否则日志里明明有真崩溃，输出却停在一条 Loader 已经降级处理过的警告上。
+ */
 export function analyzeLog(lines: readonly string[]): readonly CrashSignal[] {
-  const seen = new Set<CrashKind>()
+  const byKind = new Map<CrashKind, number>()
   const signals: CrashSignal[] = []
 
   for (let i = 0; i < lines.length; i += 1) {
@@ -145,21 +188,50 @@ export function analyzeLog(lines: readonly string[]): readonly CrashSignal[] {
 
     for (const rule of RULES) {
       if (!rule.re.test(line)) continue
-      if (seen.has(rule.kind)) break
-      seen.add(rule.kind)
+
+      // 异常的详情常常在下一行（`InvalidMixinException:` 换行再接原因），
+      // 所以可恢复判定看一个短的向下窗口，而不只是命中的那一行
+      const window = [line, lines[i + 1] ?? '', lines[i + 2] ?? ''].join(' ')
+      const recoverable = rule.recoverableWhen?.test(window) === true
+      const known = byKind.get(rule.kind)
+      if (known !== undefined) {
+        // 已经记过一条真的（或同为可恢复）——后面的都算连锁反应
+        if (recoverable || signals[known]?.recoverable !== true) break
+      }
 
       const from = Math.max(0, i - 2)
       const to = Math.min(lines.length, i + MAX_EXCERPT)
-      signals.push({
+      const subject = rule.kind === 'corrupt-jar' ? jarFromAnalyzing(line) : undefined
+      const signal: CrashSignal = {
         kind: rule.kind,
-        severity: rule.severity,
+        severity: recoverable ? 'warning' : rule.severity,
         message: line.trim(),
         line: i + 1,
         excerpt: lines.slice(from, to),
-        hint: rule.hint,
-      })
+        hint: recoverable
+          ? '这是可恢复的：Loader 已禁用该 mixin 继续启动，只影响对应功能。不用为此删模组'
+          : rule.hint,
+        ...(subject === undefined ? {} : { subject }),
+        ...(recoverable ? { recoverable: true } : {}),
+      }
+
+      if (known === undefined) {
+        byKind.set(rule.kind, signals.length)
+        signals.push(signal)
+      } else {
+        signals[known] = signal
+      }
       break
     }
+  }
+
+  /**
+   * 损坏的 jar 会先撞上 `ModResolutionException`（Fabric 的总出口），
+   * 于是同一份日志里既有「缺前置」又有「zip 坏了」。后者是根因，前者只是结果——
+   * 留着两条会让用户按第一条去补依赖（issue #3）。
+   */
+  if (signals.some((s) => s.kind === 'corrupt-jar')) {
+    return signals.filter((s) => s.kind !== 'missing-dependency')
   }
 
   return signals

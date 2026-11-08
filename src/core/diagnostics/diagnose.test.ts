@@ -151,3 +151,39 @@ test('fatal 信号之后游戏仍在推进：降级 inconclusive，措辞不说�
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('可恢复的 mixin 告警：severity 不是 fatal，也不指向任何模组（issue #8）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bp-diag-recoverable-'))
+  try {
+    const modsDir = join(dir, 'mods')
+    mkdirSync(modsDir, { recursive: true })
+    writeFileSync(
+      join(modsDir, 'controlify.jar'),
+      zipSync({
+        'fabric.mod.json': strToU8(JSON.stringify({ id: 'controlify', version: '3.0.0' })),
+        'dev/isxander/controlify/mixins/FooMixin.class': strToU8('x'),
+      }),
+    )
+    const logPath = join(dir, 'x.log')
+    const lines = [
+      '[1] [main/WARN]: org.spongepowered.asm.mixin.transformer.throwables.InvalidMixinException:',
+      '  Found a remappable @Shadow annotation on non-remappable field controlify.mixins.json:FooMixin',
+      '\tat com.demo.Main(Main.java:1)',
+      '[3] [Render thread/INFO]: Backend library: LWJGL version 3.3.3',
+      '[4] [Render thread/INFO]: Sound engine started',
+      '[5] [main/INFO]: Stopping! (Ctrl+C)',
+    ]
+    writeFileSync(logPath, lines.join('\n'))
+
+    const r = await collect(createDiagnose({ logPath, modsDir }))
+    // 人话输出说的「没有致命异常」必须和 JSON 一致
+    assert.notEqual(r.verdict, 'crash')
+    assert.equal(r.primary?.severity, 'warning')
+    assert.equal(r.primary?.recoverable, true)
+    // 可恢复的那条不点名：点名会让用户去删 controlify
+    assert.equal(r.culprits.length, 0)
+    assert.match(r.attributionNotes.join(' '), /可恢复的 mixin/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
