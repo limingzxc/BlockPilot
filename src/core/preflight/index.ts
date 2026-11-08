@@ -11,12 +11,32 @@ import type { ClosureResult } from '../deps/closure.js'
 import { buildRepairPlan } from '../deps/plan.js'
 import type { RepairPlan } from '../deps/plan.js'
 import { checkLocalInstance } from './local.js'
+import { checkAssets } from './assets.js'
 import { scanInstanceDir } from '../instance/scan.js'
 import type { ScannedMod } from '../instance/scan.js'
 import { readPackFile } from './read-pack.js'
 import { checkInstance, checkJava } from './check.js'
+import type { JavaRequirement } from './check.js'
+import { depKey } from '../modmeta/types.js'
 import { verdictOf } from './types.js'
 import type { Finding, PreflightReport } from './types.js'
+
+/**
+ * 从 jar 元数据里收集模组自己声明的 Java 范围。
+ *
+ * 只认 Fabric/Quilt 的 `depends.java`（Forge 的 mods.toml 没有这个字段，
+ * 它用 javafml + loaderVersion 表达类似约束）。没写范围的不算。
+ */
+function javaRequirements(mods: readonly ScannedMod[]): JavaRequirement[] {
+  const out: JavaRequirement[] = []
+  for (const m of mods) {
+    for (const dep of m.meta.dependencies) {
+      if (depKey(dep.modId) !== 'java' || dep.versionRange === undefined) continue
+      out.push({ modId: m.meta.modId, range: dep.versionRange })
+    }
+  }
+  return out
+}
 
 export interface PreflightOptions {
   /** `.mrpack` 文件，或一个实例目录（MultiMC/Prism 实例、裸 .minecraft、任何带 mods/ 的目录） */
@@ -46,6 +66,8 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
     let instance: Instance
     let localMods: ScannedMod[] = []
     let skippedJars: string[] = []
+    let corruptJars: string[] = []
+    let overridesMods = 0
     /** CurseForge 包没有 API key 时，mod 级校验整个跳过 */
     let cfGated = false
 
@@ -57,6 +79,7 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
       instance = scan.instance
       localMods = [...scan.mods]
       skippedJars = [...scan.skipped]
+      corruptJars = [...scan.corrupt]
       yield Op.log('info', 'instance.scanned', {
         dir: opts.target,
         gameVersion: instance.gameVersion,
@@ -72,11 +95,13 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
         // CF 的 files 只有 projectID/fileID，下载与校验都要 API key。
         // 能力声明由 readPackFile 一处给出，消费者不再各自判断格式
         cfGated = !pack.ability.checksMods
+        overridesMods = pack.overridesMods
         yield Op.log('info', pack.kind === 'curseforge' ? 'modpack.curseforge' : 'modpack.parsed', {
           name: instance.name,
           gameVersion: instance.gameVersion,
           loader: instance.loader,
           mods: instance.mods.length,
+          overridesMods,
         })
       } catch (err) {
         yield Op.failed(
@@ -91,27 +116,42 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
     if (signal.aborted) return
 
     const findings: Finding[] = []
+    // overrides 里的 jar 不属于「清单」，但解压后确实会进 mods/。
+    // 不说明的话，用户会拿「mods 271」去对数，然后发现游戏里加载了 304 个（issue #13）
+    if (overridesMods > 0) {
+      findings.push({
+        severity: 'info',
+        code: 'PACK_BUILTIN_MODS',
+        message:
+          `overrides/mods 里还有 ${overridesMods} 个 jar，` +
+          `解压后实例里共 ${instance.mods.length + overridesMods} 个模组`,
+        hint: '这些文件不需要 API key；装完后对实例目录跑 preflight，它们会一起参与校验',
+      })
+    }
     let plan: RepairPlan = EMPTY_PLAN
     let mods = instance.mods.length
     let resolved = 0
     let unresolved = 0
 
     // Java 与在线/离线无关，三条链路都要跑。
+    // 离线模式能读到 jar 里的 `java` 依赖，那份声明比「MC 版本 → Java」的兜底表准（issue #11）。
     if (opts.host !== undefined) {
-      findings.push(...checkJava(instance, opts.host))
+      findings.push(...checkJava(instance, opts.host, isDir ? javaRequirements(localMods) : []))
     }
 
     if (isDir) {
       // ---- 离线模式：只有 jar 内的 modId，没有 projectId ----
       findings.push(
         ...checkLocalInstance(
-          { instance, mods: localMods, skipped: skippedJars },
+          { instance, mods: localMods, skipped: skippedJars, corrupt: corruptJars },
           {
             gameVersion: instance.gameVersion,
             loaderVersion: instance.loader.version,
           },
         ),
       )
+      // 资源包不在 mods 里，但缺了同样起不来——单独查一层（issue #2）
+      findings.push(...checkAssets(opts.target, instance.gameVersion))
       mods = localMods.length + skippedJars.length
       resolved = localMods.length
       unresolved = skippedJars.length

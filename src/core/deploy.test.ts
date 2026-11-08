@@ -17,6 +17,7 @@ import { collect, defineOperation } from './operation.js'
 import { Op } from './events.js'
 import type { OpEvent } from './events.js'
 import { createDeploy } from './deploy.js'
+import type { CurseforgeSource } from '../sources/curseforge.js'
 import type { DeployResult } from './deploy.js'
 import { resolveLayout } from './layout.js'
 import { scanInstanceDir } from './instance/scan.js'
@@ -177,7 +178,7 @@ test('加载器没产出 result：报 LOADER_FAILED', async () => {
   })
 })
 
-test('CurseForge 包：明确拒绝而不是含糊的 BAD_MODPACK', async () => {
+test('CurseForge 包没有 key：降级安装，清单文件进 failed 而不是直接拒绝（issue #13）', async () => {
   await withTemp(async (dir) => {
     const packPath = join(dir, 'cf.zip')
     writeFileSync(
@@ -188,15 +189,34 @@ test('CurseForge 包：明确拒绝而不是含糊的 BAD_MODPACK', async () => 
             manifestType: 'minecraftModpack',
             manifestVersion: 1,
             name: 'CF Pack',
-            minecraft: { version: '1.20.1', modLoaders: [{ id: 'forge-47.3.0', primary: true }] },
-            files: [],
+            // 用 Fabric：Forge 走 installer 会先要求 java，这条用例只验 CF 降级
+            minecraft: {
+              version: '1.20.1',
+              modLoaders: [{ id: 'fabric-0.15.11', primary: true }],
+            },
+            files: [{ projectID: 238222, fileID: 5246076, required: true }],
+            overrides: 'overrides',
           }),
         ),
+        'overrides/mods/bundled.jar': strToU8('x'),
       }),
     )
-    const op = createDeploy({ packPath, layout: resolveLayout(dir, 'test') })
-    const { failed } = await collectEvents(op.run(new AbortController().signal))
-    assert.equal(failed?.code, 'CF_API_REQUIRED')
+    const op = createDeploy({
+      packPath,
+      layout: resolveLayout(dir, 'test'),
+      // 不读环境变量：这条用例要验的是「没 key 时的行为」
+      curseforge: { configured: false } as unknown as CurseforgeSource,
+      deps: { vanilla: () => fakeVanilla(), loader: () => fakeLoader('fabric-loader-0.15.11-1.20.1') },
+    })
+    const { events, result } = await collectEvents(op.run(new AbortController().signal))
+
+    const codes = events.filter((e) => e.type === 'log').map((e) => (e as { code: string }).code)
+    assert.ok(codes.includes('deploy.cf_no_key'), '要说清楚为什么装不全')
+
+    // 装不成的只有清单里的那 1 个，overrides 里的模组照样落地
+    assert.equal(result?.failed.length, 1)
+    assert.match(result?.failed[0]?.error ?? '', /BLOCKPILOT_CF_API_KEY/)
+    assert.equal(result?.overridesMods, 1)
   })
 })
 

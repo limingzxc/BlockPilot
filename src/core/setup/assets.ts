@@ -72,6 +72,58 @@ export function readAssetIndex(path: string): AssetIndex {
   return JSON.parse(readFileSync(path, 'utf8')) as AssetIndex
 }
 
+export interface AssetsProbe {
+  /** index 里去重后的对象数 */
+  readonly total: number
+  readonly sampled: number
+  readonly present: number
+  /** 抽样里缺失的那几个 hash，用于打印证据 */
+  readonly missingSample: readonly string[]
+}
+
+/**
+ * 抽查 assets/objects 是否真的存在。
+ *
+ * 「index json 在」不等于「资源在」：index 是 setup 下的，objects 要单独跑
+ * `blockpilot assets`。只看 json 的闸门等于没有——1.19+ 的原版资源包就是 assets
+ * 本身，零 assets 时标题画面渲染直接抛 NoSuchFileException（issue #2）。
+ *
+ * 抽样而不是全量：3888 个文件逐个 stat 要几百毫秒，而抽查 24 个分布在不同前缀的
+ * 对象已经足以区分「装过」和「完全没装」。
+ */
+export function probeAssetObjects(
+  indexPath: string,
+  objectsDir: string,
+  sampleSize = 24,
+): AssetsProbe | null {
+  if (!existsSync(indexPath)) return null
+  let index: AssetIndex
+  try {
+    index = JSON.parse(readFileSync(indexPath, 'utf8')) as AssetIndex
+  } catch {
+    return null
+  }
+  const hashes = [...new Set(Object.values(index.objects ?? {}).map((o) => o.hash))]
+  if (hashes.length === 0) {
+    return { total: 0, sampled: 0, present: 0, missingSample: [] }
+  }
+
+  const step = Math.max(1, Math.floor(hashes.length / sampleSize))
+  const picked: string[] = []
+  for (let i = 0; i < hashes.length && picked.length < sampleSize; i += step) {
+    const h = hashes[i]
+    if (h !== undefined) picked.push(h)
+  }
+
+  const missingSample: string[] = []
+  let present = 0
+  for (const hash of picked) {
+    if (existsSync(join(objectsDir, hash.slice(0, 2), hash))) present += 1
+    else missingSample.push(hash)
+  }
+  return { total: hashes.length, sampled: picked.length, present, missingSample }
+}
+
 export function createAssetsSetup(opts: AssetsSetupOptions): Operation<AssetsSetupResult> {
   return defineOperation<AssetsSetupResult>('assets-setup', async function* (signal) {
     const version = await fetchVersionJson(opts.versionId, {

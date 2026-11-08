@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 
 import { Op } from '../events.js'
 import type { OpEvent } from '../events.js'
@@ -14,6 +15,8 @@ export interface RunOptions {
   readonly logsDir?: string
   /** 测试用：N 秒后强制结束 */
   readonly autoStopSeconds?: number
+  /** 测试用：把「日志安静多久算死」调短，不用等 20 秒 */
+  readonly heartbeatGraceMs?: number
 }
 
 export interface RunResult {
@@ -24,6 +27,8 @@ export interface RunResult {
   readonly stopped: boolean
   /** 非 0 退出，或者被信号杀死（不含我们主动结束的情况） */
   readonly crashed: boolean
+  /** 进程活着但日志早就断了：游戏中途死掉，进程没退 */
+  readonly diedBeforeStop: boolean
   /** 最后 N 行输出，用于崩溃现场 */
   readonly tail: readonly string[]
   readonly lineCount: number
@@ -32,6 +37,26 @@ export interface RunResult {
 }
 
 const TAIL_SIZE = 40
+
+/**
+ * 「进程还活着」不等于「游戏还活着」。
+ *
+ * 未捕获异常打在渲染线程上时，JVM 不一定退出——尤其在标题画面崩溃时，
+ * 用户看到的是一个卡死的窗口，而 `--stop` 到点我们照样 exit 0（issue #2）。
+ * 判据用日志心跳：最后一行已经安静了很久，且日志以栈帧收尾。
+ */
+const HEARTBEAT_GRACE_MS = 20_000
+
+function endsWithStack(tail: readonly string[]): boolean {
+  for (let i = tail.length - 1; i >= 0; i -= 1) {
+    const line = (tail[i] ?? '').trim()
+    if (line === '') continue
+    if (/^at\s|^Caused by:|^Suppressed:|^\.\.\. \d+ more/.test(line)) return true
+    // 异常头本身也可能就是最后一行（栈被截断时）
+    return /\b(Exception|Error)\b/.test(line)
+  }
+  return false
+}
 
 /** 跨 chunk 拼行：一行可能被切成两段，不能按 chunk 直接切。 */
 function makeSplitter(onLine: (line: string) => void): (chunk: Buffer) => void {
@@ -50,9 +75,37 @@ function looksLikeError(line: string): boolean {
   return /\b(ERROR|FATAL|Exception|Caused by)\b/.test(line)
 }
 
+/**
+ * ENOENT 有两种完全不同的原因，混在一句话里就会把人带偏：
+ * 路径不存在（去装 Java），或者路径在但不可执行（权限/架构）。
+ */
+function spawnErrorMessage(java: string, err: Error & { code?: string }): string {
+  if (err.code !== 'ENOENT') return err.message
+  const isPath = java.includes('/') || java.includes('\\')
+  if (!isPath) return `PATH 里找不到可执行的 java（${java}）。用 --java 指定，或跑 blockpilot java install`
+  return existsSync(java)
+    ? `${java} 存在但无法执行。检查文件权限与架构（32/64 位）`
+    : `找不到 Java：${java}。跑 blockpilot java install <major>，或用 --java 指定`
+}
+
 export function createLauncher(opts: RunOptions): Operation<RunResult> {
   return defineOperation<RunResult>('launch', async function* (signal) {
     const { plan } = opts
+
+    /**
+     * 先确认 cwd 在，否则 spawn 报的是 `ENOENT: java.exe`——
+     * 用户会去查 Java，而真正的问题是 `--root` 指错了地方（issue #9）。
+     * 这里不替用户 mkdir：悄悄建一个空目录会把「路径写错」变成「模组全没了」。
+     */
+    if (!existsSync(plan.cwd)) {
+      yield Op.failed(
+        'INSTANCE_DIR_MISSING',
+        `实例目录不存在：${plan.cwd}`,
+        '先跑 blockpilot setup <版本 id> --root <root> 生成实例，或检查 --root/--instance 是否指对了',
+      )
+      return
+    }
+
     yield Op.log('info', 'launch.spawn', {
       java: plan.java,
       mainClass: plan.mainClass,
@@ -76,9 +129,12 @@ export function createLauncher(opts: RunOptions): Operation<RunResult> {
     }
     const tail: string[] = []
     let lineCount = 0
+    /** 最后一行日志的时间。用它判断「进程活着但游戏已经死了」 */
+    let lastLineAt = Date.now()
 
     const onLine = (stream: 'stdout' | 'stderr') => (line: string) => {
       lineCount += 1
+      lastLineAt = Date.now()
       tail.push(line)
       if (tail.length > TAIL_SIZE) tail.shift()
       sink?.write(line)
@@ -109,7 +165,11 @@ export function createLauncher(opts: RunOptions): Operation<RunResult> {
 
     const exited = new Promise<{ code: number | null; sig: NodeJS.Signals | null }>((resolve) => {
       child.on('error', (err) => {
-        queue.push(Op.log('error', 'launch.spawn_failed', { message: err.message }))
+        queue.push(
+          Op.log('error', 'launch.spawn_failed', {
+            message: spawnErrorMessage(plan.java, err as Error & { code?: string }),
+          }),
+        )
         resolve({ code: null, sig: null })
       })
       child.on('exit', (code, sig) => resolve({ code, sig }))
@@ -126,9 +186,20 @@ export function createLauncher(opts: RunOptions): Operation<RunResult> {
     const { code, sig } = await finish
 
     const durationMs = Date.now() - started
-    const crashed = !stopped && (code !== 0 || sig !== null)
+    // 主动结束不再自动等于「跑完了」：日志早早停在一条栈帧上，说明游戏先死了，
+    // 后面那几十秒只是进程没退（issue #2）
+    const diedBeforeStop =
+      stopped &&
+      Date.now() - lastLineAt >= (opts.heartbeatGraceMs ?? HEARTBEAT_GRACE_MS) &&
+      endsWithStack(tail)
+    const crashed = diedBeforeStop || (!stopped && (code !== 0 || sig !== null))
 
-    if (crashed) {
+    if (diedBeforeStop) {
+      yield Op.log('error', 'launch.died_before_stop', {
+        idleMs: Date.now() - lastLineAt,
+        durationMs,
+      })
+    } else if (crashed) {
       yield Op.log('error', 'launch.exited_abnormally', { code, signal: sig, durationMs })
     } else {
       yield Op.log('info', 'launch.exited', { code, durationMs })
@@ -140,8 +211,10 @@ export function createLauncher(opts: RunOptions): Operation<RunResult> {
       exitCode: code,
       signal: sig,
       durationMs,
-      stopped,
+      // 「到点结束」只在真的跑到时限时才算：死在中途的要报成崩溃
+      stopped: stopped && !diedBeforeStop,
       crashed,
+      diedBeforeStop,
       tail,
       lineCount,
       ...(sink === null ? {} : { logPath: sink.path }),

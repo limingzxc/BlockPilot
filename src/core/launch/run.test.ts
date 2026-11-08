@@ -26,6 +26,7 @@ function planWith(script: string, cwd: string): LaunchPlan {
     cwd,
     classpath: [],
     missing: [],
+    assets: null,
     commandLine: 'fake',
   }
 }
@@ -90,5 +91,60 @@ test('autoStopSeconds 到点杀进程：stopped=true、crashed=false 且发出 a
     assert.ok(events.includes('launch.autostop'))
     assert.equal(result?.stopped, true)
     assert.equal(result?.crashed, false)
+  })
+})
+
+test('实例目录不存在：报 INSTANCE_DIR_MISSING，不把它说成 java 的问题（issue #9）', async () => {
+  await withTemp(async (dir) => {
+    const plan = planWith('console.log("never runs")', join(dir, 'no-such-instance'))
+    await assert.rejects(
+      () => collect(createLauncher({ plan })),
+      (err: Error & { code?: string }) => {
+        assert.equal(err.code, 'INSTANCE_DIR_MISSING')
+        assert.match(err.message, /实例目录不存在/)
+        return true
+      },
+    )
+  })
+})
+
+test('进程活着但日志停在栈帧上：--stop 到点也要报崩溃（issue #2）', async () => {
+  await withTemp(async (dir) => {
+    // 游戏死在第 12 秒、进程挂到时限：日志以栈帧收尾，之后一片安静
+    const script = [
+      'console.log("[Render thread/ERROR]: Couldn\'t set icon")',
+      'console.log("java.nio.file.NoSuchFileException: assets/objects/5f/5ff0")',
+      'console.log("\\tat net.minecraft.client.main.Main.main(SourceFile:256)")',
+      'setTimeout(() => {}, 5000)',
+    ].join(';')
+    const r = await collect(
+      createLauncher({
+        plan: planWith(script, dir),
+        autoStopSeconds: 1,
+        heartbeatGraceMs: 200,
+      }),
+    )
+    assert.equal(r.diedBeforeStop, true)
+    assert.equal(r.crashed, true)
+    // 「到点结束」会被读成「跑完了」，这种情况不能报成正常
+    assert.equal(r.stopped, false)
+  })
+})
+
+test('日志安静但结尾是普通 INFO：仍算正常到点结束', async () => {
+  await withTemp(async (dir) => {
+    const script = [
+      'console.log("[Render thread/INFO]: Sound engine started")',
+      'setTimeout(() => {}, 5000)',
+    ].join(';')
+    const r = await collect(
+      createLauncher({
+        plan: planWith(script, dir),
+        autoStopSeconds: 1,
+        heartbeatGraceMs: 200,
+      }),
+    )
+    assert.equal(r.diedBeforeStop, false)
+    assert.equal(r.stopped, true)
   })
 })

@@ -11,6 +11,7 @@ import type { Layout } from './layout.js'
 import type { LoaderKind } from './instance.js'
 import { readPackFile } from './preflight/read-pack.js'
 import { checkLocalInstance } from './preflight/local.js'
+import { checkAssets } from './preflight/assets.js'
 import { verdictOf } from './preflight/types.js'
 import type { Finding, Verdict } from './preflight/types.js'
 import { scanInstanceDir } from './instance/scan.js'
@@ -117,6 +118,8 @@ export interface DeployResult {
   readonly modsDownloaded: number
   readonly modsSkipped: number
   readonly overrides: number
+  /** overrides 里直接塞的 jar 数：这些不受 API key 限制，装完就在 mods/ 里 */
+  readonly overridesMods: number
   readonly failed: readonly { readonly fileName: string; readonly error: string }[]
   /** 部署后的自检结果。非 ok 就说明装完也起不来 */
   readonly check: {
@@ -144,6 +147,8 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
     // 有 key 就走完整安装：换 URL → 与 mrpack 相同的下载 / 解压 / 检查流程。
     const index = pack.mrpackIndex
     let cfFiles: ReadonlyMap<number, CfFileInfo> | undefined
+    /** 没有 API key：清单文件全部落到「需手动下载」，其余步骤照常 */
+    let cfNoKey = false
     if (index === undefined) {
       const manifest = pack.curseforgeManifest
       if (manifest === undefined) {
@@ -152,29 +157,33 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
       }
       const cf = opts.curseforge ?? new CurseforgeSource()
       if (!cf.configured) {
-        yield Op.failed(
-          'CF_API_REQUIRED',
-          '这是 CurseForge 整合包，下载它的文件需要 CurseForge API key',
-          '文件清单只有 projectID/fileID，要拿到 URL 与校验值必须调 API；' +
-            '设置环境变量 BLOCKPILOT_CF_API_KEY（console.curseforge.com 免费申请）后重试',
-        )
-        return
-      }
-      try {
-        cfFiles = await cf.getFiles(
-          manifest.files.map((f) => f.fileID),
-          signal,
-        )
-      } catch (err) {
-        if (err instanceof CurseforgeError) {
-          yield Op.failed(err.code, err.message, '检查 BLOCKPILOT_CF_API_KEY 是否有效、是否还有配额')
-          return
+        /**
+         * 没有 key 时**降级而不是拒绝**：加载器与 overrides 照样装，
+         * 清单里的文件单独列出来让用户自己想办法（issue #13）。
+         *
+         * 直接 exit 1 的代价很具体——连 overrides 里那几十个 jar、以及
+         * Forge/NeoForge 的安装都做不了，用户只能手工拼。
+         */
+        cfNoKey = true
+        cfFiles = new Map()
+        yield Op.log('warn', 'deploy.cf_no_key', { files: manifest.files.length })
+      } else {
+        try {
+          cfFiles = await cf.getFiles(
+            manifest.files.map((f) => f.fileID),
+            signal,
+          )
+        } catch (err) {
+          if (err instanceof CurseforgeError) {
+            yield Op.failed(err.code, err.message, '检查 BLOCKPILOT_CF_API_KEY 是否有效、是否还有配额')
+            return
+          }
+          if (err instanceof NetworkError) {
+            yield Op.failed('NETWORK_ERROR', err.message, '检查网络；国内可加 --china 走镜像，或用 --proxy 指定代理')
+            return
+          }
+          throw err
         }
-        if (err instanceof NetworkError) {
-          yield Op.failed('NETWORK_ERROR', err.message, '检查网络；国内可加 --china 走镜像，或用 --proxy 指定代理')
-          return
-        }
-        throw err
       }
     }
 
@@ -281,7 +290,7 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
             tasks: buildPackTasks(index, opts.layout),
             unresolved: [] as { fileName: string; error: string }[],
           }
-        : buildCurseforgeTasks(pack.curseforgeManifest!, cfFiles!, opts.layout)
+        : buildCurseforgeTasks(pack.curseforgeManifest!, cfFiles!, opts.layout, { noKey: cfNoKey })
     const tasks = built.tasks
     const modsPrefix = `${join(opts.layout.gameDir, 'mods')}${sep}`
     const mods = tasks.filter((t) => t.destPath.startsWith(modsPrefix)).length
@@ -300,8 +309,11 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
     // ---- 4. overrides ----
     yield Op.log('info', 'deploy.step', { step: 'overrides' })
     let overrides = 0
+    let overridesMods = 0
     try {
-      overrides = extractOverrides(opts.packPath, opts.layout.gameDir)
+      const extracted = extractOverrides(opts.packPath, opts.layout.gameDir)
+      overrides = extracted.files
+      overridesMods = extracted.mods
     } catch (err) {
       yield Op.log('warn', 'deploy.overrides_failed', { message: String(err) })
     }
@@ -320,10 +332,14 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
       fallbackGameVersion: instance.gameVersion,
       fallbackLoader: instance.loader,
     })
-    const findings = checkLocalInstance(scan, {
-      gameVersion: instance.gameVersion,
-      loaderVersion: instance.loader.version,
-    })
+    const findings = [
+      ...checkLocalInstance(scan, {
+        gameVersion: instance.gameVersion,
+        loaderVersion: instance.loader.version,
+      }),
+      // 资源不装在 mods 里，但缺了同样起不来：装完自检也要看这一层
+      ...checkAssets(opts.layout.gameDir, instance.gameVersion, opts.layout.assets),
+    ]
     const verdict = verdictOf(findings)
     yield Op.log('info', 'deploy.check', {
       verdict,
@@ -342,6 +358,7 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
       modsDownloaded: downloaded,
       modsSkipped: skipped,
       overrides,
+      overridesMods,
       failed,
       check: { verdict, findings },
     })

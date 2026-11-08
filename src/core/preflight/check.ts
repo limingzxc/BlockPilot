@@ -1,6 +1,6 @@
 import type { HostProfile, Instance, LoaderKind } from '../instance.js'
 import type { VersionInfo } from '../sources.js'
-import { compareVersions } from '../semver.js'
+import { compareVersions, satisfiesRange } from '../semver.js'
 import { requiredJavaMajor } from '../java/types.js'
 import type { Finding } from './types.js'
 
@@ -62,6 +62,25 @@ function judgeGameVersion(target: string, declared: readonly string[]): VersionF
 }
 
 /**
+ * 模组自己声明的 Java 范围（`fabric.mod.json` 的 `depends.java`）。
+ *
+ * 这张表比「MC 版本 → Java」的兜底表可靠：BTWCE 在 MC 1.6.4 上要求 `>=17 <=21`，
+ * 兜底表只会看到 1.6.4 → 8，于是建议用户装 Java 8——照做这个包就废了（issue #11）。
+ */
+export interface JavaRequirement {
+  readonly modId: string
+  readonly range: string
+}
+
+/** 从范围里挑一个「该装的大版本」：满足条件的最小整数。 */
+function suggestMajorFor(range: string): number | undefined {
+  for (let major = 8; major <= 30; major += 1) {
+    if (satisfiesRange(String(major), range) === 'satisfied') return major
+  }
+  return undefined
+}
+
+/**
  * Java 可用性检查。独立于在线/离线模式——两种链路都要跑。
  *
  * 判定分三档：
@@ -69,9 +88,37 @@ function judgeGameVersion(target: string, declared: readonly string[]): VersionF
  * - 没有精确版本但有更高版本：warning。Java 向后兼容，多数情况能跑，
  *   但老 Forge 常常栽在 Java 版本差异上，所以不判 blocker
  * - 一个都够不上：blocker
+ *
+ * `requirements` 非空时**不再用兜底表下结论**：模组说了算。
  */
-export function checkJava(instance: Instance, host: HostProfile): readonly Finding[] {
+export function checkJava(
+  instance: Instance,
+  host: HostProfile,
+  requirements: readonly JavaRequirement[] = [],
+): readonly Finding[] {
   const findings: Finding[] = []
+
+  if (requirements.length > 0) {
+    const hostText = host.javaMajors.join(', ') || '无'
+    for (const req of requirements) {
+      const ok = host.javaMajors.some((j) => satisfiesRange(String(j), req.range) !== 'violated')
+      if (ok) continue
+      const suggest = suggestMajorFor(req.range)
+      findings.push({
+        severity: 'blocker',
+        code: 'JAVA_INCOMPATIBLE_WITH_MOD',
+        message: `${req.modId} 要求 Java ${req.range}，本机检测到 ${hostText}`,
+        hint:
+          suggest === undefined
+            ? '这个范围里没有可安装的大版本，核对 mod 说明；也可能是它自己写错了'
+            : `装 Java ${suggest}：blockpilot java install ${suggest}`,
+      })
+    }
+    // 有模组明确声明时，不再叠加「1.12 只能用 Java 8」这类推断——
+    // 两张表冲突时模组自己说的算，否则用户会收到互相矛盾的两条建议
+    return findings
+  }
+
   const need = requiredJavaMajor(instance.gameVersion)
   const exact = host.javaMajors.includes(need)
   const newer = host.javaMajors.filter((j) => j > need)

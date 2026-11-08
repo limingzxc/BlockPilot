@@ -1,7 +1,10 @@
 import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 
 import type { AuthAccount } from '../auth/types.js'
 import type { Layout } from '../layout.js'
+import { probeAssetObjects } from '../setup/assets.js'
+import type { AssetsProbe } from '../setup/assets.js'
 import type { VersionJson } from '../version/types.js'
 import type { LaunchEnv } from './env.js'
 import {
@@ -46,6 +49,11 @@ export interface LaunchPlan {
   readonly classpath: readonly string[]
   /** 命令里引用到、但磁盘上不存在的文件。非空就说明还没装好 */
   readonly missing: readonly string[]
+  /**
+   * assets 抽查结果。`null` 表示没有 index（老版本或不走 assets 的场景）。
+   * `present < sampled` 说明资源没装全——1.19+ 会崩在标题画面。
+   */
+  readonly assets: AssetsProbe | null
   /** 拼好的完整命令行，仅供展示 */
   readonly commandLine: string
 }
@@ -140,6 +148,16 @@ export function buildLaunchPlan(opts: LaunchPlanOptions): LaunchPlan {
   }
   const missingList = [...missing]
 
+  // 「index 在」不等于「资源在」：objects 要单独跑 blockpilot assets。
+  // 只验 json 的话，零资源的实例会一路启动到标题画面才崩（issue #2）。
+  const assets =
+    version.assetIndex === undefined
+      ? null
+      : probeAssetObjects(
+          layout.assetIndex(version.assetIndex.id),
+          join(assetsDir, 'objects'),
+        )
+
   const commandLine = [opts.java, ...args.map(quote)].join(' ')
 
   return {
@@ -152,6 +170,7 @@ export function buildLaunchPlan(opts: LaunchPlanOptions): LaunchPlan {
     cwd: gameDir,
     classpath: entries,
     missing: missingList,
+    assets,
     commandLine,
   }
 }

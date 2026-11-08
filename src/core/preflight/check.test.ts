@@ -216,3 +216,30 @@ test('Java：精确匹配且无更低版本 → 无 finding', () => {
   })
   assert.equal(findings.length, 0)
 })
+
+test('Java：mod 声明 java >=17 <=21 时，不再建议装 Java 8（issue #11）', () => {
+  // BTWCE：MC 1.6.4 + Legacy Fabric，fabric.mod.json 写着 "java": ">=17 <=21"
+  const findings = checkJava(
+    instance({ gameVersion: '1.6.4' }),
+    { os: 'windows', totalMemoryMiB: 8192, javaMajors: [8] },
+    [{ modId: 'btwce', range: '>=17 <=21' }],
+  )
+  // 兜底表会算成 1.6.4 → Java 8，本机正好有 8，于是「一切正常」——但 mod 不认
+  const bad = findings.find((f) => f.code === 'JAVA_INCOMPATIBLE_WITH_MOD')
+  assert.ok(bad, '要报 JAVA_INCOMPATIBLE_WITH_MOD')
+  assert.equal(bad.severity, 'blocker')
+  assert.match(bad.message, /btwce 要求 Java >=17 <=21/)
+  assert.match(bad.hint ?? '', /java install 17/)
+  assert.doesNotMatch(bad.hint ?? '', /java install 8\b/)
+  // 不能再出现与 mod 声明矛盾的建议
+  assert.equal(findings.some((f) => f.code === 'JAVA_TOO_NEW' || f.code === 'JAVA_NEWER_ONLY'), false)
+})
+
+test('Java：宿主已满足 mod 声明的范围就不报', () => {
+  const findings = checkJava(
+    instance({ gameVersion: '1.6.4' }),
+    { os: 'windows', totalMemoryMiB: 8192, javaMajors: [17, 21] },
+    [{ modId: 'btwce', range: '>=17 <=21' }],
+  )
+  assert.equal(findings.length, 0)
+})

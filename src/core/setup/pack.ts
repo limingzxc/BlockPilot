@@ -54,6 +54,7 @@ export function buildCurseforgeTasks(
   manifest: CurseforgeManifest,
   files: ReadonlyMap<number, CfFileInfo>,
   layout: Layout,
+  opts: { readonly noKey?: boolean } = {},
 ): CurseforgeTaskResult {
   const tasks: DownloadTask[] = []
   const unresolved: { fileName: string; error: string }[] = []
@@ -66,7 +67,11 @@ export function buildCurseforgeTasks(
     if (info === undefined) {
       unresolved.push({
         fileName: fallback,
-        error: 'CurseForge 没有返回这个文件（可能已下架，或 key 没有该文件的权限）',
+        // 没有 key 时每个文件都「查不到」。用同一句「可能已下架」会把用户
+        // 引去网页逐个核对 271 个文件，而不是去配 key（issue #13）
+        error: opts.noKey === true
+          ? '没有 BLOCKPILOT_CF_API_KEY，无法换出下载地址；到 console.curseforge.com 免费申请后重试'
+          : 'CurseForge 没有返回这个文件（可能已下架，或 key 没有该文件的权限）',
       })
       continue
     }
@@ -106,13 +111,21 @@ export function buildCurseforgeTasks(
  * 这两个目录里放的是不在 CDN 上的文件：配置文件、资源包、脚本。
  * `client-overrides` 优先级更高，同名文件覆盖 `overrides`。
  */
-export function extractOverrides(zipPath: string, gameDir: string): number {
+export interface OverridesResult {
+  /** 落盘的文件总数 */
+  readonly files: number
+  /** 其中 mods/*.jar 的个数 */
+  readonly mods: number
+}
+
+export function extractOverrides(zipPath: string, gameDir: string): OverridesResult {
   const raw = readFileSync(zipPath)
   const entries = unzipSync(new Uint8Array(raw), {
     filter: (f) => f.name.startsWith('overrides/') || f.name.startsWith('client-overrides/'),
   })
 
   let count = 0
+  let mods = 0
   // 先写 overrides，再写 client-overrides，后者自然覆盖前者
   const ordered = Object.entries(entries).sort(([a], [b]) => {
     const aClient = a.startsWith('client-overrides/') ? 1 : 0
@@ -129,6 +142,33 @@ export function extractOverrides(zipPath: string, gameDir: string): number {
     mkdirSync(dirname(out), { recursive: true })
     writeFileSync(out, data)
     count += 1
+    if (rel.startsWith('mods/') && rel.toLowerCase().endsWith('.jar')) mods += 1
   }
-  return count
+  return { files: count, mods }
+}
+
+/**
+ * 只数 overrides 里的 jar，不落盘、不解压。
+ *
+ * 打包者常把不允许第三方分发的模组直接塞进 overrides/mods——这些文件
+ * 不需要 API key 就能校验，但以前完全不计入统计，于是「preflight 说 271 个模组」
+ * 和日志里的 `Loading 304 mods` 对不上（issue #13）。
+ */
+export function countOverridesMods(zipPath: string): number {
+  let mods = 0
+  try {
+    unzipSync(new Uint8Array(readFileSync(zipPath)), {
+      filter: (f) => {
+        if (f.name.endsWith('/')) return false
+        if (!f.name.startsWith('overrides/') && !f.name.startsWith('client-overrides/')) return false
+        const rel = f.name.replace(/^client-overrides\//, '').replace(/^overrides\//, '')
+        if (rel.startsWith('mods/') && rel.toLowerCase().endsWith('.jar')) mods += 1
+        // 一律返回 false：只要文件名，不需要解压任何内容
+        return false
+      },
+    })
+  } catch {
+    return 0
+  }
+  return mods
 }

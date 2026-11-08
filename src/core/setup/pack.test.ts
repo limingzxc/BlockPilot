@@ -7,7 +7,12 @@ import { strToU8, zipSync } from 'fflate'
 
 import { resolveLayout } from '../layout.js'
 import type { MrpackIndex } from '../preflight/mrpack.js'
-import { buildCurseforgeTasks, buildPackTasks, extractOverrides } from './pack.js'
+import {
+  buildCurseforgeTasks,
+  buildPackTasks,
+  countOverridesMods,
+  extractOverrides,
+} from './pack.js'
 import type { CurseforgeManifest } from '../preflight/curseforge.js'
 import type { CfFileInfo } from '../../sources/curseforge.js'
 
@@ -81,8 +86,9 @@ test('overrides 与 client-overrides 都解压，后者覆盖前者', () => {
   const gameDir = join(dir, 'game')
   const count = extractOverrides(packPath, gameDir)
 
-  // count 是写入次数：config.toml 被写两次（overrides 一次、client-overrides 覆盖一次）
-  assert.equal(count, 3)
+  // files 是写入次数：config.toml 被写两次（overrides 一次、client-overrides 覆盖一次）
+  assert.equal(count.files, 3)
+  assert.equal(count.mods, 0)
   assert.equal(readFileSync(join(gameDir, 'config.toml'), 'utf8'), 'from-client-overrides')
   assert.equal(readFileSync(join(gameDir, 'only.toml'), 'utf8'), 'only')
 })
@@ -160,4 +166,41 @@ test('CF 包：同名文件不互相覆盖', () => {
   const { tasks } = buildCurseforgeTasks(manifest, files, layout)
   assert.equal(tasks.length, 2)
   assert.notEqual(tasks[0]?.destPath, tasks[1]?.destPath)
+})
+
+test('overrides/mods 里的 jar 单独计数（issue #13）', () => {
+  const zipPath = join(dir, 'overrides-count.zip')
+  writeFileSync(
+    zipPath,
+    zipSync({
+      'manifest.json': strToU8('{}'),
+      'overrides/mods/aaa.jar': strToU8('x'),
+      'overrides/mods/bbb.JAR': strToU8('x'),
+      'overrides/mods/readme.txt': strToU8('x'),
+      'overrides/config/x.toml': strToU8('x'),
+      'client-overrides/mods/ccc.jar': strToU8('x'),
+      'other/mods/ignored.jar': strToU8('x'),
+    }),
+  )
+  assert.equal(countOverridesMods(zipPath), 3)
+
+  const layout = resolveLayout(join(dir, 'game-overrides'), 'default')
+  const extracted = extractOverrides(zipPath, layout.gameDir)
+  assert.equal(extracted.mods, 3)
+  // overrides + client-overrides 一共 5 个文件（manifest 与 other/ 不算）
+  assert.equal(extracted.files, 5)
+})
+
+test('没有 key 时 buildCurseforgeTasks 的失败原因直指配置，不是「可能已下架」', () => {
+  const manifest: CurseforgeManifest = {
+    manifestType: 'minecraftModpack',
+    minecraft: { version: '1.20.1', modLoaders: [{ id: 'forge-47.3.22', primary: true }] },
+    files: [{ projectID: 238222, fileID: 5246076, required: true }],
+  }
+  const layout = resolveLayout(join(dir, 'game-nokey'), 'default')
+  const built = buildCurseforgeTasks(manifest, new Map(), layout, { noKey: true })
+  assert.equal(built.tasks.length, 0)
+  assert.equal(built.unresolved.length, 1)
+  assert.match(built.unresolved[0]?.error ?? '', /BLOCKPILOT_CF_API_KEY/)
+  assert.doesNotMatch(built.unresolved[0]?.error ?? '', /可能已下架/)
 })

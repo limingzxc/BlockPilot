@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { after, test } from 'node:test'
 
 import { resolveLayout } from '../layout.js'
-import { buildAssetTasks, readAssetIndex } from './assets.js'
+import { buildAssetTasks, probeAssetObjects, readAssetIndex } from './assets.js'
 import type { AssetIndex } from './assets.js'
 
 const root = mkdtempSync(join(tmpdir(), 'bp-assets-'))
@@ -67,4 +67,41 @@ test('readAssetIndex 能读真实写出的文件', () => {
   writeFileSync(layout.assetIndex('9'), JSON.stringify(index))
   const parsed = readAssetIndex(layout.assetIndex('9'))
   assert.equal(Object.keys(parsed.objects).length, 3)
+})
+
+test('probeAssetObjects：index 在但 objects 空 → 抽查全缺', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bp-probe-'))
+  try {
+    const layout = resolveLayout(dir, 'default')
+    mkdirSync(join(layout.assets, 'indexes'), { recursive: true })
+    writeFileSync(
+      layout.assetIndex('1.21.1'),
+      JSON.stringify({ objects: { 'a/b.ogg': { hash: HASH_A, size: 1 } } }),
+    )
+    const probe = probeAssetObjects(
+      layout.assetIndex('1.21.1'),
+      join(layout.assets, 'objects'),
+    )
+    assert.ok(probe)
+    assert.equal(probe.total, 1)
+    assert.equal(probe.present, 0)
+    assert.deepEqual(probe.missingSample, [HASH_A])
+
+    // 放上文件之后就通过
+    mkdirSync(join(layout.assets, 'objects', HASH_A.slice(0, 2)), { recursive: true })
+    writeFileSync(join(layout.assets, 'objects', HASH_A.slice(0, 2), HASH_A), 'x')
+    const after = probeAssetObjects(layout.assetIndex('1.21.1'), join(layout.assets, 'objects'))
+    assert.equal(after?.present, 1)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('probeAssetObjects：index 不存在返回 null（不误报）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bp-probe-null-'))
+  try {
+    assert.equal(probeAssetObjects(join(dir, 'nope.json'), join(dir, 'objects')), null)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

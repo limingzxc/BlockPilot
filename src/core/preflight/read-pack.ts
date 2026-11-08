@@ -15,6 +15,7 @@ import { mrpackToInstance, readMrpackIndex } from './mrpack.js'
 import type { MrpackIndex } from './mrpack.js'
 import { readCurseforgePack } from './curseforge.js'
 import type { CurseforgeManifest } from './curseforge.js'
+import { countOverridesMods } from '../setup/pack.js'
 
 export type PackFileKind = 'mrpack' | 'curseforge'
 
@@ -33,6 +34,11 @@ export interface PackFileRead {
   readonly mrpackIndex?: MrpackIndex
   /** CurseForge 才有：deploy 要拿它的 files 去换下载地址 */
   readonly curseforgeManifest?: CurseforgeManifest
+  /**
+   * overrides/mods 里的 jar 数。它们不需要 API key、解压后直接进 mods/，
+   * 但不算在清单里——不单独报出来，「271 个模组」和日志里的「Loading 304 mods」对不上。
+   */
+  readonly overridesMods: number
 }
 
 /**
@@ -51,6 +57,7 @@ export function readPackFile(path: string): PackFileRead {
       instance,
       ability: { givesDownloadUrls: true, checksMods: true },
       mrpackIndex: index,
+      overridesMods: countOverridesMods(path),
     }
   } catch (err) {
     mrpackError = err
@@ -63,6 +70,7 @@ export function readPackFile(path: string): PackFileRead {
       instance: pack.instance,
       ability: { givesDownloadUrls: false, checksMods: false },
       curseforgeManifest: pack.manifest,
+      overridesMods: countOverridesMods(path),
     }
   } catch {
     throw new Error(
