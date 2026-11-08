@@ -99,6 +99,19 @@ export function buildLaunchPlan(opts: LaunchPlanOptions): LaunchPlan {
     assets_index_name: version.assetIndex?.id ?? version.assets,
     auth_uuid: account?.uuid ?? '00000000000000000000000000000000',
     auth_access_token: account?.accessToken ?? '0',
+    /**
+     * 1.6.x / 1.7.x 的 `minecraftArguments` 用 `${auth_session}`，格式是
+     * `token:<accessToken>:<uuid>`。只替换现代写法会让它原样留在命令行里，
+     * 游戏里能看到 `(Session ID is ${auth_session})`（issue #10）。
+     */
+    auth_session: `token:${account?.accessToken ?? '0'}:${
+      account?.uuid ?? '00000000000000000000000000000000'
+    }`,
+    /**
+     * 老版本用 `${game_assets}` 指向「散装」资源目录（sound/ lang/ 直接在里面）。
+     * 1.6.x 不看 assets index，只按这个路径找文件；目录空着只是没声音，不会崩。
+     */
+    game_assets: join(assetsDir, 'virtual', 'legacy'),
     // 1.18+ 的 game args 会引用这两个；离线模式给占位值，
     // 留空会让它们变成两个空参数，游戏解析时容易出错
     clientid: '0',

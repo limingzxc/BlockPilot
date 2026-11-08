@@ -9,14 +9,27 @@ const FABRIC_META = 'https://meta.fabricmc.net/v2'
  * `--china` 此前只作用于文件下载，元数据仍直连——结果是「加了镜像也装不上 Fabric」。
  */
 const FABRIC_META_MIRROR = 'https://bmclapi2.bangbang93.com/fabric-meta/v2'
+/**
+ * Legacy Fabric —— 1.6.4 / 1.7.10 / 1.12.2 这些「官方 Fabric 不支持」的版本。
+ *
+ * 结构与 fabricmc 完全一致（`/v2/versions/loader/<mc>`、`profile/json` 同格式），
+ * 所以只换 base。maven 是 `maven.legacyfabric.net`，写在 profile 的 `url` 字段里。
+ *
+ * 官方 meta 对不支持的版本返回 **400 + 空数组**，以前被当成普通失败，
+ * 用户只看到 `unexpected error: ... HTTP 400`（issue #10）。
+ */
+const FABRIC_META_LEGACY = 'https://meta.legacyfabric.net/v2'
 const TIMEOUT_MS = 20_000
 
 interface MetaOptions {
   /** true 时元数据走 BMCLAPI */
   readonly mirror?: boolean
+  /** Legacy Fabric（1.6.x / 1.7.10 / 1.12.2）。BMCLAPI 的镜像没有它的元数据 */
+  readonly legacy?: boolean
 }
 
 function metaBase(opts: MetaOptions = {}): string {
+  if (opts.legacy === true) return FABRIC_META_LEGACY
   return opts.mirror === true ? FABRIC_META_MIRROR : FABRIC_META
 }
 
@@ -32,6 +45,8 @@ export interface FabricProfile {
   readonly libraries: readonly {
     readonly name: string
     readonly url?: string
+    /** Legacy Fabric 的老式原生库声明：{ windows: 'natives-windows' } */
+    readonly natives?: Readonly<Record<string, string>>
     readonly downloads?: {
       readonly artifact?: { readonly path: string; readonly url: string; readonly sha1: string; readonly size: number }
     }
@@ -52,6 +67,36 @@ export async function listLoaders(
     `${metaBase(opts)}/versions/loader/${gameVersion}`,
     signal,
   )
+}
+
+export type FabricFlavor = 'official' | 'legacy'
+
+/**
+ * 这个 MC 版本该用哪套 Fabric。
+ *
+ * 官方 meta 对不支持的版本（1.6.4 / 1.7.10 / 1.12.2）返回 **400 + 空数组**，
+ * 以前直接抛成 `unexpected error`。先探官方、再探 Legacy，
+ * 两套都没有才算真的不支持。
+ */
+export async function detectFabricFlavor(
+  gameVersion: string,
+  signal?: AbortSignal,
+  opts: MetaOptions = {},
+): Promise<FabricFlavor | null> {
+  for (const flavor of ['official', 'legacy'] as const) {
+    try {
+      const list = await listLoaders(gameVersion, signal, {
+        ...opts,
+        legacy: flavor === 'legacy',
+        // Legacy 的元数据只有官方站点有，BMCLAPI 镜像不覆盖
+        mirror: flavor === 'legacy' ? false : opts.mirror,
+      })
+      if (list.length > 0) return flavor
+    } catch {
+      // 400 与网络失败都先落到这里：换下一套再试
+    }
+  }
+  return null
 }
 
 /** 不指定版本时取最新的 stable。全都不稳定就取第一个。 */

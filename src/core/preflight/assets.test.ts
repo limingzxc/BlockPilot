@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { checkAssets } from './assets.js'
+import { assetsRequiredToBoot, checkAssets } from './assets.js'
 
 const HASH = 'cc'.repeat(20)
 
@@ -90,6 +90,35 @@ test('提示里给的是 MC 版本，不是 asset index id（1.20.1 的 index �
     assert.doesNotMatch(f.hint ?? '', /assets 5 /)
     // 但消息里仍要说清用的是哪份 index，方便核对
     assert.match(f.message, /index 5/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('assets 是否致命按版本分：1.19+ 必崩，1.12 及更早只是没声音', () => {
+  assert.equal(assetsRequiredToBoot('1.21.1'), true)
+  assert.equal(assetsRequiredToBoot('26.2'), true, '新命名一律按新版本处理')
+  assert.equal(assetsRequiredToBoot('1.12.2'), false)
+  assert.equal(assetsRequiredToBoot('1.6.4'), false)
+  assert.equal(assetsRequiredToBoot('unknown'), false, '版本未知时不做断言')
+})
+
+test('1.6.4 零 assets：只报 warning，不给「会崩」的建议', () => {
+  const root = mkdtempSync(join(tmpdir(), 'bp-assets-legacy-'))
+  try {
+    const instanceDir = join(root, 'instances', 'btw')
+    mkdirSync(instanceDir, { recursive: true })
+    mkdirSync(join(root, 'assets', 'indexes'), { recursive: true })
+    writeFileSync(
+      join(root, 'assets', 'indexes', 'legacy.json'),
+      JSON.stringify({ objects: { 'minecraft/sounds/a.ogg': { hash: HASH, size: 1 } } }),
+    )
+
+    const f = checkAssets(instanceDir, '1.6.4').find((x) => x.code === 'ASSETS_MISSING')
+    assert.ok(f)
+    assert.equal(f.severity, 'warning')
+    assert.match(f.hint ?? '', /不影响启动/)
+    assert.doesNotMatch(f.hint ?? '', /崩在标题画面/)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

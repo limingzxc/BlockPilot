@@ -12,11 +12,15 @@ import type { DownloadSource, DownloadTask } from '../download/types.js'
 import { writeInstanceMarker } from '../instance/marker.js'
 import type { Layout } from '../layout.js'
 import {
+  detectFabricFlavor,
   fetchMavenSha1,
   fetchProfile,
   mavenCoordToPath,
   pickLoaderVersion,
 } from '../sources/fabric.js'
+import { detectEnv } from '../launch/env.js'
+import type { LaunchEnv } from '../launch/env.js'
+import { extractNativeJars } from './vanilla.js'
 import type { FabricProfile } from '../sources/fabric.js'
 
 export interface FabricSetupOptions {
@@ -28,6 +32,11 @@ export interface FabricSetupOptions {
   readonly concurrency?: number
   /** 元数据与文件都走国内镜像（CLI 的 --china） */
   readonly mirror?: boolean
+  /**
+   * 强制使用 Legacy Fabric（1.6.x / 1.7.10 / 1.12.2）。
+   * 缺省自动探测：官方 meta 有这个版本就用官方，否则退到 Legacy。
+   */
+  readonly legacy?: boolean
 }
 
 export interface FabricSetupResult {
@@ -38,6 +47,7 @@ export interface FabricSetupResult {
   readonly skipped: number
   readonly failed: readonly { readonly fileName: string; readonly error: string }[]
   readonly noHash: readonly string[]
+  readonly nativesExtracted: number
   readonly versionJsonPath: string
 }
 
@@ -45,6 +55,8 @@ interface BuiltTasks {
   readonly tasks: readonly DownloadTask[]
   /** 拿不到 sha1 的库：按 ADR-0005 不允许下载 */
   readonly noHash: readonly string[]
+  /** 原生库 jar 的落盘路径，下载完要解压到 natives/<mc> */
+  readonly nativeJars: readonly string[]
 }
 
 /**
@@ -58,11 +70,49 @@ export async function buildFabricTasks(
   signal?: AbortSignal,
   /** sha1 探测与下载共用同一套镜像规则 */
   sources: readonly DownloadSource[] = defaultSources(),
+  env: LaunchEnv = detectEnv(),
 ): Promise<BuiltTasks> {
   const tasks: DownloadTask[] = []
   const noHash: string[] = []
+  const nativeJars: string[] = []
 
   for (const lib of profile.libraries) {
+    /**
+     * 老版本的原生库：profile 里只写裸坐标 + `natives` map，
+     * 而裸坐标在 maven 上**不存在**（1.6.4 的 lwjgl-platform:2.9.4+legacyfabric.17
+     * 只有带 `-natives-windows` 的 classifier）。照裸坐标去下必然 404，
+     * 表现就是「进游戏 UnsatisfiedLinkError: no lwjgl」。
+     */
+    const classifier = lib.natives?.[env.os]
+    if (classifier !== undefined) {
+      const nativePath = mavenCoordToPath(`${lib.name}:${classifier}`)
+      if (nativePath !== null && lib.url !== undefined) {
+        const dest = join(layout.libraries, ...nativePath.split('/'))
+        if (!existsSync(dest)) {
+          const base = lib.url.replace(/\/+$/, '')
+          const url = `${base}/${nativePath}`
+          const sha1 = await fetchMavenSha1(url, {
+            ...(signal === undefined ? {} : { signal }),
+            candidates: sources
+              .map((src) => src.rewrite(new URL(`${url}.sha1`)))
+              .filter((u): u is string => u !== null),
+          })
+          if (sha1 === null) noHash.push(`${lib.name}:${classifier}`)
+          else {
+            tasks.push({
+              url,
+              fileName: basename(nativePath),
+              destPath: dest,
+              expectedSize: 0,
+              hashes: { sha1 },
+            })
+          }
+        }
+        nativeJars.push(dest)
+      }
+      continue
+    }
+
     const artifact = lib.downloads?.artifact
     if (artifact !== undefined) {
       tasks.push({
@@ -105,21 +155,50 @@ export async function buildFabricTasks(
     })
   }
 
-  return { tasks, noHash }
+  return { tasks, noHash, nativeJars }
 }
 
 export function createFabricSetup(opts: FabricSetupOptions): Operation<FabricSetupResult> {
   return defineOperation<FabricSetupResult>('fabric-setup', async function* (signal) {
-    const meta = opts.mirror === true ? { mirror: true } : {}
+    // 先定用哪套 Fabric：1.6.4 / 1.7.10 / 1.12.2 只有 Legacy Fabric 有 loader
+    const flavor =
+      opts.legacy === true ? 'legacy' : await detectFabricFlavor(opts.gameVersion, signal, {
+        ...(opts.mirror === true ? { mirror: true } : {}),
+      })
+    if (flavor === null) {
+      yield Op.failed(
+        'NO_FABRIC_FOR_VERSION',
+        `Fabric（含 Legacy Fabric）都没有 Minecraft ${opts.gameVersion} 的 loader`,
+        'Fabric 只覆盖 1.14+；1.6.x / 1.7.10 / 1.12.2 走 Legacy Fabric，其余版本只能装 Forge',
+      )
+      return
+    }
+    if (flavor === 'legacy') {
+      yield Op.log('warn', 'fabric.legacy', { gameVersion: opts.gameVersion })
+    }
+
+    const meta =
+      flavor === 'legacy' ? { legacy: true } : opts.mirror === true ? { mirror: true } : {}
     const loaderVersion =
       opts.loaderVersion ?? (await pickLoaderVersion(opts.gameVersion, signal, meta))
-    yield Op.log('info', 'fabric.loader', { gameVersion: opts.gameVersion, loaderVersion })
+    yield Op.log('info', 'fabric.loader', {
+      gameVersion: opts.gameVersion,
+      loaderVersion,
+      flavor,
+    })
 
     const profile = await fetchProfile(opts.gameVersion, loaderVersion, signal, meta)
     yield Op.log('info', 'fabric.profile', { id: profile.id, libraries: profile.libraries.length })
 
     const sources = opts.sources ?? defaultSources()
-    const { tasks, noHash } = await buildFabricTasks(profile, opts.layout, signal, sources)
+    const env = detectEnv()
+    const { tasks, noHash, nativeJars } = await buildFabricTasks(
+      profile,
+      opts.layout,
+      signal,
+      sources,
+      env,
+    )
     if (noHash.length > 0) {
       yield Op.log('warn', 'fabric.no_hash', { count: noHash.length, libs: noHash.slice(0, 5) })
     }
@@ -157,10 +236,24 @@ export function createFabricSetup(opts: FabricSetupOptions): Operation<FabricSet
       })),
     ]
 
+    /**
+     * 老版本的原生库要解压到 natives/<mc 版本>。
+     *
+     * 加载器版本 id（fabric-loader-0.20.1-1.6.4）和原版 id（1.6.4）不是一回事：
+     * 启动参数里的 `java.library.path` 指向**原版**那个目录，所以这里把 profile 的 id
+     * 换成 gameVersion 再解压，否则 DLL 解到了没人看的地方。
+     */
+    let nativesExtracted = 0
+    if (nativeJars.length > 0) {
+      nativesExtracted = extractNativeJars(nativeJars, opts.layout.nativesDir(opts.gameVersion))
+      yield Op.log('info', 'fabric.natives', { extracted: nativesExtracted })
+    }
+
     yield Op.result({
       versionId: profile.id,
       loaderVersion,
       libraries: profile.libraries.length,
+      nativesExtracted,
       downloaded,
       skipped,
       failed,

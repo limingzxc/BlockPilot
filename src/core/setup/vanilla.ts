@@ -182,6 +182,41 @@ export function extractNatives(version: VersionJson, env: LaunchEnv, layout: Lay
   return count
 }
 
+/**
+ * 把一批原生 jar 解压到 destDir。
+ *
+ * 给「profile 只写了裸 maven 坐标」的加载器用（Legacy Fabric 的 lwjgl-platform）：
+ * 那种库没有 downloads 元数据，`extractNatives` 按 downloads 找不到 jar 路径，
+ * 只能由下载侧告诉我们落盘在哪。
+ */
+export function extractNativeJars(
+  jars: readonly string[],
+  destDir: string,
+  exclude: readonly string[] = ['META-INF/'],
+): number {
+  mkdirSync(destDir, { recursive: true })
+  let count = 0
+  for (const jar of jars) {
+    if (!existsSync(jar)) continue
+    let entries: Record<string, Uint8Array>
+    try {
+      entries = unzipSync(new Uint8Array(readFileSync(jar)))
+    } catch {
+      continue
+    }
+    for (const [name, data] of Object.entries(entries)) {
+      if (name.endsWith('/')) continue
+      if (name.includes('..')) continue
+      if (exclude.some((e) => name.startsWith(e))) continue
+      const out = join(destDir, name)
+      mkdirSync(dirname(out), { recursive: true })
+      writeFileSync(out, data)
+      count += 1
+    }
+  }
+  return count
+}
+
 export function createVanillaSetup(opts: VanillaSetupOptions): Operation<VanillaSetupResult> {
   return defineOperation<VanillaSetupResult>('vanilla-setup', async function* (signal) {
     const env = detectEnv()

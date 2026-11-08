@@ -55,6 +55,9 @@ blockpilot assets 1.21.1 --root D:/mc     # 约 790 MB
 Fabric、Forge、NeoForge 都支持，按包里的声明自动选。Forge 类要跑官方 installer，
 会多花 1–3 分钟。
 
+老版本（1.6.4 / 1.7.10 / 1.12.2）官方 Fabric 没有 loader，`fabric` 会自动退到
+**Legacy Fabric**（`meta.legacyfabric.net`），并在输出里说明；也可以 `--legacy` 强制。
+
 **同一个实例可以反复 deploy**：已经下过的文件会跳过，不会重装一遍。
 
 CurseForge 的包（`.zip` 带 `manifest.json`）也能装。清单里只有 `projectID/fileID`，

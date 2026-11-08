@@ -29,7 +29,7 @@ import { createVanillaSetup, pickSources } from '../core/setup/vanilla.js'
 import { VersionNotFoundError } from '../core/version/fetch.js'
 import { createAssetsSetup } from '../core/setup/assets.js'
 import type { AssetsProbe } from '../core/setup/assets.js'
-import { probeAssets } from '../core/preflight/assets.js'
+import { assetsRequiredToBoot, probeAssets } from '../core/preflight/assets.js'
 import { createFabricSetup } from '../core/setup/fabric.js'
 import { createForgeSetup } from '../core/setup/forge.js'
 import { createDeploy } from '../core/deploy.js'
@@ -260,7 +260,14 @@ const COMMAND_FLAGS: Record<string, Readonly<Record<string, boolean>>> = {
   accounts: { '--root': true, '--remove': true },
   setup: { '--root': true, '--instance': true, '--dry-run': false, '--china': false },
   assets: { '--root': true, '--dry-run': false, '--china': false, '--concurrency': true },
-  fabric: { '--root': true, '--instance': true, '--loader': true, '--china': false },
+  fabric: {
+    '--root': true,
+    '--instance': true,
+    '--loader': true,
+    '--china': false,
+    // 1.6.x / 1.7.10 / 1.12.2 只有 Legacy Fabric 有 loader；缺省自动探测
+    '--legacy': false,
+  },
   deploy: { '--root': true, '--instance': true, '--china': false, '--java': true },
   launch: {
     '--root': true,
@@ -1014,10 +1021,12 @@ function assetsIncompleteHint(assets: AssetsProbe | null, versionId: string): st
   if (assets === null || assets.sampled === 0) return undefined
   if (assets.present === assets.sampled) return undefined
   const missing = assets.sampled - assets.present
-  return (
-    `assets 没装全（抽查 ${assets.sampled} 个对象，缺 ${missing} 个）· 1.19+ 会崩在标题画面\n` +
-    `    ${C.dim}先补：blockpilot assets ${versionId} --root <root>${C.reset}`
-  )
+  const head = `assets 没装全（抽查 ${assets.sampled} 个对象，缺 ${missing} 个）`
+  // 1.19+ 缺了会崩在标题画面；更早的版本只是没声音——同一句话会把老玩家吓一跳
+  const tail = assetsRequiredToBoot(versionId)
+    ? '· 1.19+ 会崩在标题画面'
+    : '· 这个版本只影响声音与语言，能进游戏'
+  return `${head}${tail}\n    ${C.dim}补：blockpilot assets ${versionId} --root <root>${C.reset}`
 }
 
 async function runGame(argv: readonly string[]): Promise<number> {
@@ -1176,6 +1185,7 @@ async function runFabric(argv: readonly string[]): Promise<number> {
     layout,
     gameVersion,
     ...(loader === undefined ? {} : { loaderVersion: loader }),
+    ...(argv.includes('--legacy') ? { legacy: true } : {}),
     sources: pickSources(china),
     mirror: china,
   })
@@ -1189,7 +1199,14 @@ async function runFabric(argv: readonly string[]): Promise<number> {
       },
       log: (ev) => {
         const d = ev.data as { file?: string; source?: string; error?: string; id?: string } | undefined
-        if (ev.code === 'fabric.profile' && d?.id !== undefined) {
+        if (ev.code === 'fabric.legacy') {
+          process.stderr.write(
+            `${C.yellow}!${C.reset} ${gameVersion} 没有官方 Fabric，改用 Legacy Fabric\n`,
+          )
+        } else if (ev.code === 'fabric.natives') {
+          const n = ev.data as { extracted?: number } | undefined
+          process.stderr.write(`${C.dim}· 原生库 ${n?.extracted ?? 0} 个${C.reset}\n`)
+        } else if (ev.code === 'fabric.profile' && d?.id !== undefined) {
           process.stderr.write(`${C.dim}· profile ${d.id}${C.reset}\n`)
         } else if (ev.code === 'fabric.ok' && d?.file !== undefined) {
           process.stderr.write(`\r${C.green}↓${C.reset} ${d.file}  ${C.dim}${d.source ?? ''}${C.reset}\n`)
@@ -1206,7 +1223,8 @@ async function runFabric(argv: readonly string[]): Promise<number> {
         process.stdout.write('\n')
         process.stdout.write(
           `  ${C.green}完成${C.reset} loader ${r.loaderVersion} · ${r.libraries} 个库 · ` +
-            `下载 ${r.downloaded} · 跳过 ${r.skipped} · 失败 ${r.failed.length}\n`,
+            `下载 ${r.downloaded} · 跳过 ${r.skipped} · 失败 ${r.failed.length}` +
+            `${r.nativesExtracted > 0 ? ` · 原生库 ${r.nativesExtracted} 个` : ''}\n`,
         )
         process.stdout.write(`  ${C.dim}版本 JSON${C.reset}  ${r.versionJsonPath}\n`)
         process.stdout.write(`\n  ${C.bold}启动${C.reset}  blockpilot run ${r.versionId} --root ${root}\n\n`)
