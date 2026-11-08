@@ -34,7 +34,7 @@ const result = await client.callTool({
 })
 
 console.log('[smoke] isError =', result.isError === true)
-for (const block of result.content) {
+for (const block of result.content as Array<{ type: string; text?: string }>) {
   if (block.type === 'text') console.log('[smoke] text:\n' + block.text)
 }
 console.log('[smoke] structuredContent present =', result.structuredContent !== undefined)
@@ -69,7 +69,7 @@ const diag = await client.callTool({
   arguments: { logPath },
 })
 console.log('[smoke] diag isError =', diag.isError === true)
-for (const block of diag.content) {
+for (const block of diag.content as Array<{ type: string; text?: string }>) {
   if (block.type === 'text') console.log('[smoke] diag text:\n' + block.text)
 }
 console.log('[smoke] diag structuredContent present =', diag.structuredContent !== undefined)

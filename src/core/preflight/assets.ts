@@ -2,6 +2,7 @@ import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { probeAssetObjects } from '../setup/assets.js'
+import { assetsHint } from '../hints.js'
 import type { AssetsProbe } from '../setup/assets.js'
 import type { Finding } from './types.js'
 
@@ -110,8 +111,8 @@ export function checkAssets(
         : `assets 不完整：抽查 ${probe.sampled} 个对象，缺 ${missing} 个（index ${indexId}）`,
       subject: indexId,
       hint: fatal
-        ? `1.19+ 的原版资源就在 assets 里，缺了会崩在标题画面。补：blockpilot assets ${cmdVersion} --root <root>`
-        : `这个版本缺 assets 只影响声音与语言，不影响启动。想补：blockpilot assets ${cmdVersion} --root <root>`,
+        ? `1.19+ 的原版资源就在 assets 里，缺了会崩在标题画面。补：${assetsHint(cmdVersion)}`
+        : `这个版本缺 assets 只影响声音与语言，不影响启动。想补：${assetsHint(cmdVersion)}`,
     },
   ]
 }

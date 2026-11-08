@@ -21,6 +21,10 @@ export interface JavaInstallOptions {
   readonly major: number
   readonly sources?: readonly DownloadSource[]
   readonly runtimeOs?: JavaOs
+  /** 测试注入：探测某个 java 可执行文件的大版本 */
+  readonly probe?: (path: string) => Promise<JavaInstall | null>
+  /** 测试注入：取 Adoptium 的下载信息（返回 null = 没有这个构建） */
+  readonly fetchBinary?: typeof fetchJavaBinary
 }
 
 export interface JavaInstallResult {
@@ -55,10 +59,18 @@ function findJavaExecutables(javaDir: string): string[] {
   return out
 }
 
+type ProbeFn = (path: string) => Promise<JavaInstall | null>
+
+const defaultProbe: ProbeFn = (path) => probeJava(path, 'managed')
+
 /** 找与目标大版本**恰好一致**的那套。`java install 17` 不该因为装了 21 就跳过。 */
-async function findExactMajor(javaDir: string, major: number): Promise<JavaInstall | null> {
+async function findExactMajor(
+  javaDir: string,
+  major: number,
+  probe: ProbeFn,
+): Promise<JavaInstall | null> {
   for (const path of findJavaExecutables(javaDir)) {
-    const probed = await probeJava(path, 'managed')
+    const probed = await probe(path)
     if (probed !== null && probed.major === major) return probed
   }
   return null
@@ -96,7 +108,8 @@ export function createJavaInstall(opts: JavaInstallOptions): Operation<JavaInsta
      * 直接回「已存在 Java 21」——用户要 17 却拿到 21，而 Forge 1.20.1 这类老包
      * 恰恰在 21 上有毛病（实测会在标题画面自行退出）。
      */
-    const existing = await findExactMajor(javaRoot, opts.major)
+    const probe = opts.probe ?? defaultProbe
+    const existing = await findExactMajor(javaRoot, opts.major, probe)
     if (existing !== null) {
       yield Op.log('info', 'java.already_installed', { path: existing.path, major: existing.major })
       yield Op.result({ java: existing, release: existing.version, bytes: 0, skipped: true })
@@ -106,7 +119,7 @@ export function createJavaInstall(opts: JavaInstallOptions): Operation<JavaInsta
 
     const os = opts.runtimeOs ?? detectOs()
     yield Op.log('info', 'java.lookup', { major: opts.major, os })
-    const binary = await fetchJavaBinary(opts.major, os, signal)
+    const binary = await (opts.fetchBinary ?? fetchJavaBinary)(opts.major, os, signal)
     if (binary === null) {
       yield Op.failed('JAVA_NOT_FOUND', `Adoptium 没有 Java ${opts.major} 的 ${os} 构建`)
       return
@@ -150,14 +163,14 @@ export function createJavaInstall(opts: JavaInstallOptions): Operation<JavaInsta
     })
 
     // 目录里可能已经有别的版本（17 与 21 共存），挑出刚装的那套
-    const installed = await findExactMajor(javaRoot, opts.major)
+    const installed = await findExactMajor(javaRoot, opts.major, probe)
     const javaPath = installed?.path ?? findJavaExecutables(javaRoot)[0]
     if (javaPath === undefined) {
       yield Op.failed('JAVA_EXECUTABLE_MISSING', '解压完了但找不到 bin/java')
       return
     }
 
-    const probed = installed ?? (await probeJava(javaPath, 'managed'))
+    const probed = installed ?? (await probe(javaPath))
     if (probed === null) {
       yield Op.failed('JAVA_PROBE_FAILED', `解压出来的 java 跑不起来：${javaPath}`)
       return

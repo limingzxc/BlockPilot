@@ -1,6 +1,7 @@
 import type { HostProfile, Instance, LoaderKind } from '../instance.js'
 import type { VersionInfo } from '../sources.js'
 import { compareVersions, satisfiesRange } from '../semver.js'
+import { javaInstallHint } from '../hints.js'
 import { requiredJavaMajor } from '../java/types.js'
 import type { Finding } from './types.js'
 
@@ -111,7 +112,7 @@ export function checkJava(
         hint:
           suggest === undefined
             ? '这个范围里没有可安装的大版本，核对 mod 说明；也可能是它自己写错了'
-            : `装 Java ${suggest}：blockpilot java install ${suggest}`,
+            : `装 Java ${suggest}：${javaInstallHint(suggest)}`,
       })
     }
     // 有模组明确声明时，不再叠加「1.12 只能用 Java 8」这类推断——
@@ -130,7 +131,7 @@ export function checkJava(
       code: 'JAVA_MISSING',
       message: `Minecraft ${instance.gameVersion} 需要 Java ${need}，本机未检测到`,
       // 「已检测到：无」是个死胡同。保留现场，同时给一条能直接敲的命令
-      hint: `已检测到：${host.javaMajors.join(', ') || '无'} · 装一个再重试：blockpilot java install ${need}`,
+      hint: `已检测到：${host.javaMajors.join(', ') || '无'} · 装一个再重试：${javaInstallHint(need)}`,
     })
   } else if (!exact) {
     if (need === 8) {
@@ -142,7 +143,7 @@ export function checkJava(
         severity: 'blocker',
         code: 'JAVA_TOO_NEW',
         message: `Minecraft ${instance.gameVersion} 只能用 Java 8，本机只有 Java ${newer.join(', ')}`,
-        hint: `1.12 及更早的版本在 Java 9+ 上起不来；装一个 Java 8：blockpilot java install 8`,
+        hint: `1.12 及更早的版本在 Java 9+ 上起不来；装一个 Java 8：${javaInstallHint(8)}`,
       })
     } else {
       findings.push({

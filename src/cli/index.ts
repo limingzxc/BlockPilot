@@ -39,6 +39,8 @@ import { readPackFile } from '../core/preflight/read-pack.js'
 import { detectHost } from '../core/host.js'
 import { ModrinthSource } from '../sources/modrinth.js'
 import { C, consume, createInterrupt, humanBytes } from './ui.js'
+import { COMMAND_FLAGS, validateFlags } from './flags.js'
+import { assetsHint, diagHint, javaInstallHint, preflightHint, runHint, setupHint } from '../core/hints.js'
 
 const SEVERITY_MARK: Record<Finding['severity'], string> = {
   blocker: `${C.red}✗${C.reset}`,
@@ -245,93 +247,6 @@ function argOf(argv: readonly string[], name: string): string | undefined {
   return i === -1 ? undefined : argv[i + 1]
 }
 
-/**
- * 每个子命令接受的 flag。`true` 表示这个 flag 后面必须跟一个值。
- *
- * 为什么要这张表：以前未知参数被静默忽略，`--json` 拼成 `--jsno` 依然退出 0，
- * 脚本拿到一段人类可读文本去 JSON.parse，错在别处；`--root` 忘了写路径则
- * 悄悄装进默认目录。**静默做错事比报错难查得多。**
- */
-const COMMAND_FLAGS: Record<string, Readonly<Record<string, boolean>>> = {
-  preflight: { '--json': false, '--no-host': false, '--no-cf-mirror': false },
-  install: {
-    '--mods-dir': true,
-    '--dry-run': false,
-    '--include-unverified': false,
-    '--no-host': false,
-    '--china': false,
-  },
-  java: { '--root': true, '--china': false },
-  login: { '--root': true, '--client-id': true },
-  accounts: { '--root': true, '--remove': true },
-  setup: { '--root': true, '--instance': true, '--dry-run': false, '--china': false },
-  assets: { '--root': true, '--dry-run': false, '--china': false, '--concurrency': true },
-  fabric: {
-    '--root': true,
-    '--instance': true,
-    '--loader': true,
-    '--china': false,
-    // 1.6.x / 1.7.10 / 1.12.2 只有 Legacy Fabric 有 loader；缺省自动探测
-    '--legacy': false,
-  },
-  deploy: {
-    '--root': true,
-    '--instance': true,
-    '--china': false,
-    '--java': true,
-    // 有 key 走官方批量接口；没有就走 MCIM 镜像（默认），--no-cf-mirror 关掉回落
-    '--curseforge-key': true,
-    '--no-cf-mirror': false,
-  },
-  launch: {
-    '--root': true,
-    '--instance': true,
-    '--raw': false,
-    '--java': true,
-    '--memory': true,
-    '--user': true,
-    '--china': false,
-    '--account': true,
-    '--offline': false,
-  },
-  run: {
-    '--root': true,
-    '--instance': true,
-    '--quiet': false,
-    '--stop': true,
-    '--java': true,
-    '--memory': true,
-    '--user': true,
-    '--china': false,
-    '--account': true,
-    '--offline': false,
-  },
-  forge: { '--root': true, '--instance': true, '--loader': true, '--java': true, '--china': false },
-  neoforge: { '--root': true, '--instance': true, '--loader': true, '--java': true, '--china': false },
-  logs: { '--root': true, '--instance': true },
-  diag: { '--root': true, '--instance': true, '--file': true, '--json': false },
-}
-
-/** 找第一个不认识的 flag，或需要值却没给值的 flag。返回人话，没问题返回 undefined。 */
-function validateFlags(
-  args: readonly string[],
-  spec: Readonly<Record<string, boolean>>,
-): string | undefined {
-  for (let i = 0; i < args.length; i += 1) {
-    const a = args[i]
-    if (a === undefined || !a.startsWith('--')) continue
-
-    const needsValue = spec[a]
-    if (needsValue === undefined) return `未知参数 ${a}`
-    if (!needsValue) continue
-
-    const value = args[i + 1]
-    // 值不能是另一个 flag：`--root --china` 是少写了路径，不是要把 root 设成 "--china"
-    if (value === undefined || value.startsWith('--')) return `${a} 需要一个值`
-    i += 1
-  }
-  return undefined
-}
 
 /**
  * 解析 --memory。
@@ -711,7 +626,7 @@ async function pickJavaOrReport(
   process.stderr.write(`${C.red}${outcome.message}${C.reset}\n`)
   // 只说「没有」而不说怎么办，用户下一步只能去搜。给一条能直接敲的命令
   if (outcome.needMajor !== undefined) {
-    process.stderr.write(`${C.dim}可以装一个：blockpilot java install ${outcome.needMajor}${C.reset}\n`)
+    process.stderr.write(`${C.dim}可以装一个：${javaInstallHint(outcome.needMajor)}${C.reset}\n`)
   }
   return undefined
 }
@@ -1041,7 +956,7 @@ function assetsIncompleteHint(assets: AssetsProbe | null, versionId: string): st
   const tail = assetsRequiredToBoot(versionId)
     ? '· 1.19+ 会崩在标题画面'
     : '· 这个版本只影响声音与语言，能进游戏'
-  return `${head}${tail}\n    ${C.dim}补：blockpilot assets ${versionId} --root <root>${C.reset}`
+  return `${head}${tail}\n    ${C.dim}补：${assetsHint(versionId)}${C.reset}`
 }
 
 async function runGame(argv: readonly string[]): Promise<number> {
@@ -1098,7 +1013,7 @@ async function runGame(argv: readonly string[]): Promise<number> {
   if (plan.missing.length > 0) {
     process.stderr.write(
       `\n${C.red}文件不齐${C.reset}：缺 ${plan.missing.length} 个\n` +
-        `  ${C.dim}先跑：blockpilot setup ${versionId} --root ${root}${C.reset}\n\n`,
+        `  ${C.dim}先跑：${setupHint(versionId, root)}${C.reset}\n\n`,
     )
     return 1
   }
@@ -1162,8 +1077,8 @@ async function runGame(argv: readonly string[]): Promise<number> {
           }
           process.stdout.write('\n')
           process.stdout.write(`  ${C.bold}下一步${C.reset}\n`)
-          process.stdout.write(`    blockpilot diag --root ${root} --instance ${instance}      ${C.dim}# 分析这份日志${C.reset}\n`)
-          process.stdout.write(`    blockpilot preflight "${layout.gameDir}"   ${C.dim}# 扫描实例里的 mods${C.reset}\n\n`)
+          process.stdout.write(`    ${diagHint(root, instance)}      ${C.dim}# 分析这份日志${C.reset}\n`)
+          process.stdout.write(`    ${preflightHint(layout.gameDir)}   ${C.dim}# 扫描实例里的 mods${C.reset}\n\n`)
           return 2
         }
 
@@ -1242,7 +1157,7 @@ async function runFabric(argv: readonly string[]): Promise<number> {
             `${r.nativesExtracted > 0 ? ` · 原生库 ${r.nativesExtracted} 个` : ''}\n`,
         )
         process.stdout.write(`  ${C.dim}版本 JSON${C.reset}  ${r.versionJsonPath}\n`)
-        process.stdout.write(`\n  ${C.bold}启动${C.reset}  blockpilot run ${r.versionId} --root ${root}\n\n`)
+        process.stdout.write(`\n  ${C.bold}启动${C.reset}  ${runHint(r.versionId, root)}\n\n`)
         return r.failed.length > 0 ? 2 : 0
       },
     },
@@ -1342,7 +1257,7 @@ async function runForge(
         )
         process.stdout.write(`  ${C.dim}版本 JSON${C.reset}  ${r.versionJsonPath}\n`)
         process.stdout.write(
-          `\n  ${C.bold}启动${C.reset}  blockpilot run ${r.versionId} --root ${root} --instance ${instance}\n\n`,
+          `\n  ${C.bold}启动${C.reset}  ${runHint(r.versionId, root, instance)}\n\n`,
         )
         return 0
       },
@@ -1458,7 +1373,7 @@ async function runDeploy(argv: readonly string[]): Promise<number> {
         }
         process.stdout.write(`  ${C.bold}启动${C.reset}\n`)
         process.stdout.write(
-          `    blockpilot run ${r.playableVersionId} --root ${root} --instance ${instance}\n\n`,
+          `    ${runHint(r.playableVersionId, root, instance)}\n\n`,
         )
         return r.failed.length > 0 ? 2 : 0
       },

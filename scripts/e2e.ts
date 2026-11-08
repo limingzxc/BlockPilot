@@ -17,6 +17,7 @@
  *   npm run e2e -- --list
  */
 import { spawn } from 'node:child_process'
+import { extractLogPath } from './lib/parse.js'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -871,13 +872,9 @@ const CASES: readonly CaseDef[] = [
       assertText(r, /已到时限结束|正常退出/, '应该是干净退出')
       assertNoText(r, '异常退出', '不该报成崩溃')
 
-      // 路径里可能有空格（仓库放在 "WorkBuddy AI" 这类目录下），不能用 \S+：
-      // 那样只在这里红、在 CI 上绿，是最难查的一类假失败。
-      // 也不能用 `\s+` 起头——`\s` 会吃掉换行，把上一行的「N 行日志」接到路径里。
-      const m = /^\s*日志[ \t]+(.+?\.log)[ \t]*$/m.exec(strip(r.stdout))
-      assert(m !== null, '没打印会话日志路径')
-      const logPath = m[1]
-      assert(logPath !== undefined && existsSync(logPath), `会话日志不存在：${String(logPath)}`)
+      const logPath = extractLogPath(strip(r.stdout))
+      assert(logPath !== undefined, '没打印会话日志路径')
+      assert(existsSync(logPath), `会话日志不存在：${logPath}`)
       const content = readFileSync(logPath, 'utf8')
       assertMatch(content, /Loading Minecraft 1\.21\.1/, '日志里没有启动行')
       assertMatch(content, /Loading \d+ mods:/, '日志里没有模组加载行')

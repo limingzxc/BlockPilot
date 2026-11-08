@@ -10,6 +10,8 @@
  * 「Java 版本不对」是现象，「装 Java 17」才是建议。
  */
 
+import { javaInstallHint } from '../hints.js'
+
 export type CrashKind =
   | 'java-version'
   | 'out-of-memory'
@@ -62,7 +64,7 @@ const RULES: readonly Rule[] = [
     re: /UnsupportedClassVersionError|has been compiled by a more recent version of the Java Runtime/i,
     kind: 'java-version',
     severity: 'fatal',
-    hint: '模组或游戏要求的 Java 版本比当前高。装对应版本：blockpilot java install <major>',
+    hint: `模组或游戏要求的 Java 版本比当前高。装对应版本：${javaInstallHint('<major>')}`,
   },
   {
     re: /java\.lang\.OutOfMemoryError|Java heap space|GC overhead limit exceeded/i,
