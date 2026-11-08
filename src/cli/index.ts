@@ -28,8 +28,10 @@ import type { AuthAccount } from '../core/auth/types.js'
 import { createVanillaSetup, pickSources } from '../core/setup/vanilla.js'
 import { VersionNotFoundError } from '../core/version/fetch.js'
 import { createAssetsSetup } from '../core/setup/assets.js'
+import type { AssetsProbe } from '../core/setup/assets.js'
+import { probeAssets } from '../core/preflight/assets.js'
 import { createFabricSetup } from '../core/setup/fabric.js'
-import type { FabricSetupResult } from '../core/setup/fabric.js'
+import { createForgeSetup } from '../core/setup/forge.js'
 import { createDeploy } from '../core/deploy.js'
 import type { DeployResult } from '../core/deploy.js'
 import { readPackFile } from '../core/preflight/read-pack.js'
@@ -99,19 +101,26 @@ function renderHuman(r: PreflightReport): string {
   )
   lines.push('')
 
+  // 「指错目录」是最常见的误用，而这个提示只有在 findings 之外才不会被挤掉：
+  // 多套一层目录时往往同时伴随 UNKNOWN_GAME_VERSION，一旦进了 else 分支就再也看不见。
+  if (r.stats.mods === 0) {
+    lines.push(`  ${C.yellow}没有可检查的模组${C.reset}`)
+    lines.push(
+      `  ${C.dim}没有在 mods/ 下读到任何模组。如果包里确实有模组，检查 path 是不是多套了一层目录${C.reset}`,
+    )
+    lines.push('')
+  }
+
   if (r.findings.length === 0) {
     // 「没有发现问题」是一个结论。没东西可查、或者什么都没查成的时候，
     // 说这句话等于给了一个假的通过——用户会跳过后面所有步骤。
-    if (r.stats.mods === 0) {
-      lines.push(`  ${C.yellow}没有可检查的模组${C.reset}`)
-      lines.push(
-        `  ${C.dim}清单里没有 mods/ 下的文件。如果包里有模组，检查 path 是不是多套了一层目录${C.reset}`,
-      )
-    } else if (r.verdict === 'unknown') {
-      lines.push(`  ${C.yellow}这次没有验成${C.reset}`)
-      lines.push(`  ${C.dim}模组元数据没取到，不代表包没问题${C.reset}`)
-    } else {
-      lines.push(`  ${C.green}没有发现问题${C.reset}`)
+    if (r.stats.mods > 0) {
+      if (r.verdict === 'unknown') {
+        lines.push(`  ${C.yellow}这次没有验成${C.reset}`)
+        lines.push(`  ${C.dim}模组元数据没取到，不代表包没问题${C.reset}`)
+      } else {
+        lines.push(`  ${C.green}没有发现问题${C.reset}`)
+      }
     }
     lines.push('')
   } else {
@@ -202,9 +211,11 @@ function usage(): void {
             用户只需要选这一次；实例目录由 --instance 自动派生
   setup     安装原版：client jar + libraries + assetIndex + 解压 natives
   assets    下载 assets 对象（音效/语言/字体，约 600 MB、3000+ 文件）
-            不装也能启动，但没有声音和部分字体
+            1.19+ 必装：原版资源就在 assets 里，缺了会崩在标题画面
   fabric    安装 Fabric 加载器：取 profile → 写版本 JSON → 下载 loader 库
             之后用 launch / run 加 fabric-loader-<ver>-<mc> 启动
+  forge     安装 Forge：先跑原版 setup（natives），再跑官方 installer
+  neoforge  同上，换 NeoForge。两者都支持 --loader <ver> 指定版本
   deploy    从 .mrpack 一次装完：原版 → 加载器 → 模组 → overrides
             装完直接给出可用的启动命令
   launch    生成启动命令（只打印，不启动）
@@ -214,8 +225,10 @@ function usage(): void {
             --account <name>  用指定账号（在线）；缺省用上次登录的那个
             --offline         强制离线模式，不读账号存档
   logs      列出会话日志
+            --instance <name> 看指定实例的日志（缺省 default）
   diag      分析最近的会话日志，把异常归类成可理解的结论
-            --file <path> 指定日志；默认取最新一份
+            --instance <name> 取指定实例的最新日志（缺省 default）
+            --file <path> 指定日志；给定时 --instance 不再生效
             --json 输出结构化结论（verdict / primary / culprits），给脚本用
 
 `)
@@ -272,6 +285,8 @@ const COMMAND_FLAGS: Record<string, Readonly<Record<string, boolean>>> = {
     '--account': true,
     '--offline': false,
   },
+  forge: { '--root': true, '--instance': true, '--loader': true, '--java': true, '--china': false },
+  neoforge: { '--root': true, '--instance': true, '--loader': true, '--java': true, '--china': false },
   logs: { '--root': true, '--instance': true },
   diag: { '--root': true, '--instance': true, '--file': true, '--json': false },
 }
@@ -486,6 +501,12 @@ async function runInstall(argv: readonly string[]): Promise<number> {
         const credits = [...new Set(result.downloaded.map((d) => d.credit).filter((c) => c !== undefined))]
         if (credits.length > 0) {
           process.stdout.write(`  ${C.dim}资源来源：${credits.join('、')}${C.reset}\n`)
+        }
+        const drifted = result.downloaded.filter((d) => d.sizeMismatch === true).length
+        if (drifted > 0) {
+          process.stdout.write(
+            `  ${C.dim}${drifted} 个文件的索引体积与实际不符，已按哈希接受${C.reset}\n`,
+          )
         }
         process.stdout.write('\n')
         return result.failed.length > 0 ? 2 : 0
@@ -907,6 +928,13 @@ async function runSetup(argv: readonly string[]): Promise<number> {
         for (const f of r.failed.slice(0, 5)) {
           process.stdout.write(`  ${C.red}✗${C.reset} ${f.fileName}  ${C.dim}${f.error}${C.reset}\n`)
         }
+        // setup 不装 assets（它 1–2 GB，且跨实例共享）。但必须提醒一句，
+        // 否则用户会以为「setup 完成 = 能玩了」，然后崩在标题画面（issue #2）
+        const assetsWarn = assetsIncompleteHint(
+          probeAssets(layout.assets, versionId)?.probe ?? null,
+          versionId,
+        )
+        if (assetsWarn !== undefined) process.stdout.write(`  ${C.yellow}!${C.reset} ${assetsWarn}\n`)
         process.stdout.write('\n')
         return r.failed.length > 0 ? 2 : 0
       },
@@ -976,6 +1004,22 @@ async function runAssets(argv: readonly string[]): Promise<number> {
   )
 }
 
+/**
+ * assets 没装全的提示。
+ *
+ * 1.19+ 的原版资源包就是 assets 本身，零资源时标题画面渲染直接抛
+ * NoSuchFileException——所以这不是「没声音」级别的小毛病，而是必崩。
+ */
+function assetsIncompleteHint(assets: AssetsProbe | null, versionId: string): string | undefined {
+  if (assets === null || assets.sampled === 0) return undefined
+  if (assets.present === assets.sampled) return undefined
+  const missing = assets.sampled - assets.present
+  return (
+    `assets 没装全（抽查 ${assets.sampled} 个对象，缺 ${missing} 个）· 1.19+ 会崩在标题画面\n` +
+    `    ${C.dim}先补：blockpilot assets ${versionId} --root <root>${C.reset}`
+  )
+}
+
 async function runGame(argv: readonly string[]): Promise<number> {
   const versionId = argv[0]
   if (versionId === undefined || versionId.startsWith('--')) {
@@ -1035,6 +1079,12 @@ async function runGame(argv: readonly string[]): Promise<number> {
     return 1
   }
 
+  // 文件齐了，但资源可能没装：不说的话用户会在标题画面崩一次才知道
+  const assetsHint = assetsIncompleteHint(plan.assets, versionId)
+  if (assetsHint !== undefined) {
+    process.stderr.write(`\n${C.yellow}!${C.reset} ${assetsHint}\n`)
+  }
+
   process.stdout.write('\n')
   process.stdout.write(`  ${C.green}启动${C.reset} ${plan.versionId} · 实例 ${layout.instanceId}\n`)
   process.stdout.write(`  ${C.dim}${plan.java}${C.reset}\n`)
@@ -1078,6 +1128,11 @@ async function runGame(argv: readonly string[]): Promise<number> {
           process.stdout.write(
             `  ${C.red}异常退出${C.reset}  code=${result.exitCode ?? '-'} signal=${result.signal ?? '-'} · ${secs}s · ${result.lineCount} 行日志\n`,
           )
+          if (result.diedBeforeStop) {
+            process.stdout.write(
+              `  ${C.yellow}游戏在中途就停了${C.reset}${C.dim}（进程一直没退，--stop 到点才被结束）${C.reset}\n`,
+            )
+          }
           if (result.logPath !== undefined) {
             process.stdout.write(`  ${C.dim}完整日志${C.reset}  ${result.logPath}\n`)
           }
@@ -1162,6 +1217,111 @@ async function runFabric(argv: readonly string[]): Promise<number> {
   )
 }
 
+/**
+ * Forge / NeoForge 加载器。
+ *
+ * 与 `fabric` 对称，但多一步：Forge 的原生库要靠原版 setup 解压，否则
+ * `run` 会报 `UnsatisfiedLinkError: Failed to locate library: lwjgl.dll`。
+ * 所以先跑原版 setup（它同时把 version JSON 落盘，选 Java 才有依据），
+ * 再跑官方 installer（issue #13）。
+ */
+async function runForge(
+  argv: readonly string[],
+  kind: 'forge' | 'neoforge',
+): Promise<number> {
+  const gameVersion = argv[0]
+  if (gameVersion === undefined || gameVersion.startsWith('--')) {
+    usage()
+    return 1
+  }
+  const root = argOf(argv, '--root') ?? defaultRoot()
+  const instance = argOf(argv, '--instance') ?? 'default'
+  const layout = resolveLayout(root, instance)
+  const loader = argOf(argv, '--loader')
+  const china = argv.includes('--china')
+  const signal = createInterrupt().signal
+
+  process.stdout.write('\n')
+  process.stdout.write(`  ${C.dim}root${C.reset}  ${layout.root}\n`)
+  process.stdout.write(`  ${C.dim}游戏版本${C.reset}  ${gameVersion} + ${kind}\n\n`)
+
+  // ---- 1. 原版：client jar / libraries / natives ----
+  const vanillaCode = await consume(
+    createVanillaSetup({
+      layout,
+      versionId: gameVersion,
+      sources: pickSources(china),
+      mirror: china,
+    }),
+    {
+      progress: (ev) => {
+        process.stderr.write(`\r${C.dim}原版 ${ev.done}/${ev.total}${C.reset}          `)
+        if (ev.done === ev.total) process.stderr.write('\r')
+      },
+      log: (ev) => {
+        if (ev.code === 'setup.failed') {
+          const d = ev.data as { file?: string; error?: string } | undefined
+          process.stderr.write(`\r${C.red}✗${C.reset} ${d?.file ?? ''}  ${d?.error ?? ''}\n`)
+        }
+      },
+      result: (r) => {
+        process.stdout.write(
+          `  ${C.green}原版就绪${C.reset}  下载 ${r.downloaded} · 跳过 ${r.skipped} · 原生库 ${r.nativesExtracted} 个\n`,
+        )
+        return r.failed.length > 0 ? 2 : 0
+      },
+    },
+    signal,
+  )
+  if (vanillaCode !== 0) return vanillaCode
+
+  // ---- 2. installer。它要一个能跑的 JVM，所以原版 JSON 落盘之后再选 Java ----
+  const javaPath = await pickJavaOrReport(gameVersion, layout, signal, argOf(argv, '--java'))
+  if (javaPath === undefined) return 1
+
+  const op = createForgeSetup({
+    layout,
+    gameVersion,
+    kind,
+    java: javaPath,
+    ...(loader === undefined ? {} : { forgeVersion: loader }),
+    ...(proxyUrl === undefined ? {} : { proxy: proxyUrl }),
+    sources: pickSources(china),
+  })
+
+  return consume(
+    op,
+    {
+      progress: () => {},
+      log: (ev) => {
+        const d = ev.data as { message?: string; versionId?: string } | undefined
+        if (ev.code === 'forge.already_installed' && d?.versionId !== undefined) {
+          process.stderr.write(`${C.dim}· 已装过 ${d.versionId}${C.reset}\n`)
+        } else if (ev.code === 'forge.installer' && d?.message !== undefined) {
+          process.stderr.write(`${C.dim}· ${d.message}${C.reset}\n`)
+        }
+      },
+      result: (r) => {
+        process.stdout.write('\n')
+        process.stdout.write(
+          `  ${C.green}完成${C.reset} ${kind} ${r.forgeVersion} · ` +
+            `${r.installerRan ? '已跑官方 installer' : '复用已有安装'}\n`,
+        )
+        process.stdout.write(`  ${C.dim}版本 JSON${C.reset}  ${r.versionJsonPath}\n`)
+        process.stdout.write(
+          `\n  ${C.bold}启动${C.reset}  blockpilot run ${r.versionId} --root ${root} --instance ${instance}\n\n`,
+        )
+        return 0
+      },
+      failed: (ev) => {
+        process.stderr.write(`\n${C.red}${ev.code}${C.reset}: ${ev.message}\n`)
+        if (ev.hint !== undefined) process.stderr.write(`${C.dim}${ev.hint}${C.reset}\n`)
+      },
+    },
+    signal,
+  )
+}
+
 async function runDeploy(argv: readonly string[]): Promise<number> {
   const packPath = argv[0]
   if (packPath === undefined || packPath.startsWith('--')) {
@@ -1219,6 +1379,13 @@ async function runDeploy(argv: readonly string[]): Promise<number> {
           process.stderr.write(`  ${C.green}↓${C.reset} ${d.file}  ${C.dim}${d.source ?? ''}${C.reset}\n`)
         } else if (ev.code === 'deploy.failed') {
           process.stderr.write(`  ${C.red}✗${C.reset} ${d?.file ?? ''}  ${d?.error ?? ''}\n`)
+        } else if (ev.code === 'deploy.cf_no_key') {
+          const n = (ev.data as { files?: number } | undefined)?.files ?? 0
+          process.stderr.write(
+            `\n${C.yellow}!${C.reset} 没有 BLOCKPILOT_CF_API_KEY：清单里的 ${n} 个文件装不了，` +
+              `先装加载器与 overrides\n` +
+              `${C.dim}  key 在 console.curseforge.com 免费申请；设好环境变量后重跑同一条命令，已下的会跳过${C.reset}\n\n`,
+          )
         }
       },
       result: (r) => {
@@ -1227,7 +1394,8 @@ async function runDeploy(argv: readonly string[]): Promise<number> {
           `  ${C.green}装好了${C.reset}  ${r.gameVersion} + ${r.loaderKind} ${r.loaderVersion}\n`,
         )
         process.stdout.write(
-          `  ${C.dim}模组 ${r.mods} 个（文件 ${r.files} 个：下载 ${r.modsDownloaded} / 跳过 ${r.modsSkipped} / 失败 ${r.failed.length}）· overrides ${r.overrides} 个文件${C.reset}\n`,
+          `  ${C.dim}模组 ${r.mods} 个（文件 ${r.files} 个：下载 ${r.modsDownloaded} / 跳过 ${r.modsSkipped} / 失败 ${r.failed.length}）· ` +
+            `overrides ${r.overrides} 个文件${r.overridesMods > 0 ? `（其中 mods/ 里 ${r.overridesMods} 个 jar）` : ''}${C.reset}\n`,
         )
 
         // 部署后自检：装在完 ≠ 能跑
@@ -1336,6 +1504,9 @@ function renderDiag(r: DiagResult): string {
         `  ${C.yellow}?${C.reset} ${C.bold}${r.primary.kind}${C.reset}  ${C.dim}第 ${r.primary.line} 行${C.reset}`,
       )
       lines.push(`    ${r.primary.message}`)
+      if (r.primary.subject !== undefined) {
+        lines.push(`    ${C.dim}文件：${r.primary.subject}${C.reset}`)
+      }
       lines.push(`    ${C.cyan}→ ${r.primary.hint}${C.reset}`)
       lines.push('')
 
@@ -1368,6 +1539,9 @@ function renderDiag(r: DiagResult): string {
       `  ${C.red}✗${C.reset} ${C.bold}${r.primary.kind}${C.reset}  ${C.dim}第 ${r.primary.line} 行${C.reset}`,
     )
     lines.push(`    ${r.primary.message}`)
+    if (r.primary.subject !== undefined) {
+      lines.push(`    ${C.dim}文件：${r.primary.subject}${C.reset}`)
+    }
     lines.push(`    ${C.cyan}→ ${r.primary.hint}${C.reset}`)
     lines.push('')
   }
@@ -1515,6 +1689,8 @@ async function main(): Promise<number> {
   if (cmd === 'setup') return runSetup(argv.slice(1))
   if (cmd === 'assets') return runAssets(argv.slice(1))
   if (cmd === 'fabric') return runFabric(argv.slice(1))
+  if (cmd === 'forge') return runForge(argv.slice(1), 'forge')
+  if (cmd === 'neoforge') return runForge(argv.slice(1), 'neoforge')
   if (cmd === 'deploy') return runDeploy(argv.slice(1))
   if (cmd === 'launch') return runLaunch(argv.slice(1))
   if (cmd === 'run') return runGame(argv.slice(1))
@@ -1535,9 +1711,21 @@ main().then(
     }
     if (err instanceof NetworkError) {
       process.stderr.write(`${C.red}网络错误${C.reset}：${err.message}\n`)
-      process.stderr.write(
-        `${C.dim}检查网络；国内可加 --china 走镜像，或用 --proxy 指定代理${C.reset}\n`,
-      )
+      // Java 的二进制挂在 GitHub Releases 上，`--china` 的镜像表覆盖不到它。
+      // 这时候还说「加 --china 试试」等于让用户白试一次（issue #6）。
+      if (/github\.com|adoptium/i.test(err.url)) {
+        process.stderr.write(
+          `${C.dim}Java 的二进制在 GitHub Releases 上。可试：${C.reset}\n` +
+            `${C.dim}  1) 加 --china（走清华 TUNA 镜像，只覆盖镜像里已有的构建）${C.reset}\n` +
+            `${C.dim}  2) --proxy http://127.0.0.1:<port> 走代理${C.reset}\n` +
+            `${C.dim}  3) 自己下 Temurin 压缩包，解压到 <root>/java（顶层要能看到 bin/java）${C.reset}\n` +
+            `${C.dim}  4) 用系统已装的 Java：--java <路径>${C.reset}\n`,
+        )
+      } else {
+        process.stderr.write(
+          `${C.dim}检查网络；国内可加 --china 走镜像，或用 --proxy 指定代理${C.reset}\n`,
+        )
+      }
       process.exit(1)
     }
     if (err instanceof VersionNotFoundError) {

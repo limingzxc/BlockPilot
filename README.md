@@ -45,7 +45,8 @@ blockpilot deploy ~/Downloads/Fabulously.Optimized.mrpack --root D:/mc --instanc
 
 照最后一行敲就进游戏。首次约 150 MB（原版 + 库 + 模组）。
 
-想要声音和字体再补一次（可后补，不装也能进游戏）：
+**assets 不是可选项**。1.19+ 的原版资源包就是 assets 本身，缺了会在标题画面直接崩
+（`NoSuchFileException`，而进程还挂着不退出）：
 
 ```bash
 blockpilot assets 1.21.1 --root D:/mc     # 约 790 MB
@@ -56,15 +57,20 @@ Fabric、Forge、NeoForge 都支持，按包里的声明自动选。Forge 类要
 
 **同一个实例可以反复 deploy**：已经下过的文件会跳过，不会重装一遍。
 
-CurseForge 的包（`.zip` 带 `manifest.json`）也能装，但要先给一个 API key——
-清单里只有 `projectID/fileID`，没有 key 拿不到下载地址与哈希：
+CurseForge 的包（`.zip` 带 `manifest.json`）也能装。清单里只有 `projectID/fileID`，
+换下载地址要一个免费 key：
 
 ```bash
 export BLOCKPILOT_CF_API_KEY=<在 console.curseforge.com 免费申请的 key>
 blockpilot deploy ~/Downloads/MyPack.zip --root D:/mc --instance mypack
 ```
 
-少数作者关闭了「第三方下载」，这些文件会失败并逐个列出（退出码 2），其余照装。
+**没有 key 也照样装**：原版、加载器、`overrides/` 都会落地，只有清单里那些文件
+列成「需要你自己下载」（退出码 2）。配好 key 再跑同一条命令，已下的会跳过。
+少数作者关闭了「第三方下载」，这些文件同样单独列出，其余照装。
+
+`overrides/mods` 里的 jar 不属于清单，但解压后就在 `mods/` 里——
+`deploy` 与 `preflight` 都会把它单独报出来，不会让你对不上游戏里的模组数。
 
 ## 装之前，先看它能不能跑
 
@@ -157,7 +163,8 @@ blockpilot diag --root D:/mc    # 分析最近一次
 JVM 去报一句看不懂的 `Unrecognized option`。一般整合包 4096 起，大型包 8192。
 
 **进游戏没声音、字体是方框**
-`blockpilot assets <mc> --root <dir>`。这一步是几千个小文件，慢是正常的。
+assets 没装全。`blockpilot assets <mc> --root <dir>`。这一步是几千个小文件，慢是正常的。
+1.19+ 完全没装 assets 时不是「没声音」，而是标题画面就崩——`preflight` 会报 `ASSETS_MISSING`。
 
 **下载慢或者连不上**
 加 `--china` 走国内镜像，**镜像失败会自动退回官方源**，不会卡死在镜像上。有代理时

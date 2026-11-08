@@ -866,7 +866,10 @@ const CASES: readonly CaseDef[] = [
       assertText(r, /已到时限结束|正常退出/, '应该是干净退出')
       assertNoText(r, '异常退出', '不该报成崩溃')
 
-      const m = /日志\s+(\S+\.log)/.exec(strip(r.stdout))
+      // 路径里可能有空格（仓库放在 "WorkBuddy AI" 这类目录下），不能用 \S+：
+      // 那样只在这里红、在 CI 上绿，是最难查的一类假失败。
+      // 也不能用 `\s+` 起头——`\s` 会吃掉换行，把上一行的「N 行日志」接到路径里。
+      const m = /^\s*日志[ \t]+(.+?\.log)[ \t]*$/m.exec(strip(r.stdout))
       assert(m !== null, '没打印会话日志路径')
       const logPath = m[1]
       assert(logPath !== undefined && existsSync(logPath), `会话日志不存在：${String(logPath)}`)
