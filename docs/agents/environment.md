@@ -48,6 +48,10 @@ gh issue close 10 -R limingzxc/BlockPilot -c "修复说明"
 
 ## 检查与测试
 
+新克隆上先 `npm install`（约 35 s）：依赖没装时 `npm run typecheck` 报
+`'tsc' 不是内部或外部命令`。一律用 `npm run <script>`，别用 `npx tsc`——
+registry 上有个废弃的同名包，装出来会打印 `This is not the tsc command you are looking for`。
+
 | 命令 | 覆盖 |
 |---|---|
 | `npm run typecheck` | `src/**` + `scripts/**`（两个 tsconfig） |
@@ -55,5 +59,6 @@ gh issue close 10 -R limingzxc/BlockPilot -c "修复说明"
 | `npm run e2e` | T0 + T1（约 30 s） |
 | `npm run e2e -- --tier 3 --only E2E-301` | 真启动，会开游戏窗口 |
 | `npm run smoke` | MCP 工具清单 + diag 结构化输出 |
+| `npm run smoke:auth` | 认证请求形状探针（真实端点 + 无效令牌，需要网络） |
 
 迭代时只跑改到的文件（`npx tsx --test src/core/xxx.test.ts`），提交前跑全量。
