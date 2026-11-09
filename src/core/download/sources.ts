@@ -187,3 +187,8 @@ export function defaultSources(): readonly DownloadSource[] {
 export function chinaFirstSources(): readonly DownloadSource[] {
   return [adoptiumTunaSource, bmclapiSource, neoforgeCdnSource, mcimSource, directSource]
 }
+
+/** `--china` 的两套顺序。消费者的选择点只有这一个，别在别处再写一遍三元表达式。 */
+export function pickSources(china: boolean): readonly DownloadSource[] {
+  return china ? chinaFirstSources() : defaultSources()
+}

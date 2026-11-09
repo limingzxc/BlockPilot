@@ -16,7 +16,8 @@ import {
   runHint,
   setupHint,
 } from '../core/hints.js'
-import { COMMAND_FLAGS, validateFlags } from './flags.js'
+import { validateFlags } from './flags.js'
+import { COMMANDS } from './index.js'
 
 /** 够用的 shell 切分：支持双引号包住含空格的参数。 */
 function splitArgs(command: string): string[] {
@@ -45,11 +46,11 @@ function check(command: string): string[] {
   assert.equal(argv[0], 'blockpilot', `命令要以 blockpilot 开头：${command}`)
   const cmd = argv[1]
   assert.ok(cmd !== undefined, `缺少子命令：${command}`)
-  const spec = COMMAND_FLAGS[cmd]
+  const spec = COMMANDS.find((c) => c.name === cmd)
   assert.ok(spec !== undefined, `子命令不存在：${cmd}（${command}）`)
 
   const args = argv.slice(2)
-  const problem = validateFlags(args, spec)
+  const problem = validateFlags(args, spec.flags)
   assert.equal(problem, undefined, `${command} → ${String(problem)}`)
   return args
 }

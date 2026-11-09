@@ -8,7 +8,7 @@ import { defineOperation } from '../operation.js'
 import type { Operation } from '../operation.js'
 import { downloadOne } from '../download/downloader.js'
 import { runDownloadBatch } from '../download/batch.js'
-import { defaultSources, chinaFirstSources } from '../download/sources.js'
+import { defaultSources } from '../download/sources.js'
 import type { DownloadSource, DownloadTask } from '../download/types.js'
 import { writeInstanceMarker } from '../instance/marker.js'
 import type { Layout } from '../layout.js'
@@ -285,9 +285,4 @@ export function createVanillaSetup(opts: VanillaSetupOptions): Operation<Vanilla
     })
     yield Op.done()
   })
-}
-
-/** 供 CLI 选择源列表用 */
-export function pickSources(china: boolean): readonly DownloadSource[] {
-  return china ? chinaFirstSources() : defaultSources()
 }

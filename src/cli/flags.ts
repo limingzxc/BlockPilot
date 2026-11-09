@@ -1,94 +1,81 @@
 /**
- * 子命令的 flag 形状与校验。
+ * flag 的形状与校验。
  *
  * 单独成文件是为了能被测试 import：`index.ts` 顶层就会执行 main()，
- * 测试没法从那里取任何东西。hints 的可执行性测试依赖这张表。
+ * 测试没法从那里取任何东西。
+ *
+ * 形状（`takesValue` / 取值占位符 / 帮助）与校验放在一起：一处声明同时喂给
+ * `validateFlags` 和 `--help`，两者不可能再各自维护一份 flag 名单。
  */
 
+export interface FlagSpec {
+  /** true 表示这个 flag 后面必须跟一个值 */
+  readonly takesValue: boolean
+  /** 取值占位符，只进帮助：`--root <dir>`。`takesValue` 为 true 时必填 */
+  readonly value?: string
+  /** 帮助里的说明。省略表示只在用法行里出现，不单独解释 */
+  readonly help?: string
+  /**
+   * 通用 flag：多个子命令都接受，帮助里只解释一次。
+   *
+   * `--root` 出现在 10 条子命令里，逐个重复一句「数据根目录」只会把
+   * 帮助撑长，不会让人多懂一点。
+   */
+  readonly common?: boolean
+  /**
+   * 必填。`validateFlags` 会检查它真的出现了。
+   *
+   * 只有 `install --mods-dir` 用得上：不带这个参数时命令无事可做，
+   * 与其进到 handler 再打印整篇帮助，不如在校验这一步说清楚。
+   */
+  readonly required?: boolean
+}
+
 /**
- * 每个子命令接受的 flag。`true` 表示这个 flag 后面必须跟一个值。
+ * 声明时的写法。字符串 = 不取值的开关，字符串本身就是说明。
+ *
+ * 二十多个开关（`--json` / `--dry-run` / `--china` …）如果每个都写成三行对象，
+ * 声明区就没法扫读了。
+ */
+export type FlagDecl = FlagSpec | string
+
+export function normalizeFlags(
+  decl: Readonly<Record<string, FlagDecl>>,
+): Readonly<Record<string, FlagSpec>> {
+  const out: Record<string, FlagSpec> = {}
+  for (const [flag, d] of Object.entries(decl)) {
+    out[flag] = typeof d === 'string' ? { takesValue: false, help: d } : d
+  }
+  return out
+}
+
+/**
+ * 找第一个不认识的 flag，或需要值却没给值的 flag。返回人话，没问题返回 undefined。
  *
  * 为什么要这张表：以前未知参数被静默忽略，`--json` 拼成 `--jsno` 依然退出 0，
  * 脚本拿到一段人类可读文本去 JSON.parse，错在别处；`--root` 忘了写路径则
  * 悄悄装进默认目录。**静默做错事比报错难查得多。**
  */
-export const COMMAND_FLAGS: Record<string, Readonly<Record<string, boolean>>> = {
-  preflight: { '--json': false, '--no-host': false, '--no-cf-mirror': false },
-  install: {
-    '--mods-dir': true,
-    '--dry-run': false,
-    '--include-unverified': false,
-    '--no-host': false,
-    '--china': false,
-  },
-  java: { '--root': true, '--china': false },
-  login: { '--root': true, '--client-id': true },
-  accounts: { '--root': true, '--remove': true },
-  setup: { '--root': true, '--instance': true, '--dry-run': false, '--china': false },
-  assets: { '--root': true, '--dry-run': false, '--china': false, '--concurrency': true },
-  fabric: {
-    '--root': true,
-    '--instance': true,
-    '--loader': true,
-    '--china': false,
-    // 1.6.x / 1.7.10 / 1.12.2 只有 Legacy Fabric 有 loader；缺省自动探测
-    '--legacy': false,
-  },
-  deploy: {
-    '--root': true,
-    '--instance': true,
-    '--china': false,
-    '--java': true,
-    // 有 key 走官方批量接口；没有就走 MCIM 镜像（默认），--no-cf-mirror 关掉回落
-    '--curseforge-key': true,
-    '--no-cf-mirror': false,
-  },
-  launch: {
-    '--root': true,
-    '--instance': true,
-    '--raw': false,
-    '--java': true,
-    '--memory': true,
-    '--user': true,
-    '--china': false,
-    '--account': true,
-    '--offline': false,
-  },
-  run: {
-    '--root': true,
-    '--instance': true,
-    '--quiet': false,
-    '--stop': true,
-    '--java': true,
-    '--memory': true,
-    '--user': true,
-    '--china': false,
-    '--account': true,
-    '--offline': false,
-  },
-  forge: { '--root': true, '--instance': true, '--loader': true, '--java': true, '--china': false },
-  neoforge: { '--root': true, '--instance': true, '--loader': true, '--java': true, '--china': false },
-  logs: { '--root': true, '--instance': true },
-  diag: { '--root': true, '--instance': true, '--file': true, '--json': false },
-}
-
-/** 找第一个不认识的 flag，或需要值却没给值的 flag。返回人话，没问题返回 undefined。 */
 export function validateFlags(
   args: readonly string[],
-  spec: Readonly<Record<string, boolean>>,
+  spec: Readonly<Record<string, FlagSpec>>,
 ): string | undefined {
   for (let i = 0; i < args.length; i += 1) {
     const a = args[i]
     if (a === undefined || !a.startsWith('--')) continue
 
-    const needsValue = spec[a]
-    if (needsValue === undefined) return `未知参数 ${a}`
-    if (!needsValue) continue
+    const flag = spec[a]
+    if (flag === undefined) return `未知参数 ${a}`
+    if (!flag.takesValue) continue
 
     const value = args[i + 1]
     // 值不能是另一个 flag：`--root --china` 是少写了路径，不是要把 root 设成 "--china"
     if (value === undefined || value.startsWith('--')) return `${a} 需要一个值`
     i += 1
+  }
+
+  for (const [flag, f] of Object.entries(spec)) {
+    if (f.required === true && !args.includes(flag)) return `缺少必填参数 ${flag}`
   }
   return undefined
 }

@@ -57,6 +57,15 @@ Consumer 内部的 module：接收 `OpEvent` 流，产出人类/AI 可读的输�
 **Download batch（下载批）**
 一组 `DownloadTask` 的并发执行 module：输入 task 流与事件码前缀，产出计数、ok/cached/failed 事件、进度，结束返回汇总。见 `download/batch.ts`。
 
+**Report assembly（报告装配）**
+把 `Finding` 与计数折成 `PreflightReport` 的唯一 module：`verdict` 的 unknown 规则、`stats` 的算法只在这里。`preflight` 与 `deploy` 的部署后自检走同一个 interface，结论不会分叉。见 `preflight/report.ts`。
+
+**Command declaration（子命令声明）**
+一条子命令的 flag 形状、取值占位符与帮助，写在 `defineCommand` 一处；`validateFlags`、`--help`、分发都从它派生。见 `cli/commands.ts`。
+
+**Command context（命令上下文）**
+handler 的全部输入：`argv` / `signal` / `proxy` / `root` / `instance` / `layout` / `sources` / `china`。`layout` 与 `sources` 惰性求值，用不到它们的子命令不付代价。
+
 **Pack reader（整合包读取）**
 「路径 → Instance + 这个格式能做什么」的 module。能力声明用 `givesDownloadUrls` / `checksMods` 表达，消费者据此决定能做什么检查，而不是各自判断格式。见 `preflight/read-pack.ts`。
 
