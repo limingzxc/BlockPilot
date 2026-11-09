@@ -89,6 +89,34 @@ test('看不懂的写法返回 unknown，不当作违规', () => {
   assert.equal(satisfiesRange('1.21.1', '>1.0.0 next-please'), 'unknown')
 })
 
+test('`1.20-x.y.z` 的后缀参与比较（issue #14）', () => {
+  // supplementaries 的真实写法：breaks: { supplementaries: "<=1.20-2.7.32" }
+  assert.equal(satisfiesRange('1.20-3.1.43', '<=1.20-2.7.32'), 'violated')
+  assert.equal(satisfiesRange('1.20-2.7.10', '<=1.20-2.7.32'), 'satisfied')
+  assert.equal(satisfiesRange('1.20-2.7.32', '<=1.20-2.7.32'), 'satisfied')
+  // 下界同样要生效
+  assert.equal(satisfiesRange('1.20-3.1.43', '>=1.20-3.0'), 'satisfied')
+  assert.equal(satisfiesRange('1.20-2.7.32', '>=1.20-3.0'), 'violated')
+})
+
+test('`1.20.1-47.3.22` 这类 Forge 版本也能分出大小', () => {
+  assert.equal(satisfiesRange('1.20.1-47.3.22', '>=1.20.1-47.2.0'), 'satisfied')
+  assert.equal(satisfiesRange('1.20.1-47.1.0', '>=1.20.1-47.2.0'), 'violated')
+  // Maven 范围照旧
+  assert.equal(satisfiesRange('1.20.1-47.3.22', '[1.20.1,1.21)'), 'satisfied')
+})
+
+test('build metadata（+ 之后）不参与比较', () => {
+  assert.equal(satisfiesRange('0.92.12+1.20.1', '=0.92.12'), 'satisfied')
+  assert.equal(satisfiesRange('0.4.32+1802ada577', '>=0.4.32'), 'satisfied')
+})
+
+test('末尾孤零零的构建号不算版本段（flywheel 1.0.5-264）', () => {
+  // 真实写法：create 要求 >=1.0.5-264，实际 JiJ 里是 1.0.5+1.20.1.build.264
+  assert.equal(satisfiesRange('1.0.5+1.20.1.build.264', '>=1.0.5-264'), 'satisfied')
+  assert.equal(satisfiesRange('1.0.2+1.20.1', '>=1.0.5-264'), 'violated')
+})
+
 test('Forge 的裸版本号是推荐版本，不是精确匹配', () => {
   // VersionRange.createFromVersionSpec("1.0.0").hasRestrictions() === false
   assert.equal(satisfiesRange('2.6.1', '1.0.0', 'forge'), 'satisfied')
