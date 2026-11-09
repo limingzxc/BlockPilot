@@ -7,7 +7,7 @@ import type { DownloadTask, Mirror } from '../download/types.js'
 import { Op } from '../events.js'
 import { writeInstanceMarker } from '../instance/marker.js'
 import { pickLibraries } from '../launch/command.js'
-import { detectEnv, type LaunchEnv } from '../launch/env.js'
+import { detectEnv, type LaunchEnv, type OsArch } from '../launch/env.js'
 import type { Layout } from '../layout.js'
 import type { Operation } from '../operation.js'
 import { defineOperation } from '../operation.js'
@@ -182,17 +182,59 @@ export function extractNatives(version: VersionJson, env: LaunchEnv, layout: Lay
 }
 
 /**
+ * LWJGL 2 原生库的「扁平文件名 → Windows 加载名」对照。
+ *
+ * Legacy Fabric 的 `lwjgl-platform` natives jar 里是 `lwjgl-windows-amd64.dll` /
+ * `lwjgl-windows-i386.dll` / `OpenAL-amd64.dll` 这种带平台后缀的名字——那是它自己
+ * 的 SharedLibraryLoader 用的命名。而 LWJGL 2 的 `Sys.loadLibrary("lwjgl")` 走
+ * `System.loadLibrary`，在 Windows 上找的是 `lwjgl64.dll` / `lwjgl.dll`。
+ * 名字对不上，`java.library.path` 里放再多 DLL 也没用（issue #15）。
+ */
+const LWJGL2_FLAT =
+  /^(lwjgl|openal|jinput-dx8|jinput-raw)(?:-[a-z0-9]+)?-(amd64|i386|aarch64)\.dll$/i
+
+/** 同一个库在不同架构下的加载名。键是 {@link LWJGL2_FLAT} 的第一组（小写）。 */
+const LWJGL2_ALIAS: Readonly<Record<string, { readonly x64: string; readonly x86: string }>> = {
+  lwjgl: { x64: 'lwjgl64.dll', x86: 'lwjgl.dll' },
+  openal: { x64: 'OpenAL64.dll', x86: 'OpenAL.dll' },
+  'jinput-dx8': { x64: 'jinput-dx8_64.dll', x86: 'jinput-dx8.dll' },
+  'jinput-raw': { x64: 'jinput-raw_64.dll', x86: 'jinput-raw.dll' },
+}
+
+/**
+ * 解压时这个原生库该落成什么名字。`null` 表示不是当前架构的那一份，不要写。
+ *
+ * 只认 Windows 的 `.dll`：其他平台的原生库本来就叫 `liblwjgl.so` 之类，
+ * 按这套规则改名只会帮倒忙。
+ */
+export function legacyNativeName(name: string, arch: OsArch): string | null {
+  const m = LWJGL2_FLAT.exec(name)
+  if (m === null) return name
+  const base = m[1]?.toLowerCase() ?? ''
+  const target = LWJGL2_ALIAS[base]
+  if (target === undefined) return name
+  // amd64 / aarch64 用 64 位名字，i386 用 32 位名字
+  const want64 = arch !== 'x86'
+  const own64 = m[2] !== 'i386'
+  if (want64 !== own64) return null
+  return want64 ? target.x64 : target.x86
+}
+
+/**
  * 把一批原生 jar 解压到 destDir。
  *
  * 给「profile 只写了裸 maven 坐标」的加载器用（Legacy Fabric 的 lwjgl-platform）：
  * 那种库没有 downloads 元数据，`extractNatives` 按 downloads 找不到 jar 路径，
  * 只能由下载侧告诉我们落盘在哪。
+ *
+ * `arch` 给了就顺手把 LWJGL 2 的扁平文件名改成加载名（见 {@link legacyNativeName}）。
  */
 export function extractNativeJars(
   jars: readonly string[],
   destDir: string,
-  exclude: readonly string[] = ['META-INF/'],
+  opts: { readonly exclude?: readonly string[]; readonly arch?: OsArch } = {},
 ): number {
+  const exclude = opts.exclude ?? ['META-INF/']
   mkdirSync(destDir, { recursive: true })
   let count = 0
   for (const jar of jars) {
@@ -206,7 +248,10 @@ export function extractNativeJars(
     for (const [name, data] of Object.entries(entries)) {
       if (name.endsWith('/')) continue
       if (exclude.some((e) => name.startsWith(e))) continue
-      const out = safeJoin(destDir, name)
+      // 只保留当前架构那一份，避免同目录里堆着三个架构的 lwjgl
+      const target = opts.arch === undefined ? name : legacyNativeName(name, opts.arch)
+      if (target === null) continue
+      const out = safeJoin(destDir, target)
       if (out === null) continue
       mkdirSync(dirname(out), { recursive: true })
       writeFileSync(out, data)

@@ -283,7 +283,9 @@ export function createFabricSetup(opts: FabricSetupOptions): Operation<FabricSet
      */
     let nativesExtracted = 0
     if (nativeJars.length > 0) {
-      nativesExtracted = extractNativeJars(nativeJars, opts.layout.nativesDir(opts.gameVersion))
+      nativesExtracted = extractNativeJars(nativeJars, opts.layout.nativesDir(opts.gameVersion), {
+        arch: env.arch,
+      })
       yield Op.log('info', 'fabric.natives', { extracted: nativesExtracted })
     }
 
