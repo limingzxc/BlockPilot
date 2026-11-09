@@ -17,6 +17,8 @@ import { collect, defineOperation } from './operation.js'
 import { Op } from './events.js'
 import type { OpEvent } from './events.js'
 import { createDeploy } from './deploy.js'
+import { createPreflight } from './preflight/index.js'
+import type { HostProfile } from './instance.js'
 import type { CurseforgeSource } from '../sources/curseforge.js'
 import type { DeployResult } from './deploy.js'
 import { resolveLayout } from './layout.js'
@@ -277,5 +279,77 @@ test('部署成功后写版本标记：preflight 能直接认出游戏版本与�
     assert.equal(scan.instance.gameVersion, '1.20.1')
     assert.equal(scan.instance.loader.kind, 'fabric')
     assert.equal(scan.instance.loader.version, '0.16.14')
+  })
+})
+
+/**
+ * 部署后自检漏 Java 的回归。
+ *
+ * 以前 `DeployOptions` 里连 host 字段都没有，自检**结构上不可能**发现 Java 不对：
+ * 装完打「部署后检查 通过」，紧接着 run 因为 Java 版本死掉。同一个实例、同一分钟。
+ */
+test('部署后自检查 Java：宿主机没有 Java 25 时装 26.x 的包判 blocked', async () => {
+  await withTemp(async (dir) => {
+    const layout = resolveLayout(dir, 'test')
+    const host: HostProfile = { os: 'windows', totalMemoryMiB: 16_384, javaMajors: [8] }
+    const op = createDeploy({
+      packPath: writeMrpack(dir, { minecraft: '26.1', 'fabric-loader': '0.16.14' }),
+      layout,
+      host,
+      deps: {
+        vanilla: () => fakeVanilla(),
+        loader: () => fakeLoader('fabric-loader-0.16.14-26.1'),
+      },
+    })
+    const result = await collect(op)
+
+    assert.equal(result.check.verdict, 'blocked')
+    assert.ok(
+      result.check.findings.some((f) => f.code === 'JAVA_MISSING'),
+      '自检要说清楚缺哪个 Java，而不是只说「通过」',
+    )
+  })
+})
+
+/**
+ * 自检与 preflight 的一致性回归。
+ *
+ * 「有东西没校验到就不算 ok」这条规则以前只写在 preflight 里，deploy 自己算 verdict
+ * 就漏了：目录里躺着几个读不出元数据的 jar，preflight 说 unknown、deploy 说 ok。
+ */
+test('部署后自检与 preflight 同结论：没参与检查的文件让 verdict 落到 unknown', async () => {
+  await withTemp(async (dir) => {
+    const layout = resolveLayout(dir, 'test')
+    mkdirSync(layout.mods, { recursive: true })
+    // 合法 zip，但没有模组元数据：进 skipped，不算 corrupt（corrupt 会升级成 warning）
+    writeFileSync(join(layout.mods, 'notes.jar'), zipSync({ 'readme.txt': strToU8('x') }))
+
+    // 1.20.1 要 Java 17：给准了才不会混进一条 JAVA_NEWER_ONLY 的 warning
+    const host: HostProfile = { os: 'windows', totalMemoryMiB: 16_384, javaMajors: [17] }
+    const result = await collect(
+      createDeploy({
+        packPath: writeMrpack(dir),
+        layout,
+        host,
+        deps: {
+          vanilla: () => fakeVanilla(),
+          loader: () => fakeLoader('fabric-loader-0.16.14-1.20.1'),
+        },
+      }),
+    )
+
+    assert.equal(result.check.stats.unresolved, 1)
+    assert.equal(result.check.verdict, 'unknown', '有文件没参与检查时不该给 ok')
+
+    // 同一个目录，preflight 必须给同一个结论——这两条路以前各算各的
+    const pre = await collect(
+      createPreflight({
+        target: layout.gameDir,
+        source: { name: 'stub', getVersions: async () => [] },
+        host,
+      }),
+    )
+    assert.equal(pre.verdict, result.check.verdict)
+    assert.deepEqual(pre.stats, result.check.stats)
   })
 })

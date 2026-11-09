@@ -37,6 +37,9 @@ export interface RepairPlan {
   readonly manual: readonly ManualFix[]
 }
 
+/** 没有可自动补装的东西。报告里用它，避免每个装配点各写一遍 `installs: []`。 */
+export const EMPTY_PLAN: RepairPlan = { installs: [], manual: [] }
+
 export interface PlanOptions {
   /** 与 closureToFindings 的 verified 同义：false 时所有安装项标为 unverified */
   readonly verified?: boolean

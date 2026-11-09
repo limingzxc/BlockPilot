@@ -8,11 +8,10 @@ import { runDownloadBatch } from './download/batch.js'
 import { defaultSources } from './download/sources.js'
 import type { DownloadSource } from './download/types.js'
 import type { Layout } from './layout.js'
-import type { LoaderKind } from './instance.js'
+import type { HostProfile, LoaderKind } from './instance.js'
 import { readPackFile } from './preflight/read-pack.js'
-import { checkLocalInstance } from './preflight/local.js'
-import { checkAssets } from './preflight/assets.js'
-import { verdictOf } from './preflight/types.js'
+import { preflightDir } from './preflight/report.js'
+import type { ReportStats } from './preflight/report.js'
 import type { Finding, Verdict } from './preflight/types.js'
 import { scanInstanceDir } from './instance/scan.js'
 import { writeInstanceMarker } from './instance/marker.js'
@@ -42,6 +41,13 @@ export interface DeployOptions {
   readonly curseforge?: CurseforgeLike
   /** false 时禁用 MCIM 回落（`--no-cf-mirror`）：没 key 就按老行为降级 */
   readonly cfMirror?: boolean
+  /**
+   * 本机环境。给了就在部署后自检里查 Java；不给就只检查模组与 assets。
+   *
+   * 以前这里没有这个字段，于是自检**结构上不可能**发现 Java 不对：
+   * 装完打「通过」，`run` 紧接着因为 Java 版本死掉。见 ADR-0037。
+   */
+  readonly host?: HostProfile
   /**
    * 步骤工厂，注入点。缺省用真实的 setup modules。
    * 测试传假的 Operation 就能离线验证编排契约，不用下载任何东西。
@@ -130,6 +136,8 @@ export interface DeployResult {
   readonly check: {
     readonly verdict: Verdict
     readonly findings: readonly Finding[]
+    /** 和 `preflight <实例目录>` 报的是同一份计数：resolved 校验过，unresolved 没校验到 */
+    readonly stats: ReportStats
   }
 }
 
@@ -340,19 +348,24 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
       fallbackGameVersion: instance.gameVersion,
       fallbackLoader: instance.loader,
     })
-    const findings = [
-      ...checkLocalInstance(scan, {
-        gameVersion: instance.gameVersion,
-        loaderVersion: instance.loader.version,
-      }),
-      // 资源不装在 mods 里，但缺了同样起不来：装完自检也要看这一层
-      ...checkAssets(opts.layout.gameDir, instance.gameVersion, opts.layout.assets),
-    ]
-    const verdict = verdictOf(findings)
+    /**
+     * 自检不自己拼 findings：和 `preflight <实例目录>` 调同一个 module。
+     *
+     * 手抄的代价是具体的——这里以前只查模组与 assets，漏了 Java，
+     * 也没有「有东西没校验到就不算 ok」那条规则，于是自检说通过、run 说崩。
+     */
+    const check = preflightDir({
+      dir: opts.layout.gameDir,
+      scan,
+      // 资源装在 <root>/assets，不在实例目录里
+      assetsDir: opts.layout.assets,
+      ...(opts.host === undefined ? {} : { host: opts.host }),
+    })
     yield Op.log('info', 'deploy.check', {
-      verdict,
-      blockers: findings.filter((f) => f.severity === 'blocker').length,
-      findings: findings.length,
+      verdict: check.verdict,
+      blockers: check.findings.filter((f) => f.severity === 'blocker').length,
+      findings: check.findings.length,
+      unresolved: check.stats.unresolved,
     })
 
     yield Op.result({
@@ -368,7 +381,7 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
       overrides,
       overridesMods,
       failed,
-      check: { verdict, findings },
+      check: { verdict: check.verdict, findings: check.findings, stats: check.stats },
     })
     yield Op.done()
   })

@@ -3,44 +3,23 @@ import { statSync } from 'node:fs'
 import { Op } from '../events.js'
 import { defineOperation } from '../operation.js'
 import type { Operation } from '../operation.js'
-import type { HostProfile, Instance, LoaderKind } from '../instance.js'
+import type { HostProfile, LoaderKind } from '../instance.js'
 import { NetworkError } from '../http.js'
 import type { ContentSource, DependencyResolver, ProjectNamer, VersionInfo } from '../sources.js'
 import { closureToFindings, computeClosure } from '../deps/closure.js'
 import type { ClosureResult } from '../deps/closure.js'
-import { buildRepairPlan } from '../deps/plan.js'
+import { buildRepairPlan, EMPTY_PLAN } from '../deps/plan.js'
 import type { RepairPlan } from '../deps/plan.js'
-import { checkLocalInstance } from './local.js'
-import { checkAssets } from './assets.js'
 import { scanInstanceDir } from '../instance/scan.js'
-import type { ScannedMod } from '../instance/scan.js'
 import { readPackFile } from './read-pack.js'
 import { checkInstance, checkJava } from './check.js'
 import { cfDependencyFindings } from './cf-deps.js'
-import type { JavaRequirement } from './check.js'
-import { depKey } from '../modmeta/types.js'
 import { cfFileToVersionInfo, resolveCurseforge } from '../../sources/curseforge.js'
 import type { CurseforgeLike } from '../../sources/curseforge.js'
 import type { CurseforgeManifest } from './curseforge.js'
-import { verdictOf } from './types.js'
+import { assembleReport, preflightDir } from './report.js'
+import type { ReportStats } from './report.js'
 import type { Finding, PreflightReport } from './types.js'
-
-/**
- * 从 jar 元数据里收集模组自己声明的 Java 范围。
- *
- * 只认 Fabric/Quilt 的 `depends.java`（Forge 的 mods.toml 没有这个字段，
- * 它用 javafml + loaderVersion 表达类似约束）。没写范围的不算。
- */
-function javaRequirements(mods: readonly ScannedMod[]): JavaRequirement[] {
-  const out: JavaRequirement[] = []
-  for (const m of mods) {
-    for (const dep of m.meta.dependencies) {
-      if (depKey(dep.modId) !== 'java' || dep.versionRange === undefined) continue
-      out.push({ modId: m.meta.modId, range: dep.versionRange })
-    }
-  }
-  return out
-}
 
 export interface PreflightOptions {
   /** `.mrpack` 文件，或一个实例目录（MultiMC/Prism 实例、裸 .minecraft、任何带 mods/ 的目录） */
@@ -62,8 +41,6 @@ export interface PreflightOptions {
   }
 }
 
-const EMPTY_PLAN: RepairPlan = { installs: [], manual: [] }
-
 export function createPreflight(opts: PreflightOptions): Operation<PreflightReport> {
   return defineOperation<PreflightReport>('preflight', async function* (signal) {
     let isDir: boolean
@@ -74,63 +51,74 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
       return
     }
 
-    let instance: Instance
-    let localMods: ScannedMod[] = []
-    let skippedJars: string[] = []
-    let corruptJars: string[] = []
-    let overridesMods = 0
-    /** CurseForge 的清单，下面的 mod 级校验要用它拿 projectID/fileID 配对 */
-    let cfManifest: CurseforgeManifest | undefined
-    /** CurseForge 包没有 API key 时，mod 级校验整个跳过 */
-    let cfGated = false
-
+    /**
+     * ---- 目录：Java / 本地依赖 / assets 一次查完 ----
+     *
+     * 装配交给 `report.ts`：deploy 的部署后自检走同一个 module，
+     * 两边不可能再给出不同结论。
+     */
     if (isDir) {
       const scan = scanInstanceDir(opts.target, {
         fallbackGameVersion: opts.fallback?.gameVersion ?? 'unknown',
         fallbackLoader: opts.fallback?.loader ?? { kind: 'vanilla', version: 'unknown' },
       })
-      instance = scan.instance
-      localMods = [...scan.mods]
-      skippedJars = [...scan.skipped]
-      corruptJars = [...scan.corrupt]
       yield Op.log('info', 'instance.scanned', {
         dir: opts.target,
-        gameVersion: instance.gameVersion,
-        loader: instance.loader,
-        mods: localMods.length,
-        skipped: skippedJars.length,
+        gameVersion: scan.instance.gameVersion,
+        loader: scan.instance.loader,
+        mods: scan.mods.length,
+        skipped: scan.skipped.length,
       })
-    } else {
-      yield Op.log('info', 'modpack.reading', { path: opts.target })
-      try {
-        const pack = readPackFile(opts.target)
-        instance = pack.instance
-        // CF 的 files 只有 projectID/fileID，下载与校验都要 API key。
-        // 能力声明由 readPackFile 一处给出，消费者不再各自判断格式
-        cfGated = !pack.ability.checksMods
-        overridesMods = pack.overridesMods
-        cfManifest = pack.curseforgeManifest
-        yield Op.log('info', pack.kind === 'curseforge' ? 'modpack.curseforge' : 'modpack.parsed', {
-          name: instance.name,
-          gameVersion: instance.gameVersion,
-          loader: instance.loader,
-          mods: instance.mods.length,
-          overridesMods,
-        })
-      } catch (err) {
-        yield Op.failed(
-          'BAD_MODPACK',
-          String(err instanceof Error ? err.message : err),
-          '目前支持 .mrpack、CurseForge 的 .zip（带 manifest.json）和实例目录',
-        )
-        return
-      }
+
+      if (signal.aborted) return
+      yield Op.result(
+        preflightDir({
+          dir: opts.target,
+          scan,
+          ...(opts.host === undefined ? {} : { host: opts.host }),
+        }),
+      )
+      yield Op.done()
+      return
     }
+
+    /**
+     * ---- 整合包：包里没有 jar，只有清单 ----
+     *
+     * 下面两个分支的区别只在「元数据从哪来」，装配是同一份。
+     */
+    let pack
+    yield Op.log('info', 'modpack.reading', { path: opts.target })
+    try {
+      pack = readPackFile(opts.target)
+    } catch (err) {
+      yield Op.failed(
+        'BAD_MODPACK',
+        String(err instanceof Error ? err.message : err),
+        '目前支持 .mrpack、CurseForge 的 .zip（带 manifest.json）和实例目录',
+      )
+      return
+    }
+
+    const instance = pack.instance
+    // CF 的 files 只有 projectID/fileID，下载与校验都要 API key。
+    // 能力声明由 readPackFile 一处给出，消费者不再各自判断格式
+    const cfGated = !pack.ability.checksMods
+    // overrides 里的 jar 不属于「清单」，但解压后确实会进 mods/
+    const overridesMods = pack.overridesMods
+    const cfManifest: CurseforgeManifest | undefined = pack.curseforgeManifest
+
+    yield Op.log('info', pack.kind === 'curseforge' ? 'modpack.curseforge' : 'modpack.parsed', {
+      name: instance.name,
+      gameVersion: instance.gameVersion,
+      loader: instance.loader,
+      mods: instance.mods.length,
+      overridesMods,
+    })
 
     if (signal.aborted) return
 
     const findings: Finding[] = []
-    // overrides 里的 jar 不属于「清单」，但解压后确实会进 mods/。
     // 不说明的话，用户会拿「mods 271」去对数，然后发现游戏里加载了 304 个（issue #13）
     if (overridesMods > 0) {
       findings.push({
@@ -142,34 +130,17 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
         hint: '这些文件不需要 API key；装完后对实例目录跑 preflight，它们会一起参与校验',
       })
     }
-    let plan: RepairPlan = EMPTY_PLAN
-    let mods = instance.mods.length
-    let resolved = 0
-    let unresolved = 0
 
-    // Java 与在线/离线无关，三条链路都要跑。
-    // 离线模式能读到 jar 里的 `java` 依赖，那份声明比「MC 版本 → Java」的兜底表准（issue #11）。
+    let plan: RepairPlan = EMPTY_PLAN
+    // 三条链路的缺省值相同：清单里的每一项都还没校验过
+    let stats: ReportStats = { mods: instance.mods.length, resolved: 0, unresolved: 0 }
+
+    // Java 与在线/离线无关。包里没有 jar，所以没有模组自己声明的 Java 范围可用
     if (opts.host !== undefined) {
-      findings.push(...checkJava(instance, opts.host, isDir ? javaRequirements(localMods) : []))
+      findings.push(...checkJava(instance, opts.host))
     }
 
-    if (isDir) {
-      // ---- 离线模式：只有 jar 内的 modId，没有 projectId ----
-      findings.push(
-        ...checkLocalInstance(
-          { instance, mods: localMods, skipped: skippedJars, corrupt: corruptJars },
-          {
-            gameVersion: instance.gameVersion,
-            loaderVersion: instance.loader.version,
-          },
-        ),
-      )
-      // 资源包不在 mods 里，但缺了同样起不来——单独查一层（issue #2）
-      findings.push(...checkAssets(opts.target, instance.gameVersion))
-      mods = localMods.length + skippedJars.length
-      resolved = localMods.length
-      unresolved = skippedJars.length
-    } else if (cfGated) {
+    if (cfGated) {
       /**
        * ---- CurseForge：补上 mod 级校验 ----
        *
@@ -207,8 +178,8 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
 
       const versions = [...infos.values()].map(cfFileToVersionInfo)
       if (versions.length === 0) {
-        // 一个都没解析出来（没 key 且镜像不可用、或清单为空）：保持原来的诚实说法
-        unresolved = instance.mods.length
+        // 一个都没解析出来（没 key 且镜像不可用、或清单为空）：保持原来的诚实说法。
+        // stats 保持缺省——全部 unresolved，verdict 落到 unknown
         findings.push({
           severity: 'warning',
           code: 'CF_NO_MOD_CHECK',
@@ -221,10 +192,12 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
         const map = new Map(versions.map((v) => [v.versionId, v]))
         findings.push(...checkInstance({ instance, versions: map }))
         findings.push(...cfDependencyFindings(instance, versions))
-        mods = instance.mods.length
-        resolved = map.size
         // 没解析到的文件是「校验不了」，不是「有问题」——数字上要分开
-        unresolved = instance.mods.length - map.size
+        stats = {
+          mods: instance.mods.length,
+          resolved: map.size,
+          unresolved: instance.mods.length - map.size,
+        }
       }
     } else {
       // ---- 在线模式：有 projectId，可以查元数据和递归闭包 ----
@@ -322,28 +295,24 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
               verified: false,
               ...(nameOf === undefined ? {} : { nameOf }),
             })
-      mods = instance.mods.length
-      resolved = map.size
       // map 里没有的，就是没查到的——本地文件和坏 id 都在里面，不要重复计。
-      unresolved = instance.mods.length - map.size
+      stats = {
+        mods: instance.mods.length,
+        resolved: map.size,
+        unresolved: instance.mods.length - map.size,
+      }
     }
 
     if (signal.aborted) return
 
-    const base = verdictOf(findings)
-    // 有东西没校验过时，"ok" 是不可信的结论。
-    const verdict = base === 'ok' && unresolved > 0 ? 'unknown' : base
-
-    const report: PreflightReport = {
-      verdict,
-      findings,
-      stats: { mods, resolved, unresolved },
-      target: { gameVersion: instance.gameVersion, loader: instance.loader },
-      plan,
-      generatedAt: new Date().toISOString(),
-    }
-
-    yield Op.result(report)
+    yield Op.result(
+      assembleReport({
+        findings,
+        stats,
+        target: { gameVersion: instance.gameVersion, loader: instance.loader },
+        plan,
+      }),
+    )
     yield Op.done()
   })
 }
