@@ -1,6 +1,6 @@
 # 0024. 正版登录：设备码 + 自己的 Azure 应用
 
-- **Status**: Accepted（链路已实现并有 23 个测试；**真实登录未实测**，见「验证边界」）
+- **Status**: Accepted（第 2 节「client id 必须自己注册」已被 **ADR-0039** 取代：改为内置 BlockPilot 自己的应用；**真实登录未实测**，见「验证边界」）
 - **Date**: 2026-10-27
 - **Deciders**: @liming
 - **Depends on**: ADR-0002、ADR-0010
@@ -32,6 +32,9 @@
 代价是用户要多做两步（开浏览器、输码）。对一个装整合包的玩家，这比「一个盖在游戏上的登录框」更可信——他看得见地址栏。
 
 ### 2. client id 必须由使用者自己注册
+
+> **已被 ADR-0039 取代。** 项目现在有自己的应用注册，`login` 不再要求使用者注册 Azure 应用。
+> 下面这段保留为历史决策，以及「想用自己的应用」时的注册步骤。
 
 `AUTH_NO_CLIENT_ID` 是**默认状态**，不是配置疏漏。任何硬编码的第三方 client id 都是冒充别人的应用。
 
@@ -121,9 +124,31 @@ api.minecraftservices.com/minecraft/profile                  → uuid 与玩家�
 
 **未验证**
 
-- **一次真实登录**。缺两个前提：一个注册好的 Azure 应用 id、一个有 Java 版 Minecraft 的微软账号。
-  两样都只能由使用者提供，因此 `login` 的「成功路径」只被假适配器覆盖过，
-  和 NeoForge 当初「代码就绪、未实测」是同一类诚实标注。
+- **一次端到端真实登录**。2026-11-09 用真实账号跑过：设备码 → MSA → XBL → XSTS **四跳全通**
+  （XBL 曾因缺 `AuthMethod` 失败，已修，见 ADR-0039），最后一跳被 Mojang 白名单拒绝
+  （`Invalid app registration`）。所以「成功路径」仍只被假适配器覆盖过——
+  这次不是代码没写，是外部审核没下来，和 NeoForge 当初「代码就绪、未实测」是同一类诚实标注。
+
+## 真机踩到的两处
+
+这两个都只在真实网络 + 真实浏览器里才暴露，单测和端点存活检查都发现不了。
+
+### 设备码输错页面 = 「该代码无法工作」
+
+微软返回的 `verification_uri` 恒为 `https://www.microsoft.com/link`，它 301 到
+`login.live.com`——国内经常打不开。而顺手的替代 `microsoft.com/devicelogin` 落地的
+`login.microsoftonline.com/common/oauth2/deviceauth` 是**工作/学校账户**的表单
+（标题 “Sign in to your account”），消费者设备码输进去会被判成「该代码无法工作」，
+现象和「码过期」一模一样。
+
+消费者账户的入口是 `login.live.com/oauth20_remoteconnect.srf`（标题 “Microsoft account”），
+也就是 `www.microsoft.com/link` 跳转的终点。CLI 现在会把这一条作为备用地址直接打出来
+（`DEVICE_AUTH_FALLBACK_URI`）。
+
+### XBL 缺 `AuthMethod` 表现为 400 空体
+
+见 ADR-0039。一句话：`Properties.AuthMethod` 缺失时返回 400 且响应体为空，
+和「令牌失效」的现象不可区分。
 
 ## 不做
 
