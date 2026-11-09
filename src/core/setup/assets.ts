@@ -1,15 +1,12 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-
-import { Op } from '../events.js'
-import type { OpEvent } from '../events.js'
-import { defineOperation } from '../operation.js'
-import type { Operation } from '../operation.js'
-import { downloadOne } from '../download/downloader.js'
 import { runDownloadBatch } from '../download/batch.js'
 import { defaultSources } from '../download/sources.js'
-import type { DownloadSource, DownloadTask } from '../download/types.js'
+import type { DownloadTask, Mirror } from '../download/types.js'
+import { Op } from '../events.js'
 import type { Layout } from '../layout.js'
+import type { Operation } from '../operation.js'
+import { defineOperation } from '../operation.js'
 import { fetchVersionJson } from '../version/fetch.js'
 
 /** assets/indexes/<id>.json */
@@ -20,7 +17,7 @@ export interface AssetIndex {
 export interface AssetsSetupOptions {
   readonly layout: Layout
   readonly versionId: string
-  readonly sources?: readonly DownloadSource[]
+  readonly sources?: readonly Mirror[]
   readonly concurrency?: number
   readonly dryRun?: boolean
   /** 每多少个文件报一次进度。3598 个文件逐个报会刷屏 */
@@ -169,7 +166,12 @@ export function createAssetsSetup(opts: AssetsSetupOptions): Operation<AssetsSet
       sources,
       concurrency,
       signal,
-      codes: { ok: 'assets.ok', cached: 'assets.cached', failed: 'assets.failed', progressId: 'assets' },
+      codes: {
+        ok: 'assets.ok',
+        cached: 'assets.cached',
+        failed: 'assets.failed',
+        progressId: 'assets',
+      },
       logPerFile: false,
       progressEvery: reportEvery,
     })

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { after, before, test } from 'node:test'
 
 import { downloadOne, verifyExisting } from './downloader.js'
-import type { DownloadSource, DownloadTask } from './types.js'
+import type { DownloadTask, Mirror } from './types.js'
 
 const BODY = Buffer.from('hello blockpilot — this is a fake mod file')
 const SHA1 = createHash('sha1').update(BODY).digest('hex')
@@ -51,7 +51,7 @@ after(async () => {
   rmSync(workDir, { recursive: true, force: true })
 })
 
-const direct: DownloadSource = { name: 'direct', credit: 'direct', rewrite: (url: URL) => url.toString() }
+const direct: Mirror = { name: 'direct', credit: 'direct', rewrite: (url: URL) => url.toString() }
 
 function task(path: string, name = 'x.jar'): DownloadTask {
   return {
@@ -104,7 +104,7 @@ test('哈希与体积都不符时报错里带上体积差', async () => {
 
 test('一个源失败后降级到下一个源', async () => {
   const t = task('/good', 'fallback.jar')
-  const broken: DownloadSource = {
+  const broken: Mirror = {
     name: 'broken',
     credit: 'broken',
     rewrite: () => `${baseUrl}/404`,
@@ -118,7 +118,7 @@ test('一个源失败后降级到下一个源', async () => {
 
 test('镜像返回错误内容会被哈希挡下，不会污染磁盘', async () => {
   const t = task('/good', 'poisoned.jar')
-  const liar: DownloadSource = {
+  const liar: Mirror = {
     name: 'liar',
     credit: 'liar',
     rewrite: () => `${baseUrl}/wrong`,
@@ -150,7 +150,10 @@ test('连接卡住时按空闲超时中止，不留半成品', async () => {
     /没有收到数据/,
   )
   assert.equal(existsSync(t.destPath), false)
-  assert.equal(existsSync(`${t.destPath}.part`), false)
+  assert.deepEqual(
+    readdirSync(join(t.destPath, '..')).filter((n) => n.endsWith('.part')),
+    [],
+  )
 })
 
 test('所有源都失败时抛 NetworkError，带地址与各源原因（issue #6）', async () => {

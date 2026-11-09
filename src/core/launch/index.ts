@@ -1,13 +1,12 @@
-import { Op } from '../events.js'
-import { defineOperation } from '../operation.js'
-import type { Operation } from '../operation.js'
 import type { AuthAccount } from '../auth/types.js'
+import { Op } from '../events.js'
 import type { Layout } from '../layout.js'
-import { fetchVersionJson } from '../version/fetch.js'
+import type { Operation } from '../operation.js'
+import { defineOperation } from '../operation.js'
 import { resolveVersion } from '../version/resolve.js'
 import { detectEnv } from './env.js'
-import { buildLaunchPlan } from './plan.js'
 import type { LaunchPlan } from './plan.js'
+import { buildLaunchPlan } from './plan.js'
 
 export interface LaunchOptions {
   readonly versionId: string
@@ -42,7 +41,9 @@ export function createLaunchPlan(opts: LaunchOptions): Operation<LaunchPlan> {
       type: version.type,
       libraries: version.libraries.length,
       hasModernArgs: version.arguments !== undefined,
-      javaMajorVersion: version.javaVersion?.majorVersion,
+      ...(version.javaVersion === undefined
+        ? {}
+        : { javaMajorVersion: version.javaVersion.majorVersion }),
     })
 
     const plan = buildLaunchPlan({

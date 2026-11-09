@@ -16,8 +16,10 @@
 ```bash
 npm install
 npm run build      # tsc → dist/
+npm run lint       # Biome：格式 + lint
 npm run typecheck  # 只检查不产出
 npm test           # 单元测试，全部离线
+npm run check      # lint + typecheck + test，提交前一条命令
 npm run e2e        # 实测，默认 T0 + T1
 ```
 
@@ -63,6 +65,19 @@ E2E-103 / E2E-104 依赖后两个夹具，缺了会记 SKIP。
 - body 写**为什么**和证据，不写「改了哪些文件」——那是 diff 的活
 - 修 bug 的提交尽量带一条会红的用例
 - 不跳过 hook，不 `--amend` 已推送的提交
+- 本地钩子（可选）：`git config core.hooksPath .githooks`，提交前跑 lint + typecheck
+
+## 评审
+
+评审只读 diff，不需要重新探索代码。以下几条是判断题，类型检查与测试兜不住：
+
+- **注释解释「为什么现在这样」**：历史（「以前……怎么错」）放 ADR 或提交信息；
+  代码里只留导致当前写法的原因。
+- **新行为必须带着它的注册表**：新事件码、Finding、CLI 命令、E2E 用例都要同时更新
+  对应表与文档（多数已由 typecheck / 测试覆盖，评审只需确认没有绕过）。
+- **优先扩展现有模块**：能在 `preflight/report.ts`、`instance/lock.ts` 里加一行，就不要
+  新开一层抽象；新增文件要能说清「为什么现有位置放不下」。
+- **失败路径要保留旧状态**：更新/替换类操作先校验再删旧文件；失败时 lock 与磁盘都不动。
 
 ## 设计决策
 
@@ -81,7 +96,7 @@ E2E-103 / E2E-104 依赖后两个夹具，缺了会记 SKIP。
 `.github/workflows/ci.yml`，Windows + Ubuntu 双平台：
 
 ```
-npm ci → typecheck → test → 造夹具 → e2e --tier 0
+npm ci → lint → typecheck → build → smoke:entry → test → 造夹具 → e2e --tier 0
 ```
 
 注意：workflow 里给 `env` 写代理变量时**只能写一组大小写**。GitHub 校验 env 名不分大小写，

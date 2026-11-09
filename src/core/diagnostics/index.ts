@@ -1,13 +1,17 @@
 import { existsSync, readFileSync } from 'node:fs'
 
 import { Op } from '../events.js'
-import { defineOperation } from '../operation.js'
 import type { Operation } from '../operation.js'
-import { attributeCulprits, buildModIndex, EMPTY_INDEX } from './attribution.js'
+import { defineOperation } from '../operation.js'
 import type { Culprit, ModIndex } from './attribution.js'
+import { attributeCulprits, buildModIndex, EMPTY_INDEX } from './attribution.js'
+import type { CrashKind, CrashSignal } from './crash.js'
 import { analyzeLog, primarySignal, survivedAfter } from './crash.js'
-import type { CrashSignal, CrashKind } from './crash.js'
+import type { CrashReportInfo } from './crash-report.js'
+import { descriptionSignal, parseCrashReport } from './crash-report.js'
 import { parseFrames } from './frames.js'
+import type { DiagFormat } from './hs-err.js'
+import { analyzeHsErr, detectFormat, parseHsErrFrames } from './hs-err.js'
 
 /** 这些 kind 的结论会因「指向了谁」而变；运行时的（Java/内存/显卡）不会。 */
 const ATTRIBUTABLE: ReadonlySet<CrashKind> = new Set(['mod-crash', 'mod-load-failed', 'mixin'])
@@ -74,6 +78,10 @@ export type DiagVerdict = 'crash' | 'inconclusive' | 'clean'
 
 export interface DiagResult {
   readonly logPath: string
+  /** 输入文件的格式：普通日志 / hs_err / Minecraft crash-report */
+  readonly format: DiagFormat
+  /** crash-report 才有：Description / MC 版本 / 模组数 */
+  readonly crashReport?: CrashReportInfo
   readonly lineCount: number
   readonly signals: readonly CrashSignal[]
   readonly primary: CrashSignal | null
@@ -102,10 +110,25 @@ export function createDiagnose(opts: DiagOptions): Operation<DiagResult> {
     const lines = text.split(/\r?\n/)
     if (signal.aborted) return
 
-    const rawSignals = analyzeLog(lines)
+    // hs_err 不是日志：它没有 `at ...` 栈帧，只有信号与问题帧。
+    // 用 analyzeLog 扫它会把「JVM 整个死了」判成 clean。
+    const format = detectFormat(text)
+    const crashReport = format === 'crash-report' ? parseCrashReport(lines) : null
+    const rawSignals = [...(format === 'hs-err' ? analyzeHsErr(lines) : analyzeLog(lines))]
+
+    // 摘要在「没有任何其它致命信号」时才兜底：mixin 崩溃报告也常写
+    // Description: Rendering overlay，不能让它把更具体的 mixin 结论盖掉
+    if (
+      crashReport !== null &&
+      rawSignals.every((s) => s.severity !== 'fatal') &&
+      crashReport.descriptionLine !== undefined
+    ) {
+      const signal = descriptionSignal(crashReport, crashReport.descriptionLine)
+      if (signal !== null) rawSignals.push(signal)
+    }
     const rawPrimary = primarySignal(rawSignals)
 
-    const frames = parseFrames(lines)
+    const frames = format === 'hs-err' ? parseHsErrFrames(lines) : parseFrames(lines)
     const index =
       opts.index ??
       (opts.modsDir === undefined || !existsSync(opts.modsDir)
@@ -116,8 +139,7 @@ export function createDiagnose(opts: DiagOptions): Operation<DiagResult> {
     // 先定结论，再拼措辞：hint 里能不能说「崩在」取决于这个结论。
     // 有 fatal 信号还不够——要看这条之后游戏有没有继续走到启动里程碑，
     // 否则 Controlify 这种「mixin 被禁用但游戏照跑」会被报成崩溃。
-    const survived =
-      rawPrimary !== null && survivedAfter(lines, rawPrimary.line)
+    const survived = rawPrimary !== null && survivedAfter(lines, rawPrimary.line)
     const verdict: DiagVerdict =
       rawPrimary === null
         ? 'clean'
@@ -135,7 +157,7 @@ export function createDiagnose(opts: DiagOptions): Operation<DiagResult> {
 
     // 把增强过的根因放回数组里。否则消费者按引用去重时，
     // 原始的那条会被当成「其他线索」再打印一次
-    const signals = rawSignals.map((s) => (s === rawPrimary ? primary ?? s : s))
+    const signals = rawSignals.map((s) => (s === rawPrimary ? (primary ?? s) : s))
 
     const culprits = recovered ? [] : attribution.culprits
     const attributionNotes = recovered
@@ -146,6 +168,8 @@ export function createDiagnose(opts: DiagOptions): Operation<DiagResult> {
       : attribution.notes
 
     yield Op.log('info', 'diag.done', {
+      format,
+      ...(crashReport?.description === undefined ? {} : { description: crashReport.description }),
       lines: lines.length,
       signals: signals.length,
       verdict,
@@ -156,6 +180,8 @@ export function createDiagnose(opts: DiagOptions): Operation<DiagResult> {
 
     yield Op.result({
       logPath: opts.logPath,
+      format,
+      ...(crashReport === null ? {} : { crashReport }),
       lineCount: lines.length,
       signals,
       primary,

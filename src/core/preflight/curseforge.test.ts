@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { strToU8, zipSync } from 'fflate'
 import test from 'node:test'
+import { strToU8, zipSync } from 'fflate'
 
 import {
   curseforgeToInstance,
@@ -37,7 +37,10 @@ const SAMPLE = {
 function withZip(files: Record<string, string>, fn: (path: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), 'bp-cf-'))
   const p = join(dir, 'pack.zip')
-  writeFileSync(p, zipSync(Object.fromEntries(Object.entries(files).map(([k, v]) => [k, strToU8(v)]))))
+  writeFileSync(
+    p,
+    zipSync(Object.fromEntries(Object.entries(files).map(([k, v]) => [k, strToU8(v)]))),
+  )
   try {
     fn(p)
   } finally {
@@ -91,10 +94,7 @@ test('没有 primary 时取第一个 loader', () => {
     ...SAMPLE,
     minecraft: {
       version: '1.20.1',
-      modLoaders: [
-        { id: 'fabric-0.15.11', primary: false },
-        { id: 'forge-47.2.0' },
-      ],
+      modLoaders: [{ id: 'fabric-0.15.11', primary: false }, { id: 'forge-47.2.0' }],
     },
   }
   const inst = curseforgeToInstance(m)
@@ -118,7 +118,7 @@ test('readPackFile：一个入口同时认 mrpack 与 CF，并声明能力', asy
     assert.equal(cf.ability.givesDownloadUrls, false)
     assert.equal(cf.ability.checksMods, false)
     assert.equal(cf.instance.gameVersion, '1.20.1')
-    assert.equal(cf.mrpackIndex, undefined)
+    assert.equal('mrpackIndex' in cf, false)
 
     const mrPath = join(dir, 'pack.mrpack')
     writeFileSync(

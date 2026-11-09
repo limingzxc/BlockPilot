@@ -44,7 +44,10 @@ test('按包名把帧归到模组', () => {
     makeMod(dir, 'sodium.jar', 'sodium', { packages: ['net.caffeinemc.mods.sodium'] })
     const index = buildModIndex(dir)
     const r = attributeCulprits({
-      lines: ['java.lang.NullPointerException', '\tat net.caffeinemc.mods.sodium.Foo.bar(Foo.java:1)'],
+      lines: [
+        'java.lang.NullPointerException',
+        '\tat net.caffeinemc.mods.sodium.Foo.bar(Foo.java:1)',
+      ],
       index,
     })
     assert.equal(r.culprits.length, 1)

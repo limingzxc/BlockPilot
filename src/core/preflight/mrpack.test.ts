@@ -34,11 +34,14 @@ function withIndex(index: unknown, fn: (p: string) => void): void {
 
 function expectMessage(index: unknown, re: RegExp): void {
   withIndex(index, (p) => {
-    assert.throws(() => readMrpackIndex(p), (err: unknown) => {
-      assert.ok(err instanceof Error)
-      assert.match(err.message, re)
-      return true
-    })
+    assert.throws(
+      () => readMrpackIndex(p),
+      (err: unknown) => {
+        assert.ok(err instanceof Error)
+        assert.match(err.message, re)
+        return true
+      },
+    )
   })
 }
 
@@ -85,9 +88,7 @@ test('反斜杠写的穿越同样拦住', () => {
   expectMessage(
     {
       ...BASE,
-      files: [
-        { path: '..\\..\\evil.jar', hashes: {}, downloads: [], fileSize: 1 },
-      ],
+      files: [{ path: '..\\..\\evil.jar', hashes: {}, downloads: [], fileSize: 1 }],
     },
     /路径不安全/,
   )

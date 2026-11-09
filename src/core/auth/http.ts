@@ -1,3 +1,4 @@
+import { errMessage } from '../errors.js'
 import { USER_AGENT } from '../user-agent.js'
 import { authError } from './types.js'
 
@@ -67,7 +68,7 @@ async function send(
     if (timeout.aborted) {
       throw authError('AUTH_NETWORK', `请求超时（${TIMEOUT_MS / 1000}s）：${url}`)
     }
-    const message = err instanceof Error ? err.message : String(err)
+    const message = errMessage(err)
     throw authError('AUTH_NETWORK', `请求失败：${message}`)
   }
 }

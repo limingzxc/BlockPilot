@@ -14,8 +14,10 @@
  */
 
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname } from 'node:path'
 import { gunzipSync } from 'node:zlib'
+
+import { safeJoin } from '../safe-path.js'
 
 export interface TarEntry {
   readonly name: string
@@ -95,10 +97,12 @@ export function readTar(buffer: Uint8Array): readonly TarEntry[] {
     const dataStart = offset + BLOCK
     const dataEnd = dataStart + size
     if (dataEnd > buffer.length) {
-      throw new Error(`tar 被截断：条目 ${rawName} 声称有 ${size} 字节，但只剩 ${buffer.length - dataStart}`)
+      throw new Error(
+        `tar 被截断：条目 ${rawName} 声称有 ${size} 字节，但只剩 ${buffer.length - dataStart}`,
+      )
     }
     const data = buffer.subarray(dataStart, dataEnd)
-    offset = dataEnd + (BLOCK - (size % BLOCK)) % BLOCK
+    offset = dataEnd + ((BLOCK - (size % BLOCK)) % BLOCK)
 
     if (typeflag === 'L') {
       pendingName = readString(data, 0, data.length)
@@ -156,14 +160,14 @@ export function writeTarEntries(
   let files = 0
   let symlinks = 0
   for (const entry of entries) {
-    if (entry.name.startsWith('/') || entry.name.includes('..')) continue
     if (entry.type === 'symlink') {
       symlinks += 1
       continue
     }
     if (entry.type !== 'file') continue
 
-    const out = join(destDir, ...entry.name.split('/'))
+    const out = safeJoin(destDir, entry.name)
+    if (out === null) continue
     mkdirSync(dirname(out), { recursive: true })
     writeFileSync(out, entry.data)
     if ((entry.mode & 0o111) !== 0) {

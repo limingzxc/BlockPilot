@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { strToU8, zipSync } from 'fflate'
-
+import type { CfFileInfo } from '../../sources/curseforge.js'
 import { resolveLayout } from '../layout.js'
+import type { CurseforgeManifest } from '../preflight/curseforge.js'
 import type { MrpackIndex } from '../preflight/mrpack.js'
 import {
   buildCurseforgeTasks,
@@ -13,8 +14,6 @@ import {
   countOverridesMods,
   extractOverrides,
 } from './pack.js'
-import type { CurseforgeManifest } from '../preflight/curseforge.js'
-import type { CfFileInfo } from '../../sources/curseforge.js'
 
 const dir = mkdtempSync(join(tmpdir(), 'bp-pack-'))
 after(() => rmSync(dir, { recursive: true, force: true }))
@@ -38,8 +37,16 @@ const clientFile: MrpackIndex['files'][number] = {
   fileSize: 100,
 }
 
+function packTasks(
+  i: MrpackIndex,
+  layout: ReturnType<typeof resolveLayout>,
+  opts?: Parameters<typeof buildPackTasks>[2],
+) {
+  return buildPackTasks(i, layout, opts).tasks
+}
+
 test('客户端需要的文件进入任务列表', () => {
-  const tasks = buildPackTasks(index([clientFile]), resolveLayout(dir, 't'))
+  const tasks = packTasks(index([clientFile]), resolveLayout(dir, 't'))
   assert.equal(tasks.length, 1)
   assert.equal(tasks[0]?.fileName, 'a.jar')
 })
@@ -50,25 +57,81 @@ test('服务端专用文件被排除', () => {
     path: 'mods/server.jar',
     env: { client: 'unsupported' as const, server: 'required' as const },
   }
-  const tasks = buildPackTasks(index([clientFile, serverOnly]), resolveLayout(dir, 't'))
+  const tasks = packTasks(index([clientFile, serverOnly]), resolveLayout(dir, 't'))
   assert.equal(tasks.length, 1, '只装客户端需要的')
 })
 
 test('没有 env 的文件默认装上', () => {
-  const noEnv = { ...clientFile, path: 'mods/b.jar', env: undefined }
-  const tasks = buildPackTasks(index([noEnv]), resolveLayout(dir, 't'))
+  const { env: _env, ...withoutEnv } = clientFile
+  const noEnv = { ...withoutEnv, path: 'mods/b.jar' }
+  const tasks = packTasks(index([noEnv]), resolveLayout(dir, 't'))
   assert.equal(tasks.length, 1)
 })
 
 test('落地路径相对于实例根', () => {
-  const tasks = buildPackTasks(index([clientFile]), resolveLayout(dir, 'inst'))
+  const tasks = packTasks(index([clientFile]), resolveLayout(dir, 'inst'))
   assert.ok(tasks[0]?.destPath.endsWith(join('instances', 'inst', 'mods', 'a.jar')))
 })
 
 test('没有 downloads 的文件被跳过', () => {
   const broken = { ...clientFile, downloads: [] }
-  const tasks = buildPackTasks(index([broken]), resolveLayout(dir, 't'))
+  const tasks = packTasks(index([broken]), resolveLayout(dir, 't'))
   assert.equal(tasks.length, 0)
+})
+
+test('清单里的下载域名必须在白名单内（挡住内网地址）', () => {
+  const evil = {
+    ...clientFile,
+    path: 'mods/evil.jar',
+    downloads: ['http://169.254.169.254/latest/meta-data/x.jar'],
+  }
+  const built = buildPackTasks(index([evil]), resolveLayout(dir, 'wl'))
+  assert.equal(built.tasks.length, 0)
+  assert.equal(built.rejected.length, 1)
+  assert.match(built.rejected[0]?.error ?? '', /白名单/)
+})
+
+test('--allow-host 可以显式放行本地服务', () => {
+  const local = {
+    ...clientFile,
+    path: 'mods/local.jar',
+    downloads: ['http://127.0.0.1:8080/a.jar'],
+  }
+  const built = buildPackTasks(index([local]), resolveLayout(dir, 'wl2'), {
+    allowHosts: ['127.0.0.1'],
+  })
+  assert.equal(built.tasks.length, 1)
+  assert.equal(built.rejected.length, 0)
+})
+
+test('清单路径穿越被拒绝，并作为失败项报出来', () => {
+  const evil = { ...clientFile, path: '../../evil.jar' }
+  const built = buildPackTasks(index([evil]), resolveLayout(dir, 'wl3'))
+  assert.equal(built.tasks.length, 0)
+  assert.match(built.rejected[0]?.error ?? '', /路径不安全/)
+})
+
+test('overrides 默认不覆盖已存在的文件，--overwrite 才覆盖', () => {
+  const packPath = join(dir, 'keep.mrpack')
+  writeFileSync(
+    packPath,
+    zipSync({
+      'modrinth.index.json': strToU8('{}'),
+      'overrides/config.toml': strToU8('from-pack'),
+    }),
+  )
+  const gameDir = join(dir, 'keep-game')
+  mkdirSync(gameDir, { recursive: true })
+  writeFileSync(join(gameDir, 'config.toml'), 'user-edited')
+
+  const first = extractOverrides(packPath, gameDir)
+  assert.equal(first.skipped, 1)
+  assert.equal(first.files, 0)
+  assert.equal(readFileSync(join(gameDir, 'config.toml'), 'utf8'), 'user-edited')
+
+  const forced = extractOverrides(packPath, gameDir, { overwrite: true })
+  assert.equal(forced.files, 1)
+  assert.equal(readFileSync(join(gameDir, 'config.toml'), 'utf8'), 'from-pack')
 })
 
 test('overrides 与 client-overrides 都解压，后者覆盖前者', () => {
@@ -106,7 +169,9 @@ function cfManifest(files: CurseforgeManifest['files']): CurseforgeManifest {
   }
 }
 
-function cfInfo(partial: Partial<CfFileInfo> & Pick<CfFileInfo, 'fileId' | 'fileName'>): CfFileInfo {
+function cfInfo(
+  partial: Partial<CfFileInfo> & Pick<CfFileInfo, 'fileId' | 'fileName'>,
+): CfFileInfo {
   return {
     modId: 1,
     displayName: partial.fileName,
@@ -134,7 +199,9 @@ test('CF 包：fileID 换成下载任务，落到 mods/ 下', () => {
 test('CF 包：作者关了第三方下载 → unresolved，不静默丢弃', () => {
   const layout = resolveLayout(join(dir, 'cf2'), 'inst')
   const manifest = cfManifest([{ projectID: 1, fileID: 100, required: true }])
-  const files = new Map([[100, cfInfo({ fileId: 100, fileName: 'blocked.jar', downloadUrl: null })]])
+  const files = new Map([
+    [100, cfInfo({ fileId: 100, fileName: 'blocked.jar', downloadUrl: null })],
+  ])
   const { tasks, unresolved } = buildCurseforgeTasks(manifest, files, layout)
   assert.equal(tasks.length, 0)
   assert.equal(unresolved.length, 1)

@@ -2,13 +2,8 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { after, before, test } from 'node:test'
-
-import {
-  cfFileToVersionInfo,
-  MirrorCurseforgeSource,
-  resolveCurseforge,
-} from './curseforge.js'
 import type { CfFileInfo } from './curseforge.js'
+import { cfFileToVersionInfo, MirrorCurseforgeSource, resolveCurseforge } from './curseforge.js'
 
 let base = ''
 let server: ReturnType<typeof createServer>
@@ -40,7 +35,12 @@ before(async () => {
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(
         JSON.stringify({
-          data: { id: 12, modId: 3, fileName: 'c.jar', hashes: [{ algo: 1, value: 'c'.repeat(40) }] },
+          data: {
+            id: 12,
+            modId: 3,
+            fileName: 'c.jar',
+            hashes: [{ algo: 1, value: 'c'.repeat(40) }],
+          },
         }),
       )
       return
@@ -74,7 +74,10 @@ test('镜像源逐个解析：404 跳过，关闭直链的保留为 null', async
   assert.equal(map.get(10)?.hashes['sha1'], 'a'.repeat(40))
   assert.equal(map.get(12)?.downloadUrl, null, '作者关掉直链时是 null，不是缺失')
   assert.equal(map.has(11), false)
-  assert.ok(seen.some((u) => u === '/mods/1/files/10'), '要用 projectId 拼路径')
+  assert.ok(
+    seen.some((u) => u === '/mods/1/files/10'),
+    '要用 projectId 拼路径',
+  )
 })
 
 test('镜像源对重复 fileID 只查一次', async () => {

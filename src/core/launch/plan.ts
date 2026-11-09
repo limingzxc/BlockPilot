@@ -3,18 +3,19 @@ import { join } from 'node:path'
 
 import type { AuthAccount } from '../auth/types.js'
 import type { Layout } from '../layout.js'
-import { probeAssetObjects } from '../setup/assets.js'
+import { redactSecrets } from '../redact.js'
 import type { AssetsProbe } from '../setup/assets.js'
+import { probeAssetObjects } from '../setup/assets.js'
 import type { VersionJson } from '../version/types.js'
-import type { LaunchEnv } from './env.js'
 import {
   buildClasspath,
   expandArgs,
-  pickLibraries,
   splitLegacyArgs,
   substitute,
   usesOwnClasspath,
 } from './command.js'
+import type { LaunchEnv } from './env.js'
+import { offlineUuidHex } from './uuid.js'
 
 export interface LaunchPlanOptions {
   /** java 可执行文件 */
@@ -33,6 +34,8 @@ export interface LaunchPlanOptions {
   readonly account?: AuthAccount
   /** 最大堆内存，如 2048 */
   readonly maxMemoryMiB?: number
+  /** 实例配置里追加的 JVM 参数，排在 -Xmx 之后、版本 JSON 的参数之前 */
+  readonly extraJvmArgs?: readonly string[]
 }
 
 export interface LaunchPlan {
@@ -91,22 +94,27 @@ export function buildLaunchPlan(opts: LaunchPlanOptions): LaunchPlan {
   )
 
   const account = opts.account
+  /**
+   * 离线身份用与官方一致的派生方式（`OfflinePlayer:<name>` 的 MD5）。
+   *
+   * 全零 UUID 单人能进，但联机到离线服务器时服务端按名字算出的是另一个 UUID，
+   * 白名单/玩家数据/权限全都对不上。PCL、HMCL 都是这么派生的。
+   */
+  const offlineUuid = offlineUuidHex(opts.username)
   const vars: Record<string, string> = {
     auth_player_name: account?.name ?? opts.username,
     version_name: version.id,
     game_directory: gameDir,
     assets_root: assetsDir,
     assets_index_name: version.assetIndex?.id ?? version.assets,
-    auth_uuid: account?.uuid ?? '00000000000000000000000000000000',
+    auth_uuid: account?.uuid ?? offlineUuid,
     auth_access_token: account?.accessToken ?? '0',
     /**
      * 1.6.x / 1.7.x 的 `minecraftArguments` 用 `${auth_session}`，格式是
      * `token:<accessToken>:<uuid>`。只替换现代写法会让它原样留在命令行里，
      * 游戏里能看到 `(Session ID is ${auth_session})`（issue #10）。
      */
-    auth_session: `token:${account?.accessToken ?? '0'}:${
-      account?.uuid ?? '00000000000000000000000000000000'
-    }`,
+    auth_session: `token:${account?.accessToken ?? '0'}:${account?.uuid ?? offlineUuid}`,
     /**
      * 老版本用 `${game_assets}` 指向「散装」资源目录（sound/ lang/ 直接在里面）。
      * 1.6.x 不看 assets index，只按这个路径找文件；目录空着只是没声音，不会崩。
@@ -132,6 +140,7 @@ export function buildLaunchPlan(opts: LaunchPlanOptions): LaunchPlan {
 
   const jvm: string[] = []
   if (opts.maxMemoryMiB !== undefined) jvm.push(`-Xmx${opts.maxMemoryMiB}M`)
+  if (opts.extraJvmArgs !== undefined) jvm.push(...opts.extraJvmArgs)
 
   if (version.arguments?.jvm !== undefined) {
     jvm.push(...expandArgs(version.arguments.jvm, env).map((a) => substitute(a, vars)))
@@ -166,12 +175,11 @@ export function buildLaunchPlan(opts: LaunchPlanOptions): LaunchPlan {
   const assets =
     version.assetIndex === undefined
       ? null
-      : probeAssetObjects(
-          layout.assetIndex(version.assetIndex.id),
-          join(assetsDir, 'objects'),
-        )
+      : probeAssetObjects(layout.assetIndex(version.assetIndex.id), join(assetsDir, 'objects'))
 
-  const commandLine = [opts.java, ...args.map(quote)].join(' ')
+  // 展示用的命令行：真实令牌在 args 里（启动必需），这一份必须脱敏。
+  // `--raw`、日志、MCP 都只该拿到这一份，见 ADR-0040。
+  const commandLine = redactSecrets([opts.java, ...args.map(quote)].join(' '))
 
   return {
     java: opts.java,

@@ -15,9 +15,28 @@
  *
  * key 从环境变量 `BLOCKPILOT_CF_API_KEY` 或 `--curseforge-key` 取，不落盘、不进日志。
  */
+import {
+  type CfDependencyRelation,
+  type CfFileInfo,
+  type CfFileQuery,
+  CurseforgeError,
+  type CurseforgeLike,
+} from '../core/curseforge.js'
+import { errMessage } from '../core/errors.js'
 import { NetworkError } from '../core/http.js'
 import { USER_AGENT } from '../core/user-agent.js'
-import type { DependencyRef, VersionInfo } from '../core/sources.js'
+
+export type {
+  CfDependency,
+  CfDependencyRelation,
+  CfFileInfo,
+  CfFileQuery,
+  CurseforgeLike,
+} from '../core/curseforge.js'
+/**
+ * 契约与纯映射在 core，这里只放实现。re-export 保持既有 import 路径可用。
+ */
+export { CurseforgeError, cfFileToVersionInfo } from '../core/curseforge.js'
 
 export const CURSEFORGE_API = 'https://api.curseforge.com/v1'
 /**
@@ -30,38 +49,55 @@ export const CURSEFORGE_MIRROR = 'https://mod.mcimirror.top/curseforge/v1'
 const BATCH = 100
 const TIMEOUT_MS = 20_000
 
+/** 官方 `modLoaderType` 枚举。镜像用同一套值。 */
+const CF_LOADER_TYPE: Readonly<Record<string, number>> = {
+  forge: 1,
+  fabric: 4,
+  quilt: 5,
+  neoforge: 6,
+}
+
 /** CF 的 hash algo：1 = sha1，2 = md5。下载校验只认 sha1。 */
 const ALGO_SHA1 = 1
 
-export type CfDependencyRelation = 'required' | 'optional' | 'incompatible' | 'other'
+/**
+ * 429 / 5xx 的重试次数。
+ *
+ * 免 key 的镜像路径是「一个文件一次 GET」，271 个文件的包就是 271 次请求；
+ * 以前任意一次 429 都会抛错终止整轮解析，用户看到的是「CF 接口限流」，
+ * 而其实只差几百毫秒。这里退避重试两次，仍然失败才上报。
+ */
+const RETRIES = 2
 
-export interface CfDependency {
-  readonly modId: number
-  readonly relation: CfDependencyRelation
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new Error('aborted'))
+      return
+    }
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      reject(new Error('aborted'))
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
-export interface CfFileInfo {
-  readonly fileId: number
-  readonly modId: number
-  readonly fileName: string
-  readonly displayName: string
-  readonly size: number
-  /** 作者可以关掉第三方下载，这时是 null */
-  readonly downloadUrl: string | null
-  readonly hashes: Readonly<Record<string, string>>
-  /** CF 的 gameVersions 混着游戏版本与加载器名，如 ["1.12.2", "Forge"] */
-  readonly gameVersions: readonly string[]
-  readonly dependencies: readonly CfDependency[]
-}
-
-/** CF API 的稳定失败码。文案可以改，code 给脚本用。 */
-export class CurseforgeError extends Error {
-  readonly code: string
-
-  constructor(code: string, message: string) {
-    super(message)
-    this.name = 'CurseforgeError'
-    this.code = code
+/** 对 429/5xx 做指数退避；4xx 与 2xx 原样返回，由调用方解释。 */
+async function fetchRetrying(
+  url: string,
+  init: RequestInit,
+  signal: AbortSignal,
+): Promise<Response> {
+  for (let attempt = 0; ; attempt += 1) {
+    const res = await fetch(url, { ...init, signal })
+    if (res.status !== 429 && res.status < 500) return res
+    if (attempt >= RETRIES) return res
+    await sleep(500 * 2 ** attempt, signal)
   }
 }
 
@@ -100,30 +136,14 @@ function toFileInfo(raw: RawFile): CfFileInfo | null {
     fileName: raw.fileName,
     displayName: raw.displayName ?? raw.fileName,
     size: raw.fileLength ?? 0,
-    downloadUrl: typeof raw.downloadUrl === 'string' && raw.downloadUrl !== '' ? raw.downloadUrl : null,
+    downloadUrl:
+      typeof raw.downloadUrl === 'string' && raw.downloadUrl !== '' ? raw.downloadUrl : null,
     hashes: typeof sha1 === 'string' ? { sha1 } : {},
     gameVersions: raw.gameVersions ?? [],
     dependencies: (raw.dependencies ?? [])
       .filter((d): d is { modId: number; relationType?: number } => typeof d.modId === 'number')
       .map((d) => ({ modId: d.modId, relation: toRelation(d.relationType) })),
   }
-}
-
-/** 一个待解析的文件。官方接口只用 fileId，镜像接口两者都要（URL 里带 projectId）。 */
-export interface CfFileQuery {
-  readonly projectId: number
-  readonly fileId: number
-}
-
-/** 官方与镜像的共同契约。deploy 只依赖这个。 */
-export interface CurseforgeLike {
-  readonly configured: boolean
-  /** 日志/署名用，如 `MCIM · mod.mcimirror.top` */
-  readonly label: string
-  getFiles(
-    files: readonly CfFileQuery[],
-    signal: AbortSignal,
-  ): Promise<ReadonlyMap<number, CfFileInfo>>
 }
 
 export interface CurseforgeOptions {
@@ -138,7 +158,7 @@ export class CurseforgeSource implements CurseforgeLike {
   readonly label = 'api.curseforge.com'
 
   constructor(opts: CurseforgeOptions = {}) {
-    this.key = opts.apiKey ?? process.env['BLOCKPILOT_CF_API_KEY']
+    this.key = opts.apiKey ?? process.env.BLOCKPILOT_CF_API_KEY
     this.api = (opts.apiBase ?? CURSEFORGE_API).replace(/\/+$/, '')
   }
 
@@ -177,24 +197,79 @@ export class CurseforgeSource implements CurseforgeLike {
     return out
   }
 
+  async getLatestFile(
+    projectId: number,
+    gameVersion: string,
+    loader: string | null,
+    signal: AbortSignal,
+  ): Promise<CfFileInfo | null> {
+    if (!this.configured) {
+      throw new CurseforgeError(
+        'CF_API_KEY_MISSING',
+        '没有 CurseForge API key：设置环境变量 BLOCKPILOT_CF_API_KEY 后重试',
+      )
+    }
+    const params = new URLSearchParams({ gameVersion, pageSize: '1' })
+    if (loader !== null && CF_LOADER_TYPE[loader] !== undefined) {
+      params.set('modLoaderType', String(CF_LOADER_TYPE[loader]))
+    }
+    const url = `${this.api}/mods/${projectId}/files?${params.toString()}`
+    let res: Response
+    try {
+      res = await fetchRetrying(
+        url,
+        {
+          headers: {
+            'x-api-key': this.key ?? '',
+            Accept: 'application/json',
+            'User-Agent': USER_AGENT,
+          },
+        },
+        AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), signal]),
+      )
+    } catch (err) {
+      if (signal.aborted) throw err
+      throw new NetworkError(url, errMessage(err))
+    }
+    if (res.status === 401 || res.status === 403) {
+      throw new CurseforgeError(
+        'CF_API_KEY_INVALID',
+        `CurseForge 拒绝了这个 API key（HTTP ${res.status}）`,
+      )
+    }
+    if (res.status === 429) {
+      throw new CurseforgeError(
+        'CF_API_RATE_LIMIT',
+        'CurseForge 接口限流（HTTP 429）；等一会儿重试',
+      )
+    }
+    if (!res.ok) throw new CurseforgeError('CF_API_ERROR', `CurseForge 接口返回 HTTP ${res.status}`)
+    const body = (await res.json()) as { readonly data?: readonly RawFile[] }
+    const first = body.data?.[0]
+    return first === undefined ? null : toFileInfo(first)
+  }
+
   private async post(fileIds: readonly number[], signal: AbortSignal): Promise<readonly RawFile[]> {
     const url = `${this.api}/mods/files`
     let res: Response
     try {
-      res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'x-api-key': this.key ?? '',
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-          'User-Agent': USER_AGENT,
+      res = await fetchRetrying(
+        url,
+        {
+          method: 'POST',
+          headers: {
+            'x-api-key': this.key ?? '',
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            'User-Agent': USER_AGENT,
+          },
+          body: JSON.stringify({ fileIds }),
         },
-        body: JSON.stringify({ fileIds }),
-        signal: AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), signal]),
-      })
+        AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), signal]),
+      )
     } catch (err) {
       if (signal.aborted) throw err
-      throw new NetworkError(url, err instanceof Error ? err.message : String(err))
+      throw new NetworkError(url, errMessage(err))
     }
 
     if (res.status === 401 || res.status === 403) {
@@ -262,17 +337,53 @@ export class MirrorCurseforgeSource implements CurseforgeLike {
     return out
   }
 
+  async getLatestFile(
+    projectId: number,
+    gameVersion: string,
+    loader: string | null,
+    signal: AbortSignal,
+  ): Promise<CfFileInfo | null> {
+    const params = new URLSearchParams({ gameVersion, pageSize: '1' })
+    if (loader !== null && CF_LOADER_TYPE[loader] !== undefined) {
+      params.set('modLoaderType', String(CF_LOADER_TYPE[loader]))
+    }
+    const url = `${this.api}/mods/${projectId}/files?${params.toString()}`
+    let res: Response
+    try {
+      res = await fetchRetrying(
+        url,
+        { headers: { Accept: 'application/json', 'User-Agent': USER_AGENT } },
+        AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), signal]),
+      )
+    } catch (err) {
+      if (signal.aborted) throw err
+      throw new NetworkError(url, errMessage(err))
+    }
+    if (res.status === 404) return null
+    if (res.status === 429) {
+      throw new CurseforgeError(
+        'CF_API_RATE_LIMIT',
+        'CurseForge 镜像限流（HTTP 429）；等一会儿重试',
+      )
+    }
+    if (!res.ok) throw new CurseforgeError('CF_API_ERROR', `CurseForge 镜像返回 HTTP ${res.status}`)
+    const body = (await res.json()) as { readonly data?: readonly RawFile[] }
+    const first = body.data?.[0]
+    return first === undefined ? null : toFileInfo(first)
+  }
+
   private async one(f: CfFileQuery, signal: AbortSignal): Promise<CfFileInfo | null> {
     const url = `${this.api}/mods/${f.projectId}/files/${f.fileId}`
     let res: Response
     try {
-      res = await fetch(url, {
-        headers: { Accept: 'application/json', 'User-Agent': USER_AGENT },
-        signal: AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), signal]),
-      })
+      res = await fetchRetrying(
+        url,
+        { headers: { Accept: 'application/json', 'User-Agent': USER_AGENT } },
+        AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), signal]),
+      )
     } catch (err) {
       if (signal.aborted) throw err
-      throw new NetworkError(url, err instanceof Error ? err.message : String(err))
+      throw new NetworkError(url, errMessage(err))
     }
 
     // 镜像里没有这个文件（老文件未收录，或作者已删）：让调用方按「拿不到」处理
@@ -304,58 +415,4 @@ export function resolveCurseforge(
   if (official.configured) return official
   if (opts.allowMirror === false) return official
   return new MirrorCurseforgeSource()
-}
-
-/** CF 的 gameVersions 把加载器和 MC 版本混在一个数组里，这里只认这几种写法。 */
-const CF_LOADERS: Readonly<Record<string, string>> = {
-  forge: 'forge',
-  neoforge: 'neoforge',
-  fabric: 'fabric',
-  'legacy fabric': 'fabric',
-  quilt: 'quilt',
-}
-
-/**
- * CF 的文件元数据 → 预检用的 VersionInfo。
- *
- * 两个坑：
- * - `gameVersions` 是混合数组（`["1.12.2","Forge","Java 17"]`），要拆成
- *   「MC 版本」与「加载器」两列，否则 `1.12.2` 会被当成一个加载器名。
- * - 作者没填 gameVersions 的包确实存在。这时**不能**让上层去判版本——
- *   空的声明列表会被读成「不支持任何版本」，直接产出一个假 blocker。
- */
-export function cfFileToVersionInfo(info: CfFileInfo): VersionInfo {
-  const gameVersions: string[] = []
-  const loaders: string[] = []
-  for (const v of info.gameVersions) {
-    if (/^\d+\.\d+(\.\d+)?$/.test(v)) gameVersions.push(v)
-    else {
-      const loader = CF_LOADERS[v.toLowerCase()]
-      if (loader !== undefined && !loaders.includes(loader)) loaders.push(loader)
-    }
-  }
-
-  const dependencies: DependencyRef[] = []
-  for (const d of info.dependencies) {
-    if (d.relation !== 'required' && d.relation !== 'incompatible') continue
-    dependencies.push({ projectId: String(d.modId), versionId: null, kind: d.relation })
-  }
-
-  return {
-    projectId: String(info.modId),
-    versionId: String(info.fileId),
-    name: info.displayName,
-    gameVersions,
-    loaders,
-    dependencies,
-    files: [
-      {
-        url: info.downloadUrl ?? '',
-        filename: info.fileName,
-        size: info.size,
-        primary: true,
-        hashes: info.hashes,
-      },
-    ],
-  }
 }

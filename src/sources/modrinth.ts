@@ -1,5 +1,4 @@
 import { fetchJson, NetworkError } from '../core/http.js'
-import { USER_AGENT } from '../core/user-agent.js'
 import type {
   ContentSource,
   DependencyKind,
@@ -8,6 +7,7 @@ import type {
   ProjectNamer,
   VersionInfo,
 } from '../core/sources.js'
+import { USER_AGENT } from '../core/user-agent.js'
 
 export const MODRINTH_API = 'https://api.modrinth.com/v2'
 /** MCIM 的 API 镜像。实测 2026-10-25 可用，对元数据查询有真实加速。 */
@@ -16,7 +16,7 @@ export const MODRINTH_API_MCIM = 'https://mod.mcimirror.top/modrinth/v2'
 /** Modrinth 强制要求可识别的 User-Agent，缺了会被 400。规则见 core/user-agent.ts */
 const UA = USER_AGENT
 const BATCH = 100
-const TIMEOUT_MS = 20_000
+const _TIMEOUT_MS = 20_000
 
 export interface ModrinthOptions {
   /** 默认官方；国内可传 MODRINTH_API_MCIM */
@@ -157,6 +157,28 @@ export class ModrinthSource implements ContentSource, DependencyResolver, Projec
    * 优先 release，没有就退回最新的一条。查不到返回 null，不抛错——
    * 在依赖闭包里「查不到」是正常结局，不是异常。
    */
+  /**
+   * 按 project slug 或 id 取最新版本，不按 MC/加载器过滤。
+   *
+   * 给 `deploy <slug>` 用：整合包本身就是「这个项目的最新版」，再按当前实例
+   * 过滤反而会漏掉跨版本的整合包。`resolve` 仍只接受 8 位 projectId。
+   */
+  async getLatestVersion(ref: string, signal: AbortSignal): Promise<VersionInfo | null> {
+    if (!/^[0-9A-Za-z][0-9A-Za-z_-]{1,63}$/.test(ref)) return null
+    try {
+      const rows = await fetchJson<RawVersion[]>(
+        `${this.api}/project/${encodeURIComponent(ref)}/version`,
+        { signal, headers: { 'User-Agent': UA } },
+      )
+      if (!Array.isArray(rows) || rows.length === 0) return null
+      const picked = rows.find((r) => r.version_type === 'release') ?? rows[0]
+      return picked === undefined ? null : toVersionInfo(picked)
+    } catch (err) {
+      if (err instanceof NetworkError) throw err
+      return null
+    }
+  }
+
   async resolve(
     projectId: string,
     filter: DepFilter,

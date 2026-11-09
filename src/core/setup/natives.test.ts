@@ -4,9 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { strToU8, zipSync } from 'fflate'
-
-import { resolveLayout } from '../layout.js'
 import { detectEnv } from '../launch/env.js'
+import { resolveLayout } from '../layout.js'
 import type { Library, VersionJson } from '../version/types.js'
 import { extractNatives, nativeArtifact, nativeSubdir, usesSplitNatives } from './vanilla.js'
 
@@ -47,10 +46,7 @@ function makeRoot(): { root: string; cleanup: () => void } {
 }
 
 test('26.x 的 JVM 参数决定拆分布局', () => {
-  assert.equal(
-    usesSplitNatives(version(['-Djava.library.path=${natives_directory}/java'])),
-    true,
-  )
+  assert.equal(usesSplitNatives(version(['-Djava.library.path=${natives_directory}/java'])), true)
   // 1.x 的写法：整包都解到 natives 根
   assert.equal(usesSplitNatives(version(['-Djava.library.path=${natives_directory}'])), false)
   assert.equal(usesSplitNatives(version([])), false)
@@ -59,7 +55,10 @@ test('26.x 的 JVM 参数决定拆分布局', () => {
 test('原生库按 group 落子目录', () => {
   assert.equal(nativeSubdir(NATIVE_LIB), 'java')
   assert.equal(nativeSubdir({ name: 'net.java.dev.jna:jna:5.17.0' }), 'jna')
-  assert.equal(nativeSubdir({ name: 'io.netty:netty-transport-native-epoll:4.2.15.Final' }), 'netty')
+  assert.equal(
+    nativeSubdir({ name: 'io.netty:netty-transport-native-epoll:4.2.15.Final' }),
+    'netty',
+  )
   assert.equal(nativeSubdir({ name: 'com.example:foo:1.0' }), '')
 })
 

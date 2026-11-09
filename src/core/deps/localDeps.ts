@@ -1,7 +1,7 @@
 import type { ModDependency, ModLoaderKind } from '../modmeta/types.js'
 import { depKey, NON_MOD_DEPENDENCY_IDS } from '../modmeta/types.js'
-import { compareVersions, satisfiesRange } from '../semver.js'
 import type { RangeDialect } from '../semver.js'
+import { compareVersions, satisfiesRange } from '../semver.js'
 
 export interface LocalDepInput {
   readonly modId: string
@@ -64,8 +64,11 @@ class VersionIndex {
 
   get(id: string): { readonly found: boolean; readonly version?: string } {
     const k = this.key(id)
-    if (this.top.has(k)) return { found: true, version: this.top.get(k) }
-    if (this.nested.has(k)) return { found: true, version: this.nested.get(k) }
+    const top = this.top.get(k)
+    if (this.top.has(k)) return top === undefined ? { found: true } : { found: true, version: top }
+    const nested = this.nested.get(k)
+    if (this.nested.has(k))
+      return nested === undefined ? { found: true } : { found: true, version: nested }
     return { found: false }
   }
 }

@@ -70,6 +70,11 @@ Java 选择用例、CLI 消费循环）并新增了 auth。242 个单测全绿�
 | E2E-011 | 真实 jar 全部可读 | FO 48 个 jar，`UNREADABLE_JAR` 必须为 0 |
 | E2E-012 | 自建实例版本可识别 | `preflight instances/fo` 不出现 `UNKNOWN_GAME_VERSION` |
 | E2E-013 | MCP stdio | 2 个工具；`diagnose_crash` 对真实日志返回 `verdict=crash` |
+| E2E-014 | `--memory` 校验 | 非法值→1；`BAD_MEMORY`；合法值→0 且含 `-Xmx4096M` |
+| E2E-015 | `verify` | 正常→0「全部文件与清单一致」；篡改后→2 且 `reason=mismatch` |
+| E2E-016 | hs_err | 只有 `hs_err_pid*.log` 时→2；`format=hs-err`；`primary.kind=graphics` |
+| E2E-017 | 实例配置 | `config` 写入→读取一致；`--unset memory` 只删内存；非法值→1 `BAD_MEMORY` |
+| E2E-019 | `--events` | stdout 全是 JSON 行；含 `schemaVersion=1`；最后 `type=exit, code=2`；无 ANSI |
 
 E2E-011 / 012 是本轮新发现，先按 knownIssue 记录（见 §5）。
 
@@ -80,7 +85,7 @@ E2E-011 / 012 是本轮新发现，先按 knownIssue 记录（见 §5）。
 | E2E-101 | 真实 FO 包必须能跑 | verdict `ok/warn`；`MISSING_DEPENDENCY` 为 0；unresolved ≤ 1 |
 | E2E-102 | 修复计划不能推荐重复 mod | FO 的 `plan.installs` 为空（依赖已在 JiJ 里） |
 | E2E-103 | 真实小包 | `real-pack.mrpack` 无 blocker；resolved ≥ 2 |
-| E2E-104 | CF 边界 | `cf-pack.zip`→0；WARN；`CF_API_REQUIRED`，不尝试下载 |
+| E2E-104 | CF 边界 | `cf-pack.zip --no-cf-mirror`→0；WARN；`CF_NO_MOD_CHECK`，不硬判 blocked |
 | E2E-105 | setup 只算不装 | `setup 1.21.1 --dry-run`→0；任务数 > 20；root 下无 `libraries/` |
 | E2E-106 | 未验证依赖默认不装 | FO `--dry-run`→0；默认「没有需要自动补装」；加 `--include-unverified` 才出计划；目标目录未创建 |
 | E2E-107 | MCP 预检 | `preflight_modpack(demo.mrpack)` 有 `structuredContent.verdict` |
@@ -175,7 +180,8 @@ FO 14.1.2 + MC 26.2，本机无 Java）。
 
 - **微软正版登录全流程**：缺 Azure 应用 id 与正版账号。只测未配置时的报错，以及单测里
   的令牌刷新逻辑。README 里那句「还没有一次真实登录的实测记录」继续有效。
-- **CurseForge 安装**：没有 API key，只能测预检的降级行为（E2E-104）。
+- **CurseForge 安装**：没有 API key，真实安装不测。预检覆盖两条路：免 key 的 MCIM 镜像，
+  以及 `--no-cf-mirror` 的降级结论（E2E-104）。
 - **Linux / macOS 端到端**：本机没有。CI 的 ubuntu job 只跑单测，跨平台仍是纸面承诺。
 - **显卡/驱动组合、多人联机、Modrinth 之外的内容源**：不在内核责任范围内。
 

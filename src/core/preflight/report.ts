@@ -14,15 +14,15 @@
 
 import type { RepairPlan } from '../deps/plan.js'
 import { EMPTY_PLAN } from '../deps/plan.js'
+import type { ScannedMod, ScanResult } from '../instance/scan.js'
 import type { HostProfile } from '../instance.js'
-import type { ScanResult, ScannedMod } from '../instance/scan.js'
 import { depKey } from '../modmeta/types.js'
 import { checkAssets } from './assets.js'
-import { checkJava } from './check.js'
 import type { JavaRequirement } from './check.js'
+import { checkJava, checkMemory } from './check.js'
 import { checkLocalInstance } from './local.js'
-import { verdictOf } from './types.js'
 import type { Finding, PreflightReport } from './types.js'
+import { verdictOf } from './types.js'
 
 /**
  * 报告里的计数。
@@ -41,13 +41,15 @@ export interface AssembleInput {
   readonly stats: ReportStats
   readonly target?: PreflightReport['target']
   readonly plan?: RepairPlan
+  /** 注入时钟：装配函数保持纯的，测试与快照不用跟真实时间赛跑 */
+  readonly now?: () => Date
 }
 
 /**
  * findings + stats → 报告。
  *
  * `unknown` 那条规则住在这里：有东西没校验过时，"ok" 是不可信的结论。
- * 它以前只写在 preflight 里，deploy 自己算 verdict 就漏了。
+ * 规则只在这一个地方：deploy 自己再算一遍就会漏（ADR-0037）。
  */
 export function assembleReport(input: AssembleInput): PreflightReport {
   const base = verdictOf(input.findings)
@@ -59,7 +61,7 @@ export function assembleReport(input: AssembleInput): PreflightReport {
     stats: input.stats,
     ...(input.target === undefined ? {} : { target: input.target }),
     plan: input.plan ?? EMPTY_PLAN,
-    generatedAt: new Date().toISOString(),
+    generatedAt: (input.now ?? (() => new Date()))().toISOString(),
   }
 }
 
@@ -87,6 +89,10 @@ export interface DirReportInput {
   readonly host?: HostProfile
   /** assets 目录。缺省按 `dir` 往上找；deploy 传 layout.assets 就是这条 */
   readonly assetsDir?: string
+  /** 注入时钟，见 AssembleInput.now */
+  readonly now?: () => Date
+  /** 版本 JSON 里的 Java 需求。缺省按 gameVersion 查表 */
+  readonly javaMajor?: number
 }
 
 /**
@@ -101,7 +107,15 @@ export function preflightDir(input: DirReportInput): PreflightReport {
 
   const findings: Finding[] = [
     // Java 与在线/离线无关。模组自己声明的范围比「MC 版本 → Java」的兜底表准（issue #11）
-    ...(input.host === undefined ? [] : checkJava(instance, input.host, javaRequirements(scan.mods))),
+    ...(input.host === undefined
+      ? []
+      : checkJava(
+          instance,
+          input.host,
+          javaRequirements(scan.mods),
+          input.javaMajor === undefined ? {} : { javaMajor: input.javaMajor },
+        )),
+    ...(input.host === undefined ? [] : checkMemory(instance, input.host)),
     ...checkLocalInstance(scan, {
       gameVersion: instance.gameVersion,
       loaderVersion: instance.loader.version,
@@ -119,5 +133,6 @@ export function preflightDir(input: DirReportInput): PreflightReport {
       unresolved: scan.skipped.length,
     },
     target: { gameVersion: instance.gameVersion, loader: instance.loader },
+    ...(input.now === undefined ? {} : { now: input.now }),
   })
 }

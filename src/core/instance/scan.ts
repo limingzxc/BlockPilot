@@ -1,9 +1,8 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-
-import type { ModMetadata } from '../modmeta/types.js'
-import { isCorruptZip, readModMetadata } from '../modmeta/read.js'
 import type { Instance, LoaderKind, ModRef } from '../instance.js'
+import { isCorruptZip, readModMetadata } from '../modmeta/read.js'
+import type { ModMetadata } from '../modmeta/types.js'
 
 export interface ScannedMod {
   readonly fileName: string

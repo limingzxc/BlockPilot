@@ -23,14 +23,16 @@ function mapOs(platform: NodeJS.Platform): HostProfile['os'] {
  * Java 检测要起若干次 JVM 进程，通常 1–3 秒。调用方如果不需要，
  * 直接构造 HostProfile 传进来即可，不必走这里。
  */
-export async function detectHost(opts: {
-  readonly java?: readonly JavaInstall[]
-  readonly managedJavaDir?: string
-} = {}): Promise<HostProfile> {
+export async function detectHost(
+  opts: { readonly java?: readonly JavaInstall[]; readonly managedJavaDir?: string } = {},
+): Promise<HostProfile> {
   const installs =
-    opts.java ?? (await detectJava({
-      ...(opts.managedJavaDir === undefined ? {} : { managedDir: opts.managedJavaDir }),
-    })).installs
+    opts.java ??
+    (
+      await detectJava({
+        ...(opts.managedJavaDir === undefined ? {} : { managedDir: opts.managedJavaDir }),
+      })
+    ).installs
 
   return {
     os: mapOs(process.platform),

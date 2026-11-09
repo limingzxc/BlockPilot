@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 
 import { resolveLayout } from '../layout.js'
-import { buildAssetTasks, probeAssetObjects, readAssetIndex } from './assets.js'
 import type { AssetIndex } from './assets.js'
+import { buildAssetTasks, probeAssetObjects, readAssetIndex } from './assets.js'
 
 const root = mkdtempSync(join(tmpdir(), 'bp-assets-'))
 after(() => rmSync(root, { recursive: true, force: true }))
@@ -40,10 +40,7 @@ test('下载 URL 指向 resources.download.minecraft.net 的原始规则', () =>
   const tasks = buildAssetTasks(index, resolveLayout(root, 't'))
   const taskB = tasks.find((t) => t.hashes['sha1'] === HASH_B)
   assert.ok(taskB)
-  assert.equal(
-    taskB.url,
-    `https://resources.download.minecraft.net/bb/${HASH_B}`,
-  )
+  assert.equal(taskB.url, `https://resources.download.minecraft.net/bb/${HASH_B}`)
 })
 
 test('hash 同时作为 sha1 校验值', () => {
@@ -55,10 +52,7 @@ test('hash 同时作为 sha1 校验值', () => {
 
 test('readAssetIndex 读不到文件时给出可操作的提示', () => {
   const layout = resolveLayout(root, 't')
-  assert.throws(
-    () => readAssetIndex(layout.assetIndex('nope')),
-    /找不到 asset index.*先跑 setup/,
-  )
+  assert.throws(() => readAssetIndex(layout.assetIndex('nope')), /找不到 asset index.*先跑 setup/)
 })
 
 test('readAssetIndex 能读真实写出的文件', () => {
@@ -78,10 +72,7 @@ test('probeAssetObjects：index 在但 objects 空 → 抽查全缺', () => {
       layout.assetIndex('1.21.1'),
       JSON.stringify({ objects: { 'a/b.ogg': { hash: HASH_A, size: 1 } } }),
     )
-    const probe = probeAssetObjects(
-      layout.assetIndex('1.21.1'),
-      join(layout.assets, 'objects'),
-    )
+    const probe = probeAssetObjects(layout.assetIndex('1.21.1'), join(layout.assets, 'objects'))
     assert.ok(probe)
     assert.equal(probe.total, 1)
     assert.equal(probe.present, 0)

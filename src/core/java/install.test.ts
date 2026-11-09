@@ -10,9 +10,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
-
-import { collect } from '../operation.js'
 import { resolveLayout } from '../layout.js'
+import { collect } from '../operation.js'
+import { absent } from '../probe.js'
 import { createJavaInstall } from './install.js'
 import type { JavaInstall } from './types.js'
 
@@ -55,7 +55,7 @@ test('只有更高的版本时不跳过（要 17、装了 21 → 仍去下载 17
   const dir = mkdtempSync(join(tmpdir(), 'bp-java-higher-'))
   try {
     const path = fakeJdk(dir, 'jdk-21.0.12.1+1-jre')
-    // fetchBinary 返回 null → 走 JAVA_NOT_FOUND，说明它**没有**在「已存在 21」处短路
+    // fetchBinary 返回 absent → 走 JAVA_NOT_FOUND，说明它**没有**在「已存在 21」处短路
     await assert.rejects(
       () =>
         collect(
@@ -63,7 +63,7 @@ test('只有更高的版本时不跳过（要 17、装了 21 → 仍去下载 17
             layout: resolveLayout(dir, 'default'),
             major: 17,
             probe: async (p) => (p === path ? probed(p, 21) : null),
-            fetchBinary: async () => null,
+            fetchBinary: async () => absent('test: 没有这个构建'),
           }),
         ),
       (err: Error & { code?: string }) => {
@@ -87,7 +87,7 @@ test('只有更低的版本时同样不跳过（要 21、装了 17）', async ()
             layout: resolveLayout(dir, 'default'),
             major: 21,
             probe: async (p) => (p === path ? probed(p, 17) : null),
-            fetchBinary: async () => null,
+            fetchBinary: async () => absent('test: 没有这个构建'),
           }),
         ),
       (err: Error & { code?: string }) => err.code === 'JAVA_NOT_FOUND',

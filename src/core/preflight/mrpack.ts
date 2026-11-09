@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs'
-import { unzipSync, strFromU8 } from 'fflate'
+import { strFromU8, unzipSync } from 'fflate'
 
 import type { Instance, LoaderKind, ModRef, Side } from '../instance.js'
+import { isSafeRelative } from '../safe-path.js'
 
 /** .mrpack 规范：https://support.modrinth.com/en/articles/8802351-modrinth-modpack-format-mrpack */
 
@@ -24,20 +25,6 @@ export interface MrpackIndex {
 
 const INDEX_ENTRY = 'modrinth.index.json'
 
-/** 只解压 index 一个条目——大整合包有几千个模组，全解会吃掉内存。 */
-/**
- * 包内路径必须是实例目录内的相对路径。
- *
- * `buildPackTasks` 会把它拼成 `destPath` 往下写，一个 `../../evil.jar` 就能
- * 把文件甩到实例外面。`extractOverrides` 那边一直挡着 `..`，files 这边漏了。
- */
-function isSafePackPath(p: string): boolean {
-  if (p.startsWith('/') || p.startsWith('\\')) return false
-  if (/^[A-Za-z]:/.test(p)) return false
-  // 反斜杠也当分隔符：Windows 客户端会把 `..\..\x` 解释成上一级
-  return !p.split(/[\\/]/).some((seg) => seg === '..' || seg === '.')
-}
-
 /**
  * 清单结构校验。
  *
@@ -51,20 +38,20 @@ function assertMrpackIndex(raw: unknown): MrpackIndex {
   }
   const o = raw as Record<string, unknown>
 
-  const version = o['formatVersion']
+  const version = o.formatVersion
   if (typeof version !== 'number') throw new Error('清单缺少 formatVersion')
   // 不认的格式不能假装看懂了：字段语义可能变，静默通过等于给了个假结论
   if (version !== 1) throw new Error(`不支持的清单格式版本 ${version}（本程序只认 1）`)
 
-  const deps = o['dependencies']
+  const deps = o.dependencies
   if (typeof deps !== 'object' || deps === null || Array.isArray(deps)) {
     throw new Error('清单缺少 dependencies 对象')
   }
-  if (typeof (deps as Record<string, unknown>)['minecraft'] !== 'string') {
+  if (typeof (deps as Record<string, unknown>).minecraft !== 'string') {
     throw new Error('dependencies 里没有 minecraft 版本')
   }
 
-  const files = o['files']
+  const files = o.files
   if (!Array.isArray(files)) throw new Error('清单缺少 files 数组')
 
   for (let i = 0; i < files.length; i += 1) {
@@ -72,12 +59,12 @@ function assertMrpackIndex(raw: unknown): MrpackIndex {
     if (typeof entry !== 'object' || entry === null) throw new Error(`files[${i}] 不是对象`)
     const file = entry as Record<string, unknown>
 
-    const p = file['path']
+    const p = file.path
     if (typeof p !== 'string' || p === '') throw new Error(`files[${i}] 缺少 path`)
-    if (!isSafePackPath(p)) {
+    if (!isSafeRelative(p)) {
       throw new Error(`files[${i}] 的路径不安全：${p}（必须是实例内的相对路径，不能含 .. 或盘符）`)
     }
-    if (!Array.isArray(file['downloads'])) {
+    if (!Array.isArray(file.downloads)) {
       throw new Error(`files[${i}]（${p}）缺少 downloads 数组`)
     }
   }
@@ -85,6 +72,7 @@ function assertMrpackIndex(raw: unknown): MrpackIndex {
   return o as unknown as MrpackIndex
 }
 
+/** 只解压 index 一个条目——大整合包有几千个模组，全解会吃掉内存。 */
 export function readMrpackIndex(zipPath: string): MrpackIndex {
   const raw = readFileSync(zipPath)
   const entries = unzipSync(new Uint8Array(raw), {
@@ -126,7 +114,7 @@ export function mrpackToInstance(index: MrpackIndex, id = index.versionId): Inst
   const loaderEntry = Object.entries(LOADER_KEY).find(([k]) => k in deps)
   const loader = loaderEntry
     ? { kind: loaderEntry[1], version: deps[loaderEntry[0]] ?? 'unknown' }
-    : { kind: 'vanilla' as const, version: deps['minecraft'] ?? 'unknown' }
+    : { kind: 'vanilla' as const, version: deps.minecraft ?? 'unknown' }
 
   const mods: ModRef[] = index.files
     .filter((f) => f.path.startsWith('mods/'))
@@ -145,7 +133,7 @@ export function mrpackToInstance(index: MrpackIndex, id = index.versionId): Inst
   return {
     id,
     name: index.name,
-    gameVersion: deps['minecraft'] ?? 'unknown',
+    gameVersion: deps.minecraft ?? 'unknown',
     loader,
     mods,
   }

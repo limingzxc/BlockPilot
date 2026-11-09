@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { majorOf, parseJavaProperties } from './probe.js'
-import { pickJava, requiredJavaMajor } from './types.js'
 import type { JavaInstall } from './types.js'
+import { pickJava, requiredJavaMajor } from './types.js'
 
 const SAMPLE = `Property settings:
     java.home = C:\\Program Files\\Java\\jdk-17

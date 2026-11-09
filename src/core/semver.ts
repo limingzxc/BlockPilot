@@ -5,9 +5,10 @@
  * - Fabric 用 semver 表达式：`>=0.16.10`、`>=1.20.1 <1.21`、`1.20.x`
  * - Forge 用 Maven 范围：`[1.20.1,1.21)`、`[0.6.10,)`
  *
- * 刻意不追求完整：不处理预发布标签（`1.0.0-beta.1`）的排序、
- * 不处理 `~` / `^`（Fabric 生态里很少用）。遇到不认识的写法一律返回
- * `'unknown'`，让调用方决定是忽略还是提示，而不是猜一个答案。
+ * 刻意不追求完整：不处理预发布标签（`1.0.0-beta.1`）的排序。`~` / `^`
+ * 已按 npm 约定展开（Fabric 生态里大量使用），见 {@link satisfiesTildeCaret}。
+ * 遇到不认识的写法一律返回 `'unknown'`，让调用方决定是忽略还是提示，
+ * 而不是猜一个答案。
  */
 
 export type RangeVerdict = 'satisfied' | 'violated' | 'unknown'
@@ -138,11 +139,7 @@ function satisfiesTildeCaret(version: number[], token: string): boolean | null {
   return compare(version, lo) >= 0 && compare(version, hi) < 0
 }
 
-function satisfiesToken(
-  version: number[],
-  token: string,
-  dialect: RangeDialect,
-): boolean | null {
+function satisfiesToken(version: number[], token: string, dialect: RangeDialect): boolean | null {
   if (token.startsWith('~') || token.startsWith('^')) {
     return satisfiesTildeCaret(version, token)
   }
@@ -204,7 +201,10 @@ export function satisfiesRange(
   // semver：|| 是 OR，空格是 AND
   let sawUnknownGroup = false
   for (const group of trimmed.split('||')) {
-    const tokens = group.trim().split(/\s+/).filter((t) => t !== '')
+    const tokens = group
+      .trim()
+      .split(/\s+/)
+      .filter((t) => t !== '')
     if (tokens.length === 0) continue
 
     let allOk = true

@@ -1,3 +1,4 @@
+import { BlockPilotError } from './errors.js'
 import type { OpEvent } from './events.js'
 
 /**
@@ -30,9 +31,8 @@ export async function collect<T>(op: Operation<T>, signal?: AbortSignal): Promis
   for await (const ev of op.run(controller)) {
     if (ev.type === 'result') return ev.value as T
     if (ev.type === 'failed') {
-      const err = new Error(`${ev.code}: ${ev.message}`)
-      ;(err as Error & { code?: string }).code = ev.code
-      throw err
+      // 保留 failed 事件的 code/hint：调用方拿到的错误与消费者看到的是同一套契约
+      throw new BlockPilotError(ev.code, ev.message, ev.hint === undefined ? {} : { hint: ev.hint })
     }
   }
   throw new Error(`operation ${op.id} finished without a result`)

@@ -90,9 +90,11 @@ export function parseLoaderId(id: string): { kind: LoaderKind; version: string }
 
 export function curseforgeToInstance(manifest: CurseforgeManifest): Instance {
   const mc = manifest.minecraft
-  const primary =
-    mc.modLoaders?.find((l) => l.primary === true) ?? mc.modLoaders?.[0]
-  const loader = primary !== undefined ? parseLoaderId(primary.id) : { kind: 'vanilla' as const, version: 'unknown' }
+  const primary = mc.modLoaders?.find((l) => l.primary === true) ?? mc.modLoaders?.[0]
+  const loader =
+    primary !== undefined
+      ? parseLoaderId(primary.id)
+      : { kind: 'vanilla' as const, version: 'unknown' }
 
   const mods: ModRef[] = manifest.files
     .filter((f) => f.required !== false)

@@ -6,16 +6,21 @@
   "description": "AI-drivable Minecraft launcher core — reference implementation",
   "license": "MIT",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "build": "tsc",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.scripts.json",
     "test": "tsx --test \"src/**/*.test.ts\" \"scripts/**/*.test.ts\"",
+    "check": "npm run lint && npm run typecheck && npm test",
     "e2e": "tsx scripts/e2e.ts",
     "preflight": "tsx src/cli/index.ts preflight",
     "mcp": "tsx src/mcp/server.ts",
     "smoke": "tsx scripts/mcp-smoke.ts",
+    "smoke:entry": "node scripts/entry-smoke.mjs",
     "smoke:auth": "tsx scripts/auth-shape-smoke.ts"
   },
   "dependencies": {
@@ -25,11 +30,25 @@
     "undici": "^8.12.3"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.6.6",
     "@types/node": "^26.6.5",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   },
   "bin": {
     "blockpilot": "dist/cli/index.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./core/*": {
+      "types": "./dist/core/*.d.ts",
+      "import": "./dist/core/*.js"
+    },
+    "./package.json": "./package.json"
   }
 }

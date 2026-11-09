@@ -1,3 +1,4 @@
+import { BlockPilotError } from './errors.js'
 import { USER_AGENT } from './user-agent.js'
 
 /**
@@ -7,13 +8,13 @@ import { USER_AGENT } from './user-agent.js'
  * 无从下手——「哪个地址失败了？是墙、DNS、还是对方 500？」。所有出网的 JSON
  * 请求都走这里，错误信息至少包含地址与底层原因。
  */
-export class NetworkError extends Error {
+export class NetworkError extends BlockPilotError {
   readonly url: string
 
   constructor(url: string, detail: string) {
     // 查询串可能有几十个 id，截断后再进消息，否则一行日志能占满屏幕
     const shown = url.length > 120 ? `${url.slice(0, 117)}...` : url
-    super(`无法访问 ${shown}：${detail}`)
+    super('NETWORK_ERROR', `无法访问 ${shown}：${detail}`)
     this.name = 'NetworkError'
     this.url = url
   }

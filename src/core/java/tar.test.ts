@@ -1,13 +1,21 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { gzipSync } from 'node:zlib'
 import test from 'node:test'
-
-import { readTar, readTarGz, writeTarEntries } from './tar.js'
+import { gzipSync } from 'node:zlib'
 import type { TarEntry } from './tar.js'
+import { readTar, readTarGz, writeTarEntries } from './tar.js'
 
 function withTemp(fn: (dir: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), 'bp-tar-'))
@@ -33,7 +41,7 @@ function ustarBlock(opts: {
 }): Uint8Array {
   const block = new Uint8Array(512)
   const enc = new TextEncoder()
-  const octal = (n: number, len: number): string => n.toString(8).padStart(len - 1, '0') + '\0'
+  const octal = (n: number, len: number): string => `${n.toString(8).padStart(len - 1, '0')}\0`
   const put = (text: string, at: number, len: number): void => {
     block.set(enc.encode(text).subarray(0, len), at)
   }
@@ -57,9 +65,6 @@ function ustarBlock(opts: {
 
 test('读 GNU tar 打的真包（用系统 tar 生成，模拟 Adoptium 的产出方式）', () => {
   withTemp((dir) => {
-    const src = join(dir, 'src')
-    mkdirSync(join(src, 'bin'), { recursive: true })
-    mkdirSync(join(src, 'lib', 'modules'), { recursive: true })
     // 用 buffer 写进 .tar 再手动 gzip，避免外部 tar 直接出 .tar.gz 的差异
     const tarPath = join(dir, 'plain.tar')
     writeTarFile(tarPath, [
@@ -67,8 +72,6 @@ test('读 GNU tar 打的真包（用系统 tar 生成，模拟 Adoptium 的产�
       { name: 'jdk-21/lib/modules', body: 'fake modules'.repeat(100), mode: 0o644 },
       { name: 'jdk-21/release', body: 'JAVA_VERSION="21"\n', mode: 0o644 },
     ])
-    void src
-    void readFileSync
 
     const entries = readTar(new Uint8Array(readFileSync(tarPath)))
     assert.equal(entries.length, 3)
@@ -124,7 +127,7 @@ test('GNU 长名条目（typeflag L）：超过 100 字符的路径', () => {
 })
 
 test('ustar 的 prefix 字段要拼回完整路径', () => {
-  const prefix = 'jdk-21.0.5+11-jre/lib/security/policy' + '/long-segment-0001'.repeat(5)
+  const prefix = `jdk-21.0.5+11-jre/lib/security/policy${'/long-segment-0001'.repeat(5)}`
   const name = 'default_US_export_policy.jar'
   assert.ok(prefix.length + 1 + name.length > 100, '用 prefix 才放得下的路径')
 

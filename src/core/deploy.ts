@@ -1,32 +1,44 @@
 import { join, sep } from 'node:path'
-
-import { Op } from './events.js'
-import type { OpEvent } from './events.js'
-import { defineOperation } from './operation.js'
-import type { Operation } from './operation.js'
+import type { CfFileInfo, CurseforgeLike } from './curseforge.js'
+import { CurseforgeError, unconfiguredCurseforge } from './curseforge.js'
 import { runDownloadBatch } from './download/batch.js'
 import { defaultSources } from './download/sources.js'
-import type { DownloadSource } from './download/types.js'
-import type { Layout } from './layout.js'
-import type { HostProfile, LoaderKind } from './instance.js'
-import { readPackFile } from './preflight/read-pack.js'
-import { preflightDir } from './preflight/report.js'
-import type { ReportStats } from './preflight/report.js'
-import type { Finding, Verdict } from './preflight/types.js'
-import { scanInstanceDir } from './instance/scan.js'
+import type { Mirror } from './download/types.js'
+import { errMessage } from './errors.js'
+import type { OpEvent } from './events.js'
+import { Op } from './events.js'
+import { NetworkError } from './http.js'
+import { buildLock, toLockedFile, writeLock } from './instance/lock.js'
 import { writeInstanceMarker } from './instance/marker.js'
-import { createVanillaSetup } from './setup/vanilla.js'
+import { scanInstanceDir } from './instance/scan.js'
+import type { HostProfile, LoaderKind } from './instance.js'
+import type { Layout } from './layout.js'
+import type { Operation } from './operation.js'
+import { defineOperation } from './operation.js'
+import type { PackFileRead } from './preflight/read-pack.js'
+import { readPackFile } from './preflight/read-pack.js'
+import type { ReportStats } from './preflight/report.js'
+import { preflightDir } from './preflight/report.js'
+import type { Finding, Verdict } from './preflight/types.js'
 import { createFabricSetup } from './setup/fabric.js'
 import { createForgeSetup } from './setup/forge.js'
 import { buildCurseforgeTasks, buildPackTasks, extractOverrides } from './setup/pack.js'
-import { CurseforgeError, resolveCurseforge } from '../sources/curseforge.js'
-import type { CfFileInfo, CurseforgeLike } from '../sources/curseforge.js'
-import { NetworkError } from './http.js'
+import { createQuiltSetup } from './setup/quilt.js'
+import { createVanillaSetup } from './setup/vanilla.js'
+import { readJavaMajor } from './version/java-major.js'
+
+/** deploy 能装的加载器。Quilt 与 Fabric 共用 profile 流程（ADR-0040 后续）。 */
+export const SUPPORTED_LOADERS: ReadonlySet<LoaderKind> = new Set([
+  'fabric',
+  'quilt',
+  'forge',
+  'neoforge',
+])
 
 export interface DeployOptions {
   readonly packPath: string
   readonly layout: Layout
-  readonly sources?: readonly DownloadSource[]
+  readonly sources?: readonly Mirror[]
   readonly concurrency?: number
   /** 跑 Forge installer 用的 java。Fabric 不需要 */
   readonly java?: string
@@ -39,12 +51,23 @@ export interface DeployOptions {
    * （见 resolveCurseforge）。测试可注入假实现。
    */
   readonly curseforge?: CurseforgeLike
-  /** false 时禁用 MCIM 回落（`--no-cf-mirror`）：没 key 就按老行为降级 */
-  readonly cfMirror?: boolean
+  /**
+   * mrpack 清单里额外放行的下载域名（`--allow-host`）。
+   *
+   * Modrinth 规范只允许 cdn.modrinth.com / github.com / raw.githubusercontent.com /
+   * gitlab.com。本地服务测试与私有镜像用这个显式放行，默认不放宽。
+   */
+  readonly allowHosts?: readonly string[]
+  /**
+   * 重跑 deploy 时覆盖 overrides 里已存在的文件（`--overwrite-overrides`）。
+   *
+   * 缺省跳过：ADR-0012 承诺「重跑是安全的」，而覆盖会冲掉用户改过的 config/ 与 options.txt。
+   */
+  readonly overwriteOverrides?: boolean
   /**
    * 本机环境。给了就在部署后自检里查 Java；不给就只检查模组与 assets。
    *
-   * 以前这里没有这个字段，于是自检**结构上不可能**发现 Java 不对：
+   * 没有这个字段，自检**结构上不可能**发现 Java 不对：
    * 装完打「通过」，`run` 紧接着因为 Java 版本死掉。见 ADR-0037。
    */
   readonly host?: HostProfile
@@ -63,7 +86,7 @@ export interface LoaderStepResult {
 export interface VanillaStepOptions {
   readonly layout: Layout
   readonly versionId: string
-  readonly sources: readonly DownloadSource[]
+  readonly sources: readonly Mirror[]
   readonly concurrency: number
 }
 
@@ -75,7 +98,7 @@ export interface LoaderStepOptions {
   readonly java?: string
   readonly proxy?: string
   readonly mirror?: boolean
-  readonly sources: readonly DownloadSource[]
+  readonly sources: readonly Mirror[]
   readonly concurrency: number
 }
 
@@ -129,6 +152,10 @@ export interface DeployResult {
   readonly modsDownloaded: number
   readonly modsSkipped: number
   readonly overrides: number
+  /** overrides 里因为已存在而跳过的文件数。非 0 说明这次重跑保留了用户改动 */
+  readonly overridesSkipped: number
+  /** 已装内容清单的落盘路径。写失败时没有这个字段 */
+  readonly lockPath?: string
   /** overrides 里直接塞的 jar 数：这些不受 API key 限制，装完就在 mods/ 里 */
   readonly overridesMods: number
   readonly failed: readonly { readonly fileName: string; readonly error: string }[]
@@ -143,13 +170,13 @@ export interface DeployResult {
 
 export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
   return defineOperation<DeployResult>('deploy', async function* (signal) {
-    let pack
+    let pack: PackFileRead
     try {
       pack = readPackFile(opts.packPath)
     } catch (err) {
       yield Op.failed(
         'BAD_MODPACK',
-        String(err instanceof Error ? err.message : err),
+        errMessage(err),
         '目前支持 .mrpack、CurseForge 的 .zip（带 manifest.json）',
       )
       return
@@ -158,19 +185,12 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
 
     // CurseForge：fileID → 下载 URL 必须查 CF 的 API（要 key）。
     // 有 key 就走完整安装：换 URL → 与 mrpack 相同的下载 / 解压 / 检查流程。
-    const index = pack.mrpackIndex
-    let cfFiles: ReadonlyMap<number, CfFileInfo> | undefined
+    let cfFiles: ReadonlyMap<number, CfFileInfo> = new Map()
     /** 没有 API key：清单文件全部落到「需手动下载」，其余步骤照常 */
     let cfNoKey = false
-    if (index === undefined) {
+    if (pack.kind === 'curseforge') {
       const manifest = pack.curseforgeManifest
-      if (manifest === undefined) {
-        yield Op.failed('BAD_MODPACK', '这个包既不是 .mrpack，也没有 CurseForge 的 manifest.json')
-        return
-      }
-      const cf =
-        opts.curseforge ??
-        resolveCurseforge(opts.cfMirror === false ? { allowMirror: false } : {})
+      const cf = opts.curseforge ?? unconfiguredCurseforge
       if (!cf.configured) {
         /**
          * 没有 key 时**降级而不是拒绝**：加载器与 overrides 照样装，
@@ -180,7 +200,6 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
          * Forge/NeoForge 的安装都做不了，用户只能手工拼。
          */
         cfNoKey = true
-        cfFiles = new Map()
         yield Op.log('warn', 'deploy.cf_no_key', { files: manifest.files.length })
       } else {
         yield Op.log('info', 'deploy.cf_source', { source: cf.label })
@@ -191,11 +210,19 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
           )
         } catch (err) {
           if (err instanceof CurseforgeError) {
-            yield Op.failed(err.code, err.message, '检查 BLOCKPILOT_CF_API_KEY 是否有效、是否还有配额')
+            yield Op.failed(
+              err.code,
+              err.message,
+              '检查 BLOCKPILOT_CF_API_KEY 是否有效、是否还有配额',
+            )
             return
           }
           if (err instanceof NetworkError) {
-            yield Op.failed('NETWORK_ERROR', err.message, '检查网络；国内可加 --china 走镜像，或用 --proxy 指定代理')
+            yield Op.failed(
+              'NETWORK_ERROR',
+              err.message,
+              '检查网络；国内可加 --china 走镜像，或用 --proxy 指定代理',
+            )
             return
           }
           throw err
@@ -207,15 +234,17 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
       name: instance.name,
       gameVersion: instance.gameVersion,
       loader: instance.loader,
-      files: index !== undefined ? index.files.length : (pack.curseforgeManifest?.files.length ?? 0),
+      files:
+        pack.kind === 'mrpack'
+          ? pack.mrpackIndex.files.length
+          : pack.curseforgeManifest.files.length,
     })
 
-    const supported = new Set(['fabric', 'forge', 'neoforge'])
-    if (!supported.has(instance.loader.kind)) {
+    if (!SUPPORTED_LOADERS.has(instance.loader.kind)) {
       yield Op.failed(
         'UNSUPPORTED_LOADER',
         `这个整合包用的是 ${instance.loader.kind} ${instance.loader.version}`,
-        '目前支持 Fabric、Forge 与 NeoForge',
+        '目前支持 Fabric、Quilt、Forge 与 NeoForge',
       )
       return
     }
@@ -224,9 +253,7 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
     const concurrency = opts.concurrency ?? 4
 
     const deps = opts.deps ?? {}
-    const vanillaStep =
-      deps.vanilla ??
-      ((o: VanillaStepOptions) => createVanillaSetup(o))
+    const vanillaStep = deps.vanilla ?? ((o: VanillaStepOptions) => createVanillaSetup(o))
     const loaderStep =
       deps.loader ??
       ((o: LoaderStepOptions) =>
@@ -239,15 +266,23 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
               concurrency: o.concurrency,
               ...(o.mirror === undefined ? {} : { mirror: o.mirror }),
             })
-          : createForgeSetup({
-              layout: o.layout,
-              gameVersion: o.gameVersion,
-              kind: o.kind === 'neoforge' ? 'neoforge' : 'forge',
-              forgeVersion: o.loaderVersion,
-              java: o.java ?? '',
-              ...(o.proxy === undefined ? {} : { proxy: o.proxy }),
-              sources: o.sources,
-            }))
+          : o.kind === 'quilt'
+            ? createQuiltSetup({
+                layout: o.layout,
+                gameVersion: o.gameVersion,
+                loaderVersion: o.loaderVersion,
+                sources: o.sources,
+                concurrency: o.concurrency,
+              })
+            : createForgeSetup({
+                layout: o.layout,
+                gameVersion: o.gameVersion,
+                kind: o.kind === 'neoforge' ? 'neoforge' : 'forge',
+                forgeVersion: o.loaderVersion,
+                java: o.java ?? '',
+                ...(o.proxy === undefined ? {} : { proxy: o.proxy }),
+                sources: o.sources,
+              }))
 
     // ---- 1. 原版：client jar + libraries + assetIndex + natives ----
     yield Op.log('info', 'deploy.step', { step: 'vanilla' })
@@ -280,8 +315,8 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
         gameVersion: instance.gameVersion,
         kind: instance.loader.kind,
         loaderVersion: instance.loader.version,
-        java: opts.java,
-        proxy: opts.proxy,
+        ...(opts.java === undefined ? {} : { java: opts.java }),
+        ...(opts.proxy === undefined ? {} : { proxy: opts.proxy }),
         ...(opts.mirror === undefined ? {} : { mirror: opts.mirror }),
         sources,
         concurrency,
@@ -301,12 +336,16 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
     // ---- 3. 整合包文件 ----
     yield Op.log('info', 'deploy.step', { step: 'files' })
     const built =
-      index !== undefined
-        ? {
-            tasks: buildPackTasks(index, opts.layout),
-            unresolved: [] as { fileName: string; error: string }[],
-          }
-        : buildCurseforgeTasks(pack.curseforgeManifest!, cfFiles!, opts.layout, { noKey: cfNoKey })
+      pack.kind === 'mrpack'
+        ? (() => {
+            const mr = buildPackTasks(
+              pack.mrpackIndex,
+              opts.layout,
+              opts.allowHosts === undefined ? {} : { allowHosts: opts.allowHosts },
+            )
+            return { tasks: mr.tasks, unresolved: mr.rejected }
+          })()
+        : buildCurseforgeTasks(pack.curseforgeManifest, cfFiles, opts.layout, { noKey: cfNoKey })
     const tasks = built.tasks
     const modsPrefix = `${join(opts.layout.gameDir, 'mods')}${sep}`
     const mods = tasks.filter((t) => t.destPath.startsWith(modsPrefix)).length
@@ -315,7 +354,12 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
       sources,
       concurrency,
       signal,
-      codes: { ok: 'deploy.ok', cached: 'deploy.cached', failed: 'deploy.failed', progressId: 'deploy' },
+      codes: {
+        ok: 'deploy.ok',
+        cached: 'deploy.cached',
+        failed: 'deploy.failed',
+        progressId: 'deploy',
+      },
     })
     const downloaded = batch.downloaded
     const skipped = batch.skipped
@@ -326,12 +370,23 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
     yield Op.log('info', 'deploy.step', { step: 'overrides' })
     let overrides = 0
     let overridesMods = 0
+    let overridesSkipped = 0
+    let overridesFailed = false
     try {
-      const extracted = extractOverrides(opts.packPath, opts.layout.gameDir)
+      const extracted = extractOverrides(
+        opts.packPath,
+        opts.layout.gameDir,
+        opts.overwriteOverrides === true ? { overwrite: true } : {},
+      )
       overrides = extracted.files
       overridesMods = extracted.mods
+      overridesSkipped = extracted.skipped
+      if (overridesSkipped > 0) {
+        yield Op.log('warn', 'deploy.overrides_skipped', { count: overridesSkipped })
+      }
     } catch (err) {
-      yield Op.log('warn', 'deploy.overrides_failed', { message: String(err) })
+      overridesFailed = true
+      yield Op.log('warn', 'deploy.overrides_failed', { message: errMessage(err) })
     }
 
     // ---- 5. 部署后自检 ----
@@ -351,15 +406,18 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
     /**
      * 自检不自己拼 findings：和 `preflight <实例目录>` 调同一个 module。
      *
-     * 手抄的代价是具体的——这里以前只查模组与 assets，漏了 Java，
-     * 也没有「有东西没校验到就不算 ok」那条规则，于是自检说通过、run 说崩。
+     * 手抄会漏：只查模组与 assets 就漏掉 Java，也没有「有东西没校验到就不算 ok」
+     * 那条规则，于是自检说通过、run 说崩（ADR-0037）。
      */
+    // 版本 JSON 的 javaVersion 是权威值；读不到再退回 gameVersion 查表
+    const javaMajor = readJavaMajor(opts.layout.versionJson(instance.gameVersion))
     const check = preflightDir({
       dir: opts.layout.gameDir,
       scan,
       // 资源装在 <root>/assets，不在实例目录里
       assetsDir: opts.layout.assets,
       ...(opts.host === undefined ? {} : { host: opts.host }),
+      ...(javaMajor === undefined ? {} : { javaMajor }),
     })
     yield Op.log('info', 'deploy.check', {
       verdict: check.verdict,
@@ -367,6 +425,31 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
       findings: check.findings.length,
       unresolved: check.stats.unresolved,
     })
+
+    /**
+     * 已装内容清单。`complete` 只看「这次部署有没有失败项」——preflight 判 blocked
+     * 是「装完跑不起来」，不是「没装完」，两件事不能混。
+     */
+    const lockedFiles = tasks.map((t) => toLockedFile(t, opts.layout.gameDir))
+    let lockPath: string | undefined
+    try {
+      lockPath = writeLock(
+        opts.layout.gameDir,
+        buildLock({
+          packName: instance.name,
+          packKind: pack.kind,
+          packFile: opts.packPath,
+          gameVersion: instance.gameVersion,
+          loader: instance.loader,
+          complete: failed.length === 0 && !overridesFailed,
+          files: lockedFiles,
+        }),
+      )
+      yield Op.log('info', 'deploy.lock', { path: lockPath, files: lockedFiles.length })
+    } catch (err) {
+      // 清单写不下去不影响本次安装，但 verify / update 会缺前置：必须说出来
+      yield Op.log('warn', 'deploy.lock_failed', { message: errMessage(err) })
+    }
 
     yield Op.result({
       packName: instance.name,
@@ -380,7 +463,9 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
       modsSkipped: skipped,
       overrides,
       overridesMods,
+      overridesSkipped,
       failed,
+      ...(lockPath === undefined ? {} : { lockPath }),
       check: { verdict: check.verdict, findings: check.findings, stats: check.stats },
     })
     yield Op.done()

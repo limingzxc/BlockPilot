@@ -4,7 +4,7 @@
 
 命令行的 Minecraft 启动器内核：安装整合包、检查兼容性、启动游戏、把崩溃归因到模组。
 
-[![Node](https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=node.js&logoColor=white)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/Node-%E2%89%A522.19-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Status](https://img.shields.io/badge/status-alpha-orange)](#状态)
 
@@ -23,7 +23,7 @@
 
 ## 安装
 
-需要 Node 20+，尚未发布到 npm。
+需要 Node 22.19+（`undici` 8 的 engines 要求），尚未发布到 npm。
 
 ```bash
 git clone https://github.com/limingzxc/BlockPilot.git && cd BlockPilot
@@ -80,18 +80,28 @@ blockpilot diag --root D:/mc
 
 | 命令 | 用途 |
 |---|---|
-| `deploy <包>` | 安装整合包：原版、加载器、模组、overrides |
+| `deploy <包\|slug>` | 安装整合包：本地 `.mrpack` / CF zip，或 Modrinth project slug |
+| `verify` | 按 `.blockpilot/lock.json` 核对已装文件：缺失与哈希不符 |
+| `update` | 按 lock 检查/应用模组更新；`--loader` 升级加载器 |
+| `config` | 查看/修改实例默认内存、Java、JVM 参数 |
 | `run <版本 id>` | 启动游戏 |
 | `launch <版本 id>` | 只打印启动命令 |
 | `preflight <包或目录>` | 检查能否运行 |
 | `install <包>` | 生成并执行补装计划 |
 | `setup <mc>` | 安装原版 |
 | `assets <mc>` | 安装资源 |
-| `java` · `java install <主版本>` | 查看 · 安装 Java |
-| `diag` · `logs` | 崩溃归因 · 会话日志 |
-| `login` · `accounts` | Microsoft 账号 |
+| `java [install <主版本>]` | 查看 · 安装 Java |
+| `fabric <mc>` | 安装 Fabric / Legacy Fabric |
+| `quilt <mc>` | 安装 Quilt |
+| `forge <mc>` | 安装 Forge |
+| `neoforge <mc>` | 安装 NeoForge |
+| `login` | Microsoft 账号登录 |
+| `accounts` | 列出已保存的账号 |
+| `logs` | 列出会话日志 |
+| `diag` | 崩溃归因 |
 
 完整参数与默认值：`blockpilot --help`。常用开关：`--root`、`--china`（镜像优先，失败回退官方源）、`--proxy`、`--memory`（512–65536）。
+`deploy` 另有 `--allow-host`（放行 mrpack 清单里的额外下载域名）与 `--overwrite-overrides`（重跑时覆盖你改过的配置；默认跳过）。
 
 ## 正版登录
 
@@ -123,6 +133,14 @@ blockpilot login --root D:/mc
 `install` 只对安装负责：`0` 无需补装或全部成功，`2` 有文件失败，预检结论不进入退出码。
 
 MCP 提供两个只读工具 `preflight_modpack`、`diagnose_crash`。下载与启动不暴露，因为写盘和账号启动不可回滚。
+
+也可以作为库使用（`package.json` 的 `exports` 指向 `dist/index.js`）：
+
+```ts
+import { createPreflight, Op, resolveLayout } from 'blockpilot'
+```
+
+仍不承诺 npm 发布；公共面只覆盖 Operation、事件、布局、错误与内容源契约。
 
 ```json
 {

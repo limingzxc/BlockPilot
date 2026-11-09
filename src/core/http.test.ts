@@ -3,10 +3,7 @@ import test from 'node:test'
 
 import { fetchJson, NetworkError } from './http.js'
 
-async function withFetch(
-  stub: typeof fetch,
-  fn: () => Promise<void>,
-): Promise<void> {
+async function withFetch(stub: typeof fetch, fn: () => Promise<void>): Promise<void> {
   const original = globalThis.fetch
   globalThis.fetch = stub
   try {

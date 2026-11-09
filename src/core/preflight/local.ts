@@ -1,5 +1,7 @@
 import { checkLocalDeps } from '../deps/localDeps.js'
 import type { ScanResult } from '../instance/scan.js'
+import { depKey } from '../modmeta/types.js'
+import { satisfiesRange } from '../semver.js'
 import type { Finding } from './types.js'
 
 /**
@@ -51,8 +53,81 @@ export function checkLocalInstance(
       code: 'MISSING_DEPENDENCY',
       message: `${issue.requiredBy.join('、')} 需要前置模组 ${issue.modId}，本地目录里没有`,
       subject: issue.modId,
+      data: { modId: issue.modId, requiredBy: issue.requiredBy },
       hint: '本地元数据只提供 modId，没有下载地址；需要联网反查才能给出可安装版本',
     })
+  }
+
+  // 同一 modId 多份 jar：Fabric/Forge 都会在启动时拒绝，属于确定性失败
+  const byId = new Map<string, string[]>()
+  for (const m of scan.mods) {
+    const key = depKey(m.meta.modId)
+    const list = byId.get(key) ?? []
+    list.push(m.fileName)
+    byId.set(key, list)
+  }
+  for (const [modId, files] of byId) {
+    if (files.length <= 1) continue
+    findings.push({
+      severity: 'blocker',
+      code: 'DUPLICATE_MOD',
+      message: `同一个模组有 ${files.length} 份 jar：${modId}`,
+      subject: modId,
+      data: { modId, files },
+      hint: `删掉多余的：${files.join('、')}。加载器遇到重复 modId 会直接拒绝启动`,
+    })
+  }
+
+  // 加载器装错：Fabric 模组放进 Forge 实例不会「部分工作」，而是加载阶段就失败
+  const instanceLoader = scan.instance.loader.kind
+  if (instanceLoader !== 'vanilla') {
+    for (const m of scan.mods) {
+      const declared = m.meta.loader
+      if (declared === 'unknown') continue
+      // Quilt 兼容 Fabric 模组；其余只认同名加载器
+      const compatible =
+        declared === instanceLoader || (instanceLoader === 'quilt' && declared === 'fabric')
+      if (compatible) continue
+      findings.push({
+        severity: 'warning',
+        code: 'LOADER_MISMATCH',
+        message: `${m.meta.modId} 是 ${declared} 模组，当前实例是 ${instanceLoader}`,
+        subject: m.meta.modId,
+        data: { modId: m.meta.modId, declared, instance: instanceLoader },
+        hint:
+          instanceLoader === 'quilt'
+            ? 'Quilt 只能直接加载 Fabric / Quilt 模组；Forge 模组需要 Sinytra Connector 之类的兼容层'
+            : `这个模组不会在 ${instanceLoader} 上加载；换对应加载器的版本，或换实例`,
+      })
+    }
+  }
+
+  // breaks / incompatible：双方都在实例里就是确定性冲突
+  const present = new Map<string, string | undefined>()
+  for (const m of scan.mods) {
+    present.set(depKey(m.meta.modId), m.meta.version)
+    for (const p of m.meta.provides) present.set(depKey(p), undefined)
+    for (const n of m.meta.nested) present.set(depKey(n.modId), n.version)
+  }
+  for (const m of scan.mods) {
+    for (const dep of m.meta.dependencies) {
+      if (dep.kind !== 'breaks') continue
+      if (!present.has(depKey(dep.modId))) continue
+      // 带范围时只在「确实落在范围内」才报；范围看不懂或版本缺失时宁可不报
+      if (dep.versionRange !== undefined) {
+        const actual = present.get(depKey(dep.modId))
+        if (actual === undefined) continue
+        if (satisfiesRange(actual, dep.versionRange) !== 'satisfied') continue
+      }
+      findings.push({
+        severity: 'blocker',
+        code: 'DECLARED_INCOMPATIBLE',
+        message: `${m.meta.modId} 声明与 ${dep.modId} 不兼容，两者都在实例里`,
+        subject: m.meta.modId,
+        data: { modId: m.meta.modId, incompatibleWith: dep.modId },
+        hint: '移除其中一个；如果确实需要共存，确认作者是否提供了兼容版本',
+      })
+    }
   }
 
   if (scan.corrupt.length > 0) {
@@ -60,7 +135,7 @@ export function checkLocalInstance(
       severity: 'warning',
       code: 'CORRUPT_JAR',
       message: `${scan.corrupt.length} 个 jar 已损坏（不是完整的压缩包），游戏会因此启动失败`,
-      subject: scan.corrupt[0],
+      ...(scan.corrupt[0] === undefined ? {} : { subject: scan.corrupt[0] }),
       hint: `删掉重下：${scan.corrupt.slice(0, 5).join('、')}${
         scan.corrupt.length > 5 ? ' 等' : ''
       }。用 blockpilot install 装的文件会校验 sha1，一般不会出现这种情况`,

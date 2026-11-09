@@ -11,6 +11,7 @@
  */
 
 import { javaInstallHint } from '../hints.js'
+import { redactSecrets } from '../redact.js'
 
 export type CrashKind =
   | 'java-version'
@@ -207,9 +208,10 @@ export function analyzeLog(lines: readonly string[]): readonly CrashSignal[] {
       const signal: CrashSignal = {
         kind: rule.kind,
         severity: recoverable ? 'warning' : rule.severity,
-        message: line.trim(),
+        // 旧日志里可能还留着未脱敏的会话令牌；diag 的输出会进 AI，这里再擦一次
+        message: redactSecrets(line.trim()),
         line: i + 1,
-        excerpt: lines.slice(from, to),
+        excerpt: lines.slice(from, to).map(redactSecrets),
         hint: recoverable
           ? '这是可恢复的：Loader 已禁用该 mixin 继续启动，只影响对应功能。不用为此删模组'
           : rule.hint,

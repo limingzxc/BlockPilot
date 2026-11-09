@@ -1,5 +1,5 @@
+import { createHttp, type HttpClient, num, str } from './http.js'
 import { authError, type DeviceCode, type MsaToken } from './types.js'
-import { createHttp, num, str, type HttpClient } from './http.js'
 
 /**
  * 微软账号（MSA）的设备码登录。
@@ -86,7 +86,8 @@ export async function requestDeviceCode(opts: DeviceCodeOptions): Promise<Device
   )
 
   if (res.status !== 200) {
-    const desc = str(res.body, 'error_description') ?? str(res.body, 'error') ?? `HTTP ${res.status}`
+    const desc =
+      str(res.body, 'error_description') ?? str(res.body, 'error') ?? `HTTP ${res.status}`
     throw authError(
       'AUTH_DEVICE_CODE_FAILED',
       `申请设备码失败：${desc}`,
@@ -99,7 +100,10 @@ export async function requestDeviceCode(opts: DeviceCodeOptions): Promise<Device
   const verificationUri = str(res.body, 'verification_uri')
   const expiresIn = num(res.body, 'expires_in')
   if (deviceCode === undefined || userCode === undefined || verificationUri === undefined) {
-    throw authError('AUTH_DEVICE_CODE_FAILED', '设备码响应缺少必要字段（device_code/user_code/verification_uri）')
+    throw authError(
+      'AUTH_DEVICE_CODE_FAILED',
+      '设备码响应缺少必要字段（device_code/user_code/verification_uri）',
+    )
   }
 
   return {

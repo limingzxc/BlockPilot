@@ -21,15 +21,15 @@ test('带完整日志前缀的帧也能解析', () => {
 })
 
 test('Forge 在帧尾附的 jar 名要抠出来', () => {
-  const line = '\tat com.example.mod.Foo.bar(Foo.java:42) ~[foo-1.0.0.jar%23123!/:?] {re:classloading}'
+  const line =
+    '\tat com.example.mod.Foo.bar(Foo.java:42) ~[foo-1.0.0.jar%23123!/:?] {re:classloading}'
   const f = parseFrame(line, 1)
   assert.ok(f)
   assert.equal(f.sourceJar, 'foo-1.0.0.jar')
 })
 
 test('Fabric mixin 处理器方法名里带 mod id', () => {
-  const line =
-    'at net.minecraft.class_310.handler$zcb000$sodium$method_15563(class_310.java:1234)'
+  const line = 'at net.minecraft.class_310.handler$zcb000$sodium$method_15563(class_310.java:1234)'
   const f = parseFrame(line, 1)
   assert.ok(f)
   assert.equal(f.mixinModId, 'sodium')

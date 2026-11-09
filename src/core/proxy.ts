@@ -18,7 +18,7 @@
 
 import { ProxyAgent, setGlobalDispatcher } from 'undici'
 
-let applied = false
+let _applied = false
 
 /**
  * 环境变量的优先级：专用的 BLOCKPILOT_PROXY 最高，然后是通用约定。
@@ -68,9 +68,9 @@ export function applyProxy(url?: string): string | undefined {
     u.username === ''
       ? undefined
       : 'Basic ' +
-        Buffer.from(
-          `${decodeURIComponent(u.username)}:${decodeURIComponent(u.password)}`,
-        ).toString('base64')
+        Buffer.from(`${decodeURIComponent(u.username)}:${decodeURIComponent(u.password)}`).toString(
+          'base64',
+        )
 
   setGlobalDispatcher(
     new ProxyAgent({
@@ -78,7 +78,7 @@ export function applyProxy(url?: string): string | undefined {
       ...(token === undefined ? {} : { token }),
     }),
   )
-  applied = true
+  _applied = true
   return `${u.protocol}//${u.host}`
 }
 

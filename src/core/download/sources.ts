@@ -1,7 +1,7 @@
-import type { DownloadSource } from './types.js'
+import type { Mirror } from './types.js'
 
 /** 直连官方。对任何 URL 都返回原地址，永远排最后作为兜底。 */
-export const directSource: DownloadSource = {
+export const directSource: Mirror = {
   name: 'direct',
   credit: '直连官方源',
   rewrite: (url) => url.toString(),
@@ -35,7 +35,7 @@ const BMCLAPI_MAP: ReadonlyArray<readonly [string, string]> = [
   ['meta.fabricmc.net', '/fabric-meta'],
 ]
 
-export const bmclapiSource: DownloadSource = {
+export const bmclapiSource: Mirror = {
   name: 'bmclapi',
   credit: 'BMCLAPI · bmclapi2.bangbang93.com',
   rewrite: (url) => {
@@ -62,15 +62,11 @@ export const bmclapiSource: DownloadSource = {
  *
  * 所以默认排在 direct 之后：直连失败才用它。
  */
-export const mcimSource: DownloadSource = {
+export const mcimSource: Mirror = {
   name: 'mcim',
   credit: 'MCIM · mod.mcimirror.top',
   rewrite: (url) => {
-    const mirrorable = new Set([
-      'cdn.modrinth.com',
-      'edge.forgecdn.net',
-      'mediafilez.forgecdn.net',
-    ])
+    const mirrorable = new Set(['cdn.modrinth.com', 'edge.forgecdn.net', 'mediafilez.forgecdn.net'])
     if (!mirrorable.has(url.hostname)) return null
     return `https://mod.mcimirror.top${url.pathname}${url.search}`
   },
@@ -87,7 +83,7 @@ export const mcimSource: DownloadSource = {
  *
  * 它只覆盖这一个域，对其他 URL 返回 null——放进默认列表没有副作用。
  */
-export const neoforgeCdnSource: DownloadSource = createMirrorSource({
+export const neoforgeCdnSource: Mirror = createMirrorSource({
   name: 'neoforge-cdn',
   from: 'maven.neoforged.net',
   to: 'https://neoforged.forgecdn.net',
@@ -114,7 +110,7 @@ export interface MirrorConfig {
  * 内置源刻意只保留 BMCLAPI / direct / MCIM 三个——每多一个默认源就多一个
  * 可能超时的失败点，而绝大多数镜像对本项目的增量价值接近于零。
  */
-export function createMirrorSource(cfg: MirrorConfig): DownloadSource {
+export function createMirrorSource(cfg: MirrorConfig): Mirror {
   const base = cfg.to.replace(/\/+$/, '')
   const prefix = cfg.pathPrefix ?? ''
   return {
@@ -165,7 +161,7 @@ export function adoptiumMirrorPath(url: URL): string | null {
   return `/${feature}/${image}/${arch}/${os}/${file}`
 }
 
-export const adoptiumTunaSource: DownloadSource = {
+export const adoptiumTunaSource: Mirror = {
   name: 'adoptium-tuna',
   credit: 'TUNA · mirrors.tuna.tsinghua.edu.cn/Adoptium',
   rewrite: (url) => {
@@ -179,16 +175,16 @@ export const adoptiumTunaSource: DownloadSource = {
  * MCIM 排在直连之后（理由见 mcimSource 注释——官方自己都说「下载失败后再用镜像」）。
  * Adoptium 镜像排最后：只在 GitHub 真的失败时兜底，正常情况下仍走官方。
  */
-export function defaultSources(): readonly DownloadSource[] {
+export function defaultSources(): readonly Mirror[] {
   return [bmclapiSource, neoforgeCdnSource, directSource, mcimSource, adoptiumTunaSource]
 }
 
 /** 国内网络优先：镜像先上，直连兜底。 */
-export function chinaFirstSources(): readonly DownloadSource[] {
+export function chinaFirstSources(): readonly Mirror[] {
   return [adoptiumTunaSource, bmclapiSource, neoforgeCdnSource, mcimSource, directSource]
 }
 
 /** `--china` 的两套顺序。消费者的选择点只有这一个，别在别处再写一遍三元表达式。 */
-export function pickSources(china: boolean): readonly DownloadSource[] {
+export function pickSources(china: boolean): readonly Mirror[] {
   return china ? chinaFirstSources() : defaultSources()
 }

@@ -1,5 +1,5 @@
+import { createHttp, type HttpClient, num, str } from './http.js'
 import { authError, type MinecraftProfile, type MinecraftToken, type XboxToken } from './types.js'
-import { createHttp, num, str, type HttpClient } from './http.js'
 
 /**
  * Xbox Live → XSTS → Minecraft 这条链。
@@ -77,10 +77,7 @@ export async function authenticateXbl(
 }
 
 /** XBL 令牌 → XSTS 令牌。失败时把 XErr 翻译成用户能照做的建议。 */
-export async function authorizeXsts(
-  xblToken: string,
-  opts: XboxOptions = {},
-): Promise<XboxToken> {
+export async function authorizeXsts(xblToken: string, opts: XboxOptions = {}): Promise<XboxToken> {
   const http = opts.http ?? createHttp()
   const res = await http.postJson(
     XSTS_AUTH,
@@ -176,7 +173,11 @@ export async function loginWithXbox(
           '换自己的 client id 也一样，因为审核是按应用走的',
       )
     }
-    throw authError('MC_LOGIN_FAILED', `Minecraft 登录失败：${desc}`, '重试一次；持续失败就重新 login')
+    throw authError(
+      'MC_LOGIN_FAILED',
+      `Minecraft 登录失败：${desc}`,
+      '重试一次；持续失败就重新 login',
+    )
   }
 
   const accessToken = str(res.body, 'access_token')

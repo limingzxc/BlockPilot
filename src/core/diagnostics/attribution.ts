@@ -11,14 +11,14 @@
  *    指错一个模组，用户会去删它，然后问题依旧，还多了一个新问题。
  */
 
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { unzipSync } from 'fflate'
 
 import { readModMetadata } from '../modmeta/read.js'
-import { jarNameOf, parseFrames, rootCauseStart } from './frames.js'
 import type { StackFrame } from './frames.js'
+import { jarNameOf, parseFrames, rootCauseStart } from './frames.js'
 
 export interface ModRef {
   readonly modId: string
@@ -272,10 +272,7 @@ interface AttributeInput {
 }
 
 /** 包名归属。返回 null 表示这帧不属于任何可识别的模组。 */
-function modOfClass(
-  className: string,
-  index: ModIndex,
-): { modId: string; pkg: string } | null {
+function modOfClass(className: string, index: ModIndex): { modId: string; pkg: string } | null {
   const parts = className.split('.')
   // 从完整包路径往短里试，命中即止。先长后短很关键：
   // `net/caffeinemc/mods` 有两个模组共用，而 `net/caffeinemc/mods/sodium` 只有一个
@@ -449,8 +446,7 @@ export function attributeCulprits(input: AttributeInput): Attribution {
     notes.push('没有读到任何模组元数据（mods 目录为空或不存在），无法把栈帧归到模组')
   } else if (culprits.length === 0) {
     notes.push(
-      `解析到 ${frames.length} 个栈帧，但没有一个能归到已安装的模组——` +
-        '异常可能来自原版或某个库',
+      `解析到 ${frames.length} 个栈帧，但没有一个能归到已安装的模组——异常可能来自原版或某个库`,
     )
   } else if (unattributedInRoot > 0 && !primaryAssigned) {
     notes.push(`根因区段有 ${unattributedInRoot} 帧不属于任何模组`)

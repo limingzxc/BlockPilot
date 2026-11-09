@@ -52,11 +52,7 @@ export interface DepFilter {
  * 而 B 和 C 都不在实例里，只能靠 projectId 反查才能继续往下走。
  */
 export interface DependencyResolver {
-  resolve(
-    projectId: string,
-    filter: DepFilter,
-    signal: AbortSignal,
-  ): Promise<VersionInfo | null>
+  resolve(projectId: string, filter: DepFilter, signal: AbortSignal): Promise<VersionInfo | null>
 }
 
 /**

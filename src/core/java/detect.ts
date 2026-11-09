@@ -37,7 +37,7 @@ export function candidatePaths(managedDir?: string): Candidate[] {
   const out: Candidate[] = []
   const env = process.env
 
-  const javaHome = env['JAVA_HOME']
+  const javaHome = env.JAVA_HOME
   if (javaHome !== undefined && javaHome !== '') {
     out.push({ path: join(javaHome, 'bin', EXE), source: 'java_home' })
   }
@@ -47,9 +47,9 @@ export function candidatePaths(managedDir?: string): Candidate[] {
   }
 
   if (isWindows) {
-    const pf = env['ProgramFiles']
+    const pf = env.ProgramFiles
     const pf86 = env['ProgramFiles(x86)']
-    const local = env['LOCALAPPDATA']
+    const local = env.LOCALAPPDATA
 
     // 厂商目录下一层就是 JDK 目录
     for (const parent of [
@@ -90,7 +90,7 @@ export function candidatePaths(managedDir?: string): Candidate[] {
 
 /** PATH 里的 java 单独处理——它只是个名字，得靠 shell 解析。 */
 function pathCandidates(): Candidate[] {
-  const raw = process.env['PATH'] ?? ''
+  const raw = process.env.PATH ?? ''
   const sep = isWindows ? ';' : ':'
   return raw
     .split(sep)

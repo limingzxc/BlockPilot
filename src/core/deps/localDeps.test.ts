@@ -49,18 +49,13 @@ test('provides 能满足子模块依赖（Fabric API 场景）', () => {
 })
 
 test('没有 provides 时报子模块缺失', () => {
-  const issues = checkLocalDeps([
-    mod('sodium', [['fabric-rendering-fluids-v1', true]]),
-  ])
+  const issues = checkLocalDeps([mod('sodium', [['fabric-rendering-fluids-v1', true]])])
   assert.equal(issues.length, 1)
   assert.equal(issues[0]?.modId, 'fabric-rendering-fluids-v1')
 })
 
 test('多个模组依赖同一个缺失项时合并 requiredBy', () => {
-  const issues = checkLocalDeps([
-    mod('a', [['shared', true]]),
-    mod('b', [['shared', true]]),
-  ])
+  const issues = checkLocalDeps([mod('a', [['shared', true]]), mod('b', [['shared', true]])])
   assert.equal(issues.length, 1)
   assert.deepEqual([...(issues[0]?.requiredBy ?? [])].sort(), ['a', 'b'])
 })

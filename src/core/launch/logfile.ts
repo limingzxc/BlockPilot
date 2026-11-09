@@ -1,4 +1,11 @@
-import { createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs'
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  statSync,
+  unlinkSync,
+} from 'node:fs'
 import { join } from 'node:path'
 
 /** 保留多少个历史日志。一次游戏会话通常几 MB，10 个足够回溯。 */

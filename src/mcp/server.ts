@@ -4,23 +4,25 @@
  * 规矩：stdout 被协议独占，任何调试输出都必须走 stderr。
  * 这里不实现任何业务逻辑，只把 core 的 OpEvent 翻译成 MCP 的进度通知与工具返回。
  */
+
+import { existsSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
   CallToolRequestSchema,
-  ListToolsRequestSchema,
   type CallToolResult,
+  ListToolsRequestSchema,
   type Tool,
 } from '@modelcontextprotocol/sdk/types.js'
-import { existsSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
-
-import { applyProxy } from '../core/proxy.js'
+import type { DiagResult } from '../core/diagnostics/index.js'
 
 import { createDiagnose } from '../core/diagnostics/index.js'
-import type { DiagResult } from '../core/diagnostics/index.js'
+import { detectHost } from '../core/host.js'
 import { createPreflight } from '../core/preflight/index.js'
 import type { PreflightReport } from '../core/preflight/types.js'
+import { applyProxy } from '../core/proxy.js'
+import { resolveCurseforge } from '../sources/curseforge.js'
 import { ModrinthSource } from '../sources/modrinth.js'
 
 const PREFLIGHT_TOOL = 'preflight_modpack'
@@ -38,6 +40,7 @@ const tools: Tool[] = [
   {
     name: PREFLIGHT_TOOL,
     title: '预检整合包',
+    annotations: { readOnlyHint: true, openWorldHint: true },
     description: [
       '检查一个 Minecraft 整合包或实例能否运行。不下载、不启动游戏、不登录账户。',
       '',
@@ -66,6 +69,11 @@ const tools: Tool[] = [
           description:
             '整合包文件路径，支持 .mrpack。**优先传绝对路径**——server 的工作目录由启动它的客户端决定，相对路径容易解析到意外位置。',
         },
+        includeHost: {
+          type: 'boolean',
+          description:
+            '可选。stdio 模式下 MCP 就跑在用户本机，传 true 会额外检测本机 Java 与内存并给出 Java 结论（多花 1–3 秒）。',
+        },
       },
       required: ['path'],
       additionalProperties: false,
@@ -74,6 +82,7 @@ const tools: Tool[] = [
   {
     name: DIAG_TOOL,
     title: '分析崩溃日志',
+    annotations: { readOnlyHint: true, openWorldHint: false },
     description: [
       '读一份 Minecraft 崩溃日志，判断崩溃原因，并尽量指认到具体模组。只读文件，不改任何东西。',
       '',
@@ -163,16 +172,13 @@ function renderDiagForModel(r: DiagResult): string {
   return lines.join('\n')
 }
 
-const server = new Server(
-  { name: 'blockpilot', version: '0.0.1' },
-  { capabilities: { tools: {} } },
-)
+const server = new Server({ name: 'blockpilot', version: '0.0.1' }, { capabilities: { tools: {} } })
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }))
 
 server.setRequestHandler(CallToolRequestSchema, async (request, extra): Promise<CallToolResult> => {
   if (request.params.name === DIAG_TOOL) {
-    const rawLog = request.params.arguments?.['logPath']
+    const rawLog = request.params.arguments?.logPath
     if (typeof rawLog !== 'string' || rawLog.length === 0) {
       return {
         content: [{ type: 'text', text: 'missing required argument: logPath' }],
@@ -186,7 +192,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra): Promise<
     }
 
     // 日志默认在 `<实例>/logs/xxx.log`，所以 mods 目录是 `../mods`
-    const rawModsDir = request.params.arguments?.['modsDir']
+    const rawModsDir = request.params.arguments?.modsDir
     const modsDir =
       typeof rawModsDir === 'string' && rawModsDir.length > 0
         ? resolve(rawModsDir)
@@ -227,7 +233,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra): Promise<
     }
   }
 
-  const rawPath = request.params.arguments?.['path']
+  const rawPath = request.params.arguments?.path
   if (typeof rawPath !== 'string' || rawPath.length === 0) {
     return {
       content: [{ type: 'text', text: 'missing required argument: path' }],
@@ -244,7 +250,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra): Promise<
   }
 
   const progressToken = request.params._meta?.progressToken
-  const op = createPreflight({ target, source: new ModrinthSource() })
+  // stdio 的 MCP 进程就在用户本机上，可以选择性给出「本机 Java 够不够」的结论。
+  // 缺省不检测：detectHost 要起若干次 JVM，只读查询不该默认付这个代价。
+  const includeHost = request.params.arguments?.includeHost === true
+  const host = includeHost ? await detectHost() : undefined
+  const op = createPreflight({
+    target,
+    source: new ModrinthSource(),
+    ...(host === undefined ? {} : { host }),
+    curseforge: resolveCurseforge(),
+  })
 
   try {
     for await (const ev of op.run(extra.signal)) {
@@ -282,7 +297,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra): Promise<
           break
       }
     }
-    return { content: [{ type: 'text', text: 'preflight finished without a result' }], isError: true }
+    return {
+      content: [{ type: 'text', text: 'preflight finished without a result' }],
+      isError: true,
+    }
   } catch (err) {
     return {
       content: [{ type: 'text', text: `preflight crashed: ${String(err)}` }],

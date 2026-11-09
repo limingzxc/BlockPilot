@@ -1,11 +1,11 @@
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-
-import { Op } from '../events.js'
-import type { OpEvent } from '../events.js'
-import { defineOperation } from '../operation.js'
-import type { Operation } from '../operation.js'
 import { AsyncQueue } from '../download/queue.js'
+import type { OpEvent } from '../events.js'
+import { Op } from '../events.js'
+import type { Operation } from '../operation.js'
+import { defineOperation } from '../operation.js'
+import { redactSecrets } from '../redact.js'
 import { openLogFile } from './logfile.js'
 import type { LaunchPlan } from './plan.js'
 
@@ -82,7 +82,8 @@ function looksLikeError(line: string): boolean {
 function spawnErrorMessage(java: string, err: Error & { code?: string }): string {
   if (err.code !== 'ENOENT') return err.message
   const isPath = java.includes('/') || java.includes('\\')
-  if (!isPath) return `PATH 里找不到可执行的 java（${java}）。用 --java 指定，或跑 blockpilot java install`
+  if (!isPath)
+    return `PATH 里找不到可执行的 java（${java}）。用 --java 指定，或跑 blockpilot java install`
   return existsSync(java)
     ? `${java} 存在但无法执行。检查文件权限与架构（32/64 位）`
     : `找不到 Java：${java}。跑 blockpilot java install <major>，或用 --java 指定`
@@ -122,8 +123,7 @@ export function createLauncher(opts: RunOptions): Operation<RunResult> {
 
     const started = Date.now()
     const queue = new AsyncQueue<OpEvent<never>>()
-    const sink =
-      opts.logsDir === undefined ? null : openLogFile(opts.logsDir, plan.versionId)
+    const sink = opts.logsDir === undefined ? null : openLogFile(opts.logsDir, plan.versionId)
     if (sink !== null) {
       yield Op.log('info', 'launch.logfile', { path: sink.path })
     }
@@ -132,15 +132,17 @@ export function createLauncher(opts: RunOptions): Operation<RunResult> {
     /** 最后一行日志的时间。用它判断「进程活着但游戏已经死了」 */
     let lastLineAt = Date.now()
 
-    const onLine = (stream: 'stdout' | 'stderr') => (line: string) => {
+    const onLine = (stream: 'stdout' | 'stderr') => (raw: string) => {
+      // 1.6.x 会把 `Session ID is token:<token>:<uuid>` 打在 stdout。
+      // 日志会落盘、被 diag/MCP 读给 AI，所以在**进入 tail/日志/事件之前**脱敏，
+      // 而不是在某个渲染器里各自擦一遍（ADR-0040）。
+      const line = redactSecrets(raw)
       lineCount += 1
       lastLineAt = Date.now()
       tail.push(line)
       if (tail.length > TAIL_SIZE) tail.shift()
       sink?.write(line)
-      queue.push(
-        Op.log(looksLikeError(line) ? 'error' : 'info', 'game.output', { stream, line }),
-      )
+      queue.push(Op.log(looksLikeError(line) ? 'error' : 'info', 'game.output', { stream, line }))
     }
 
     child.stdout.on('data', makeSplitter(onLine('stdout')))
@@ -149,12 +151,13 @@ export function createLauncher(opts: RunOptions): Operation<RunResult> {
     let timer: NodeJS.Timeout | undefined
     /** 是我们自己按 --stop 结束的：不能既当裁判又吹哨，把主动结束报成崩溃 */
     let stopped = false
-    if (opts.autoStopSeconds !== undefined) {
+    const autoStopSeconds = opts.autoStopSeconds
+    if (autoStopSeconds !== undefined) {
       timer = setTimeout(() => {
         stopped = true
-        queue.push(Op.log('warn', 'launch.autostop', { seconds: opts.autoStopSeconds }))
+        queue.push(Op.log('warn', 'launch.autostop', { seconds: autoStopSeconds }))
         child.kill()
-      }, opts.autoStopSeconds * 1000)
+      }, autoStopSeconds * 1000)
     }
 
     const abortHandler = () => {

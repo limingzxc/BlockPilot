@@ -2,11 +2,12 @@
  * MCP 冒烟测试：真的起一个子进程，走 stdio 协议，列工具 + 调工具。
  * 用法：npx tsx scripts/mcp-smoke.ts
  */
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
 import { strToU8, zipSync } from 'fflate'
 
@@ -35,7 +36,7 @@ const result = await client.callTool({
 
 console.log('[smoke] isError =', result.isError === true)
 for (const block of result.content as Array<{ type: string; text?: string }>) {
-  if (block.type === 'text') console.log('[smoke] text:\n' + block.text)
+  if (block.type === 'text') console.log(`[smoke] text:\n${block.text}`)
 }
 console.log('[smoke] structuredContent present =', result.structuredContent !== undefined)
 
@@ -70,7 +71,7 @@ const diag = await client.callTool({
 })
 console.log('[smoke] diag isError =', diag.isError === true)
 for (const block of diag.content as Array<{ type: string; text?: string }>) {
-  if (block.type === 'text') console.log('[smoke] diag text:\n' + block.text)
+  if (block.type === 'text') console.log(`[smoke] diag text:\n${block.text}`)
 }
 console.log('[smoke] diag structuredContent present =', diag.structuredContent !== undefined)
 

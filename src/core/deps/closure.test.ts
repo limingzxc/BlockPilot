@@ -80,7 +80,10 @@ test('修复计划的 manual 项也带名字', async () => {
     resolver: resolverOf({}),
     signal,
   })
-  const plan = buildRepairPlan(result, { verified: false, nameOf: (id) => (id === 'b' ? 'Bee' : undefined) })
+  const plan = buildRepairPlan(result, {
+    verified: false,
+    nameOf: (id) => (id === 'b' ? 'Bee' : undefined),
+  })
   assert.equal(plan.manual[0]?.projectId, 'b')
   assert.equal(plan.manual[0]?.displayName, 'Bee')
 })

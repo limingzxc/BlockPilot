@@ -2,10 +2,12 @@ import { existsSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { BlockPilotError } from './errors.js'
+
 /** 根目录本身不可用（是文件、或是个打不开的路径）。CLI 直接渲染这句话。 */
-export class LayoutError extends Error {
+export class LayoutError extends BlockPilotError {
   constructor(message: string) {
-    super(message)
+    super('LAYOUT_INVALID', message)
     this.name = 'LayoutError'
   }
 }
@@ -55,6 +57,7 @@ function assertInstanceId(id: string): void {
   if (/[\\/]/.test(id)) throw new LayoutError(`实例名不能包含路径分隔符：${id}`)
   if (/^[A-Za-z]:/.test(id)) throw new LayoutError(`实例名不能是盘符路径：${id}`)
   // Windows 上非法，Linux 上能用；实例目录要能跨平台拷走，统一禁掉
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: 这里就是要拒绝控制字符
   if (/[\u0000-\u001f<>:"|?*]/.test(id)) throw new LayoutError(`实例名含非法字符：${id}`)
 }
 
@@ -98,14 +101,14 @@ export function resolveLayout(root: string, instanceId = 'default'): Layout {
  */
 export function defaultRoot(platform: NodeJS.Platform = process.platform): string {
   if (platform === 'win32') {
-    const appData = process.env['APPDATA']
+    const appData = process.env.APPDATA
     if (appData !== undefined && appData !== '') return join(appData, 'BlockPilot')
     return join(homedir(), 'AppData', 'Roaming', 'BlockPilot')
   }
   if (platform === 'darwin') {
     return join(homedir(), 'Library', 'Application Support', 'BlockPilot')
   }
-  const xdg = process.env['XDG_DATA_HOME']
+  const xdg = process.env.XDG_DATA_HOME
   if (xdg !== undefined && xdg !== '') return join(xdg, 'blockpilot')
   return join(homedir(), '.local', 'share', 'blockpilot')
 }

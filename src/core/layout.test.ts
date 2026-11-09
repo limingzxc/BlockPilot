@@ -46,11 +46,14 @@ test('root 是文件：抛 LayoutError，而不是让 mkdir 在第三步失败',
 
 test('实例名不能为空：空串会让 gameDir 变成 instances/ 本身', () => {
   withTemp((dir) => {
-    assert.throws(() => resolveLayout(dir, ''), (err: unknown) => {
-      assert.ok(err instanceof LayoutError)
-      assert.match(err.message, /不能为空/)
-      return true
-    })
+    assert.throws(
+      () => resolveLayout(dir, ''),
+      (err: unknown) => {
+        assert.ok(err instanceof LayoutError)
+        assert.match(err.message, /不能为空/)
+        return true
+      },
+    )
   })
 })
 

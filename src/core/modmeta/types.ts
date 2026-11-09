@@ -7,6 +7,13 @@ export interface ModDependency {
   readonly modId: string
   readonly mandatory: boolean
   readonly versionRange?: string
+  /**
+   * `breaks`（Fabric/Quilt）或 `type = "incompatible"`（NeoForge）。
+   *
+   * 以前这些声明被直接丢掉，于是「A 明确说不能和 B 一起装」在预检里完全看不见。
+   * 缺省是 `depends`，保持旧行为。
+   */
+  readonly kind?: 'depends' | 'breaks'
 }
 
 export interface ModMetadata {

@@ -11,11 +11,11 @@
  */
 
 import { pickSources } from '../core/download/sources.js'
-import type { DownloadSource } from '../core/download/types.js'
-import { defaultRoot, resolveLayout } from '../core/layout.js'
+import type { Mirror } from '../core/download/types.js'
 import type { Layout } from '../core/layout.js'
-import { normalizeFlags } from './flags.js'
+import { defaultRoot, resolveLayout } from '../core/layout.js'
 import type { FlagDecl, FlagSpec } from './flags.js'
+import { normalizeFlags } from './flags.js'
 
 /** 声明一条子命令时写的东西。位置参数只用于帮助；handler 从 `ctx.argv` 取。 */
 export interface CommandSpec {
@@ -46,14 +46,14 @@ export interface CommandContext {
   readonly argv: readonly string[]
   readonly signal: AbortSignal
   /** 全局 `--proxy` 解析出的地址。只有要传给子进程的地方用得上 */
-  readonly proxy?: string
+  readonly proxy?: string | undefined
   /** `--root`，缺省见 defaultRoot() */
   readonly root: string
   /** `--instance`，缺省 default */
   readonly instance: string
   readonly layout: Layout
   /** 本次调用的下载源顺序：`--china` 时镜像在前 */
-  readonly sources: readonly DownloadSource[]
+  readonly sources: readonly Mirror[]
   readonly china: boolean
   has(flag: string): boolean
   /** flag 后面那个值 */
@@ -72,7 +72,7 @@ class Ctx implements CommandContext {
   readonly root: string
   readonly instance: string
   private cachedLayout: Layout | undefined
-  private cachedSources: readonly DownloadSource[] | undefined
+  private cachedSources: readonly Mirror[] | undefined
 
   constructor(argv: readonly string[], signal: AbortSignal, proxy: string | undefined) {
     this.argv = argv
@@ -87,7 +87,7 @@ class Ctx implements CommandContext {
     return this.cachedLayout
   }
 
-  get sources(): readonly DownloadSource[] {
+  get sources(): readonly Mirror[] {
     this.cachedSources ??= pickSources(this.china)
     return this.cachedSources
   }
@@ -129,7 +129,11 @@ export function defineCommand(spec: CommandSpec): Command {
     }
     if (f.help === undefined) throw new Error(`${spec.name}: ${flag} 缺 help，帮助里会是一条空行`)
   }
-  if (spec.positional !== undefined && !spec.positional.startsWith('<') && !spec.positional.startsWith('[')) {
+  if (
+    spec.positional !== undefined &&
+    !spec.positional.startsWith('<') &&
+    !spec.positional.startsWith('[')
+  ) {
     throw new Error(`${spec.name}: positional 要写成 '<x>' 或 '[x]'，收到 ${spec.positional}`)
   }
   return { ...spec, flags }
@@ -176,7 +180,14 @@ export function usageText(commands: readonly Command[]): string {
     label: f.takesValue ? `${flag} ${f.value ?? ''}` : flag,
     help: f.help ?? '',
   }))
-  commonRows.push({ label: '--proxy <url>', help: '走 HTTP 代理（也读 HTTPS_PROXY 环境变量），影响元数据、下载与 installer' })
+  commonRows.push({
+    label: '--proxy <url>',
+    help: '走 HTTP 代理（也读 HTTPS_PROXY 环境变量），影响元数据、下载与 installer',
+  })
+  commonRows.push({
+    label: '--events',
+    help: '输出 ndjson 事件流（每行一个事件，最后一行是 exit code），不混入人类文本',
+  })
 
   lines.push('  通用：')
   for (const row of commonRows) {

@@ -1,9 +1,8 @@
 import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
-
-import { probeAssetObjects } from '../setup/assets.js'
 import { assetsHint } from '../hints.js'
 import type { AssetsProbe } from '../setup/assets.js'
+import { probeAssetObjects } from '../setup/assets.js'
 import type { Finding } from './types.js'
 
 /**
@@ -68,10 +67,7 @@ export function probeAssets(assetsDir: string, gameVersion?: string): AssetsProb
   }
   if (indexId === undefined) return null
 
-  const probe = probeAssetObjects(
-    join(indexesDir, `${indexId}.json`),
-    join(assetsDir, 'objects'),
-  )
+  const probe = probeAssetObjects(join(indexesDir, `${indexId}.json`), join(assetsDir, 'objects'))
   return probe === null ? null : { indexId, probe }
 }
 

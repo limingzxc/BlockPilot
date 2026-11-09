@@ -1,3 +1,6 @@
+import { errMessage } from '../errors.js'
+import type { Probe } from '../probe.js'
+import { absent, found, probeHttpFailure, unreachable } from '../probe.js'
 import { USER_AGENT } from '../user-agent.js'
 
 const ADOPTIUM_API = 'https://api.adoptium.net/v3/assets/latest'
@@ -42,12 +45,15 @@ interface AdoptiumAsset {
  *
  * 用 `assets/latest` 而不是 `binary/latest`：后者是 302 直接跳二进制，
  * 拿不到 checksum。按 ADR-0005，没有哈希的文件不下载。
+ *
+ * 返回三态：断网与「Adoptium 没有这个构建」是两件事，不能都变成 `null`——
+ * 那会让用户看到 `JAVA_NOT_FOUND` 然后去换 Java 版本，而真正的问题是网络。
  */
 export async function fetchJavaBinary(
   major: number,
   os: JavaOs,
   signal?: AbortSignal,
-): Promise<JavaBinary | null> {
+): Promise<Probe<JavaBinary>> {
   const params = new URLSearchParams({
     architecture: archOf(),
     image_type: 'jre',
@@ -64,14 +70,14 @@ export async function fetchJavaBinary(
         AbortSignal.timeout(TIMEOUT_MS),
       ]),
     })
-    if (!res.ok) return null
+    if (!res.ok) return probeHttpFailure(res.status)
     const list = (await res.json()) as AdoptiumAsset[]
     const first = list[0]
     const pkg = first?.binary?.package
     if (pkg?.link === undefined || pkg.name === undefined || pkg.checksum === undefined) {
-      return null
+      return absent('Adoptium 没有返回可用的构建（列表为空或缺少下载信息）')
     }
-    return {
+    return found({
       release: first?.release_name ?? `${major}`,
       url: pkg.link,
       fileName: pkg.name,
@@ -79,8 +85,10 @@ export async function fetchJavaBinary(
       checksum: pkg.checksum,
       // Windows 给 zip，Linux/macOS 给 tar.gz
       archive: pkg.name.endsWith('.zip') ? 'zip' : 'tar.gz',
-    }
-  } catch {
-    return null
+    })
+  } catch (err) {
+    // 用户取消保持原样：调用方靠 signal.aborted 判断，不该被包成网络故障
+    if (signal?.aborted === true) throw err
+    return unreachable(errMessage(err))
   }
 }

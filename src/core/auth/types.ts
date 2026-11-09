@@ -1,3 +1,5 @@
+import { BlockPilotError } from '../errors.js'
+
 /**
  * 认证相关的数据形状。
  *
@@ -40,15 +42,13 @@ export type AuthErrorCode =
  * hint 必须是**可执行的下一步**，不是对现象的重述——「你买了吗」不是建议，
  * 「换一个有 Minecraft 的微软账号，或去 minecraft.net 购买」才是。
  */
-export class AuthError extends Error {
-  readonly code: AuthErrorCode
-  readonly hint?: string
+export class AuthError extends BlockPilotError {
+  // declare：不要生成实例字段，否则 ES2022 的字段初始化会把 super 里赋的值冲掉
+  declare readonly code: AuthErrorCode
 
   constructor(code: AuthErrorCode, message: string, hint?: string) {
-    super(message)
+    super(code, message, hint === undefined ? {} : { hint })
     this.name = 'AuthError'
-    this.code = code
-    this.hint = hint
   }
 }
 
@@ -126,10 +126,10 @@ export interface AuthAccount {
   /** MC token 的过期时刻，epoch 毫秒 */
   readonly expiresAt: number
   /** 1.18+ 的 --xuid。拿不到就不传，游戏仍能离线进单人 */
-  readonly xuid?: string
-  readonly refreshToken?: string
+  readonly xuid?: string | undefined
+  readonly refreshToken?: string | undefined
   /** 换出这个账号时用的 Azure 应用 id。刷新必须用同一个 */
-  readonly clientId?: string
+  readonly clientId?: string | undefined
   /** 登录时刻，供 `accounts` 展示 */
   readonly obtainedAt: number
   /** 在线账号恒为 msa；离线模式的占位账号不会进存档 */

@@ -1,6 +1,6 @@
-import { authError, type AuthAccount, type DeviceCode, type MsaToken } from './types.js'
 import type { HttpClient } from './http.js'
 import { pollForToken, refreshMsaToken, requestDeviceCode, type SleepFn } from './msa.js'
+import { type AuthAccount, authError, type DeviceCode, type MsaToken } from './types.js'
 import {
   assertGameOwnership,
   authenticateXbl,
@@ -119,6 +119,10 @@ export async function refreshAccount(
  * 留 60 秒余量：正好在到期瞬间拿去启动，走到游戏里就过期了，
  * 表现为「连上了但进不去服务器」。提前一分钟刷新，代价是一次请求。
  */
-export function isExpired(account: AuthAccount, now: number = Date.now(), skewMs = 60_000): boolean {
+export function isExpired(
+  account: AuthAccount,
+  now: number = Date.now(),
+  skewMs = 60_000,
+): boolean {
   return account.expiresAt - skewMs <= now
 }

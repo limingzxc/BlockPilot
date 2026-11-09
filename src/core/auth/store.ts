@@ -1,7 +1,8 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
-import { authError, type AuthAccount } from './types.js'
+import type { CredentialStore } from './credentials.js'
+import { type AuthAccount, authError } from './types.js'
 
 /**
  * 账号存档。
@@ -32,17 +33,17 @@ function isValidAccount(v: unknown): v is AuthAccount {
   if (v === null || typeof v !== 'object') return false
   const a = v as Record<string, unknown>
   return (
-    typeof a['uuid'] === 'string' &&
-    /^[0-9a-f]{32}$/i.test(a['uuid']) &&
-    typeof a['name'] === 'string' &&
-    a['name'] !== '' &&
-    typeof a['accessToken'] === 'string' &&
-    typeof a['expiresAt'] === 'number' &&
-    typeof a['obtainedAt'] === 'number'
+    typeof a.uuid === 'string' &&
+    /^[0-9a-f]{32}$/i.test(a.uuid) &&
+    typeof a.name === 'string' &&
+    a.name !== '' &&
+    typeof a.accessToken === 'string' &&
+    typeof a.expiresAt === 'number' &&
+    typeof a.obtainedAt === 'number'
   )
 }
 
-export function loadStore(path: string): AuthStore {
+export function loadStore(path: string, credentials: CredentialStore | null = null): AuthStore {
   if (!existsSync(path)) return { accounts: [] }
   let raw: string
   try {
@@ -64,7 +65,11 @@ export function loadStore(path: string): AuthStore {
 
   const obj = parsed as { accounts?: unknown; active?: unknown } | null
   const list = Array.isArray(obj?.accounts) ? obj.accounts : []
-  const accounts = list.filter(isValidAccount)
+  const accounts = list.filter(isValidAccount).map((account) => {
+    if (credentials === null) return account
+    const refreshToken = credentials.get(account.uuid)
+    return refreshToken === null ? account : { ...account, refreshToken }
+  })
   const active = typeof obj?.active === 'string' ? obj.active : undefined
   return { accounts, ...(active === undefined ? {} : { active }) }
 }
@@ -76,12 +81,24 @@ export function loadStore(path: string): AuthStore {
  * 直接覆写的话，一次中断就会留下半截 JSON，下次启动报「存档损坏」——
  * 而用户什么都没做错。
  */
-export function saveStore(path: string, store: AuthStore): void {
+export function saveStore(
+  path: string,
+  store: AuthStore,
+  credentials: CredentialStore | null = null,
+): void {
   mkdirSync(dirname(path), { recursive: true })
+  // 有系统凭据存储时，refresh_token 不落盘：文件里只留短期 token 与元数据。
+  // set() 失败（钥匙串被锁/工具缺失）就保持原样，不制造「以为存了其实没存」。
+  const accounts = store.accounts.map((account) => {
+    if (credentials === null || account.refreshToken === undefined) return account
+    if (!credentials.set(account.uuid, account.refreshToken)) return account
+    const { refreshToken: _omit, ...rest } = account
+    return rest
+  })
   const payload = {
     version: SCHEMA_VERSION,
     active: store.active ?? null,
-    accounts: store.accounts,
+    accounts,
   }
   const tmp = `${path}.tmp`
   writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 })
@@ -94,11 +111,15 @@ export function saveStore(path: string, store: AuthStore): void {
 }
 
 /** 新增或按 uuid 覆盖，并把它设为当前账号。 */
-export function upsertAccount(path: string, account: AuthAccount): AuthStore {
-  const store = loadStore(path)
+export function upsertAccount(
+  path: string,
+  account: AuthAccount,
+  credentials: CredentialStore | null = null,
+): AuthStore {
+  const store = loadStore(path, credentials)
   const others = store.accounts.filter((a) => a.uuid !== account.uuid)
   const next: AuthStore = { accounts: [...others, account], active: account.uuid }
-  saveStore(path, next)
+  saveStore(path, next, credentials)
   return next
 }
 
@@ -109,10 +130,7 @@ export function upsertAccount(path: string, account: AuthAccount): AuthStore {
  * 重名时以 uuid 精确匹配优先，名字匹配取第一个——Minecraft 的玩家名全局唯一，
  * 重名只可能来自改名后的旧存档。
  */
-export function pickAccount(
-  store: AuthStore,
-  selector?: string,
-): AuthAccount | null {
+export function pickAccount(store: AuthStore, selector?: string): AuthAccount | null {
   const want = selector?.trim()
   if (want === undefined || want === '') {
     const active = store.accounts.find((a) => a.uuid === store.active)
@@ -126,12 +144,17 @@ export function pickAccount(
 }
 
 /** 删一个账号。返回是否真的删掉了。 */
-export function removeAccount(path: string, selector: string): boolean {
-  const store = loadStore(path)
+export function removeAccount(
+  path: string,
+  selector: string,
+  credentials: CredentialStore | null = null,
+): boolean {
+  const store = loadStore(path, credentials)
   const target = pickAccount(store, selector)
   if (target === null) return false
   const accounts = store.accounts.filter((a) => a.uuid !== target.uuid)
   const active = store.active === target.uuid ? accounts[0]?.uuid : store.active
-  saveStore(path, { accounts, ...(active === undefined ? {} : { active }) })
+  credentials?.delete(target.uuid)
+  saveStore(path, { accounts, ...(active === undefined ? {} : { active }) }, credentials)
   return true
 }

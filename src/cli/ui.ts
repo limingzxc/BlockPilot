@@ -31,6 +31,18 @@ export function humanBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`
 }
 
+/**
+ * 全局 `--events` 开关。
+ *
+ * 事件流是给自动化消费者的：每行一个 JSON 事件，最后一行是 exit code。
+ * 人类渲染完全关掉，stdout 里不会混进进度条或颜色。
+ */
+let eventStream = false
+
+export function setEventStream(on: boolean): void {
+  eventStream = on
+}
+
 /** Ctrl+C → abort。11 个子命令的同一行样板。 */
 export function createInterrupt(): AbortController {
   const controller = new AbortController()
@@ -47,6 +59,11 @@ export interface OpUi<T> {
   failed?(ev: Extract<OpEvent<never>, { type: 'failed' }>): void
   /** 必填：渲染最终结果并映射为退出码 */
   result(value: T): number
+  /**
+   * `--events` 模式下只算退出码、不渲染。
+   * 缺省 0；preflight / diag / verify / deploy 这类有非零结论的命令必须给。
+   */
+  exitCode?(value: T): number
 }
 
 /**
@@ -59,7 +76,25 @@ export async function consume<T>(
   ui: OpUi<T>,
   signal: AbortSignal,
 ): Promise<number> {
+  const emit = (payload: object): void => {
+    process.stdout.write(`${JSON.stringify({ schemaVersion: 1, ...payload })}\n`)
+  }
+
   for await (const ev of op.run(signal)) {
+    if (eventStream) {
+      emit(ev)
+      if (ev.type === 'result') {
+        const code = ui.exitCode?.(ev.value) ?? 0
+        emit({ type: 'exit', code })
+        return code
+      }
+      if (ev.type === 'failed') {
+        emit({ type: 'exit', code: 1 })
+        return 1
+      }
+      continue
+    }
+
     switch (ev.type) {
       case 'progress':
         if (ui.progress !== undefined) {
@@ -94,5 +129,6 @@ export async function consume<T>(
         break
     }
   }
+  if (eventStream) emit({ type: 'exit', code: 1 })
   return 1
 }

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { once } from 'node:events'
 import {
+  createReadStream,
   createWriteStream,
   existsSync,
   mkdirSync,
@@ -8,20 +9,19 @@ import {
   statSync,
   unlinkSync,
 } from 'node:fs'
-import { createReadStream } from 'node:fs'
 import { dirname } from 'node:path'
-
-import type { DownloadOutcome, DownloadSource, DownloadTask, SourceAttempt } from './types.js'
+import { errMessage } from '../errors.js'
 import { NetworkError } from '../http.js'
 import { USER_AGENT } from '../user-agent.js'
+import type { DownloadOutcome, DownloadTask, Mirror, SourceAttempt } from './types.js'
 
 type Algo = 'sha1' | 'sha256' | 'sha512'
 
 function pickAlgo(hashes: Readonly<Record<string, string>>): Algo | null {
   // 优先强哈希：sha512 > sha256 > sha1
-  if (typeof hashes['sha512'] === 'string') return 'sha512'
-  if (typeof hashes['sha256'] === 'string') return 'sha256'
-  if (typeof hashes['sha1'] === 'string') return 'sha1'
+  if (typeof hashes.sha512 === 'string') return 'sha512'
+  if (typeof hashes.sha256 === 'string') return 'sha256'
+  if (typeof hashes.sha1 === 'string') return 'sha1'
   return null
 }
 
@@ -43,13 +43,6 @@ export async function verifyExisting(
   return actual === task.hashes[algo] ? { ok: true } : { ok: false, reason: 'mismatch' }
 }
 
-/**
- * 镜像会看 UA，也可能用 HTTP 200 返回错误页。
- *
- * 实测 MCIM 在服务不可用时返回 `200 OK` + 一张 2231 字节的
- * "Service Temporarily Unavailable" HTML。状态码完全不可信——
- * 这就是为什么每个文件都必须过哈希，而不是看 res.ok 就落盘。
- */
 /**
  * 多久没收到任何字节就判定为卡住。
  *
@@ -126,7 +119,7 @@ async function fetchToFile(
  */
 export async function downloadOne(
   task: DownloadTask,
-  sources: readonly DownloadSource[],
+  sources: readonly Mirror[],
   signal: AbortSignal,
   /** 测试注入：把空闲超时调短，不用等 30 秒 */
   opts: { readonly idleTimeoutMs?: number } = {},
@@ -149,7 +142,9 @@ export async function downloadOne(
   const expected = task.hashes[algo] as string
 
   mkdirSync(dirname(task.destPath), { recursive: true })
-  const partPath = `${task.destPath}.part`
+  // 带上 pid：两个进程同时下同一个文件时，固定 `.part` 会互相覆盖，
+  // 最终 rename 的可能是对方写了一半的字节
+  const partPath = `${task.destPath}.${process.pid}.part`
   const attempts: SourceAttempt[] = []
 
   for (const source of sources) {
@@ -171,6 +166,13 @@ export async function downloadOne(
       // 和 CDN 上的真实字节数本来就可能不一致：Modrinth 上确有 fileSize 差
       // 1 字节、sha1 完全相同的文件（Better MC 的 balm / geckolib 等 14 个）。
       // 以前先比 size 再比哈希，合法文件直接判死，热门整合包装不上。
+      /**
+       * 镜像会看 UA，也可能用 HTTP 200 返回错误页。
+       *
+       * 实测 MCIM 在服务不可用时返回 `200 OK` + 一张 2231 字节的
+       * "Service Temporarily Unavailable" HTML。状态码完全不可信——
+       * 这就是为什么每个文件都必须过哈希，而不是看 res.ok 就落盘。
+       */
       if (digest !== expected) {
         const sizeNote =
           task.expectedSize > 0 && bytes !== task.expectedSize
@@ -197,7 +199,7 @@ export async function downloadOne(
       attempts.push({
         source: source.name,
         ok: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: errMessage(err),
       })
       if (existsSync(partPath)) {
         try {

@@ -8,16 +8,18 @@
  * runPool 与 AsyncQueue 已经是 seam 的位置；这里补上的是它们上面那一层——
  * 「task 流 + 事件码 → 计数与事件」。
  */
+
+import { errMessage } from '../errors.js'
+import type { LogCode, OpEvent } from '../events.js'
 import { Op } from '../events.js'
-import type { OpEvent } from '../events.js'
-import { AsyncQueue, runPool } from './queue.js'
 import { downloadOne } from './downloader.js'
-import type { DownloadSource, DownloadTask } from './types.js'
+import { AsyncQueue, runPool } from './queue.js'
+import type { DownloadTask, Mirror } from './types.js'
 
 export interface BatchCodes {
-  readonly ok: string
-  readonly cached: string
-  readonly failed: string
+  readonly ok: LogCode
+  readonly cached: LogCode
+  readonly failed: LogCode
   /** progress 事件的 taskId */
   readonly progressId: string
 }
@@ -31,7 +33,7 @@ export interface BatchSummary {
 
 export interface BatchOptions {
   readonly tasks: readonly DownloadTask[]
-  readonly sources: readonly DownloadSource[]
+  readonly sources: readonly Mirror[]
   readonly concurrency: number
   readonly signal: AbortSignal
   readonly codes: BatchCodes
@@ -74,7 +76,7 @@ export async function* runDownloadBatch(
         )
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
+      const message = errMessage(err)
       failed.push({ fileName: task.fileName, error: message })
       // 失败必须逐条报，否则用户不知道该重试什么
       queue.push(Op.log('error', opts.codes.failed, { file: task.fileName, error: message }))

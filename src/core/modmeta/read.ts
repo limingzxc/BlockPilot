@@ -34,12 +34,32 @@ type TomlShape = {
   }>
   dependencies?: Record<
     string,
-    Array<{ modId?: string; mandatory?: boolean; versionRange?: string }>
+    Array<{
+      modId?: string
+      /** 1.13–1.20.4 的写法 */
+      mandatory?: boolean
+      /**
+       * NeoForge 1.20.5+ 改用 `type = "required|optional|incompatible"`，
+       * 不再写 `mandatory`。不认它会把可选依赖当成必需，报出假的 MISSING_DEPENDENCY。
+       */
+      type?: string
+      versionRange?: string
+    }>
   >
 }
 
-function normDep(modId: string, mandatory: boolean, range?: string): ModDependency {
-  return { modId, mandatory, ...(range === undefined || range === '' ? {} : { versionRange: range }) }
+function normDep(
+  modId: string,
+  mandatory: boolean,
+  range?: string,
+  kind?: 'breaks',
+): ModDependency {
+  return {
+    modId,
+    mandatory,
+    ...(range === undefined || range === '' ? {} : { versionRange: range }),
+    ...(kind === undefined ? {} : { kind }),
+  }
 }
 
 /** Fabric 的 depends 值可能是字符串，也可能是数组（表示 or 关系）。 */
@@ -114,25 +134,32 @@ function parseModJson(text: string): Record<string, unknown> | null {
 function fromFabric(text: string): ModMetadata | null {
   const raw = parseModJson(text)
   if (raw === null) return null
-  const id = raw['id']
+  const id = raw.id
   if (typeof id !== 'string' || id === '') return null
 
   const deps: ModDependency[] = []
-  const depends = raw['depends']
+  const depends = raw.depends
   if (depends !== null && typeof depends === 'object') {
     for (const [modId, range] of Object.entries(depends as Record<string, unknown>)) {
       deps.push(normDep(modId, true, flattenFabricRange(range)))
     }
   }
 
+  const breaks = raw.breaks
+  if (breaks !== null && typeof breaks === 'object') {
+    for (const [modId, range] of Object.entries(breaks as Record<string, unknown>)) {
+      deps.push(normDep(modId, false, flattenFabricRange(range), 'breaks'))
+    }
+  }
+
   const provides: string[] = []
-  const rawProvides = raw['provides']
+  const rawProvides = raw.provides
   if (Array.isArray(rawProvides)) {
     for (const p of rawProvides) if (typeof p === 'string') provides.push(p)
   }
 
-  const version = typeof raw['version'] === 'string' ? raw['version'] : 'unknown'
-  const name = typeof raw['name'] === 'string' ? raw['name'] : undefined
+  const version = typeof raw.version === 'string' ? raw.version : 'unknown'
+  const name = typeof raw.name === 'string' ? raw.name : undefined
   const mc = deps.find((d) => d.modId === 'minecraft')
   const fl = deps.find((d) => d.modId === 'fabricloader')
 
@@ -152,36 +179,36 @@ function fromFabric(text: string): ModMetadata | null {
 function fromQuilt(text: string): ModMetadata | null {
   const raw = parseModJson(text)
   if (raw === null) return null
-  const ql = raw['quilt_loader']
+  const ql = raw.quilt_loader
   if (ql === null || typeof ql !== 'object') return null
   const node = ql as Record<string, unknown>
-  const id = node['id']
+  const id = node.id
   if (typeof id !== 'string' || id === '') return null
 
   const deps: ModDependency[] = []
-  const rawDeps = node['depends']
+  const rawDeps = node.depends
   if (Array.isArray(rawDeps)) {
     for (const d of rawDeps) {
       if (d !== null && typeof d === 'object') {
         const item = d as Record<string, unknown>
-        const depId = item['id']
+        const depId = item.id
         if (typeof depId === 'string') {
-          const versions = item['versions']
+          const versions = item.versions
           deps.push(normDep(depId, true, typeof versions === 'string' ? versions : undefined))
         }
       }
     }
   }
 
-  const version = typeof node['version'] === 'string' ? node['version'] : 'unknown'
+  const version = typeof node.version === 'string' ? node.version : 'unknown'
   const mc = deps.find((d) => d.modId === 'minecraft')
 
   const provides: string[] = []
-  const rawProvides = node['provides']
+  const rawProvides = node.provides
   if (Array.isArray(rawProvides)) {
     for (const p of rawProvides) {
       if (p !== null && typeof p === 'object') {
-        const pid = (p as Record<string, unknown>)['id']
+        const pid = (p as Record<string, unknown>).id
         if (typeof pid === 'string') provides.push(pid)
       }
     }
@@ -209,7 +236,7 @@ type McmodEntry = {
 
 function pickMcmodEntry(raw: Record<string, unknown>): McmodEntry | null {
   if (Array.isArray(raw)) return (raw[0] as McmodEntry | undefined) ?? null
-  const list = raw['modList']
+  const list = raw.modList
   if (Array.isArray(list)) return (list[0] as McmodEntry | undefined) ?? null
   return raw as McmodEntry
 }
@@ -270,7 +297,8 @@ function fromMcmodInfo(text: string): ModMetadata | null {
   if (entry === null || typeof entry.modid !== 'string' || entry.modid === '') return null
 
   const deps = parseForgeDeps(entry.dependencies)
-  const mc = typeof entry.mcversion === 'string' && entry.mcversion !== '' ? entry.mcversion : undefined
+  const mc =
+    typeof entry.mcversion === 'string' && entry.mcversion !== '' ? entry.mcversion : undefined
 
   return {
     modId: entry.modid,
@@ -299,7 +327,24 @@ function fromForgeToml(text: string, loader: ModLoaderKind): ModMetadata | null 
   const deps: ModDependency[] = []
   for (const d of depsRaw) {
     if (typeof d.modId !== 'string') continue
-    deps.push(normDep(d.modId, d.mandatory !== false, d.versionRange))
+    /**
+     * `mandatory` 优先（老写法显式给了就以它为准）；否则看 `type`。
+     * `incompatible` 不是「必需」，不能因为它不在实例里就报缺依赖。
+     */
+    const mandatory =
+      d.mandatory !== undefined
+        ? d.mandatory
+        : d.type === undefined
+          ? true
+          : d.type.toLowerCase() === 'required'
+    deps.push(
+      normDep(
+        d.modId,
+        mandatory,
+        d.versionRange,
+        d.type?.toLowerCase() === 'incompatible' ? 'breaks' : undefined,
+      ),
+    )
   }
 
   const mc = deps.find((d) => d.modId === 'minecraft')
@@ -353,10 +398,10 @@ function readNestedJars(entries: Record<string, Uint8Array>): { modId: string; v
       const fabricBuf = inner[FABRIC]
       if (fabricBuf !== undefined) {
         const parsed = parseModJson(strFromU8(fabricBuf))
-        if (parsed !== null && typeof parsed['id'] === 'string' && parsed['id'] !== '') {
+        if (parsed !== null && typeof parsed.id === 'string' && parsed.id !== '') {
           out.push({
-            modId: parsed['id'],
-            version: typeof parsed['version'] === 'string' ? parsed['version'] : 'unknown',
+            modId: parsed.id,
+            version: typeof parsed.version === 'string' ? parsed.version : 'unknown',
           })
         }
         continue
@@ -423,9 +468,7 @@ export function readModMetadata(
   let entries: Record<string, Uint8Array>
   try {
     entries = unzipSync(jar, {
-      filter: (f) =>
-        (CANDIDATES as readonly string[]).includes(f.name) ||
-        isNestedJar(f.name),
+      filter: (f) => (CANDIDATES as readonly string[]).includes(f.name) || isNestedJar(f.name),
     })
   } catch {
     return null

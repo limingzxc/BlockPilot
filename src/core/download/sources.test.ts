@@ -85,7 +85,9 @@ test('createMirrorSource 支持自定义镜像', () => {
 })
 
 test('neoforge-cdn 只换域名，路径原样（实测 200 的规则）', () => {
-  const url = new URL('https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.264/neoforge-21.1.264-installer.jar')
+  const url = new URL(
+    'https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.264/neoforge-21.1.264-installer.jar',
+  )
   assert.equal(
     neoforgeCdnSource.rewrite(url),
     'https://neoforged.forgecdn.net/releases/net/neoforged/neoforge/21.1.264/neoforge-21.1.264-installer.jar',
@@ -93,7 +95,9 @@ test('neoforge-cdn 只换域名，路径原样（实测 200 的规则）', () =>
   // 对其他域不参与，不影响现有源
   assert.equal(neoforgeCdnSource.rewrite(new URL('https://libraries.minecraft.net/a/b.jar')), null)
   assert.equal(
-    neoforgeCdnSource.rewrite(new URL('https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml')),
+    neoforgeCdnSource.rewrite(
+      new URL('https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml'),
+    ),
     'https://neoforged.forgecdn.net/releases/net/neoforged/neoforge/maven-metadata.xml',
   )
 })
@@ -136,14 +140,18 @@ test('Adoptium 镜像不碰其他 GitHub 包，也不碰非 GitHub 域', () => {
   // Release 资产会 302 到 release-assets.githubusercontent.com，那一步不归这个源管
   assert.equal(
     adoptiumTunaSource.rewrite(
-      new URL('https://release-assets.githubusercontent.com/github-production-release-asset/x/y.zip'),
+      new URL(
+        'https://release-assets.githubusercontent.com/github-production-release-asset/x/y.zip',
+      ),
     ),
     null,
   )
   // 文件名不像 Adoptium 的包（没有 OpenJDK..U-jre/jdk 前缀）
   assert.equal(
     adoptiumMirrorPath(
-      new URL('https://github.com/adoptium/temurin25-binaries/releases/download/x/OpenJDK25-jre_x64_windows.zip'),
+      new URL(
+        'https://github.com/adoptium/temurin25-binaries/releases/download/x/OpenJDK25-jre_x64_windows.zip',
+      ),
     ),
     null,
   )

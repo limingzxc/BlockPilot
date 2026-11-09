@@ -1,19 +1,18 @@
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
-import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import { join } from 'node:path'
-
-import { Op } from '../events.js'
-import { defineOperation } from '../operation.js'
-import type { Operation } from '../operation.js'
+import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import { downloadOne } from '../download/downloader.js'
 import { defaultSources } from '../download/sources.js'
-import type { DownloadSource } from '../download/types.js'
+import type { Mirror } from '../download/types.js'
+import { Op } from '../events.js'
 import type { Layout } from '../layout.js'
-import { fetchMavenSha1 } from '../sources/fabric.js'
+import type { Operation } from '../operation.js'
+import { defineOperation } from '../operation.js'
 import { javaProxyArgs } from '../proxy.js'
-import { installerSpec, recommendedForge } from '../sources/forge.js'
+import { fetchMavenSha1 } from '../sources/fabric.js'
 import type { InstallerKind } from '../sources/forge.js'
+import { installerSpec, recommendedForge } from '../sources/forge.js'
 
 export interface ForgeSetupOptions {
   readonly layout: Layout
@@ -26,7 +25,7 @@ export interface ForgeSetupOptions {
   readonly java: string
   /** installer 是独立 JVM，有自己的下载栈，要显式传代理 */
   readonly proxy?: string
-  readonly sources?: readonly DownloadSource[]
+  readonly sources?: readonly Mirror[]
 }
 
 export interface ForgeSetupResult {
@@ -143,15 +142,26 @@ function runInstaller(
 export function createForgeSetup(opts: ForgeSetupOptions): Operation<ForgeSetupResult> {
   return defineOperation<ForgeSetupResult>('forge-setup', async function* (signal) {
     const kind: InstallerKind = opts.kind ?? 'forge'
-    const forgeVersion =
-      opts.forgeVersion ?? (await recommendedForge(opts.gameVersion, signal))
-    if (forgeVersion === null || forgeVersion === undefined) {
-      yield Op.failed(
-        'NO_INSTALLER_VERSION',
-        `查不到 MC ${opts.gameVersion} 推荐的 ${kind} 版本`,
-        '用 --loader 显式指定',
-      )
-      return
+    let forgeVersion = opts.forgeVersion
+    if (forgeVersion === undefined) {
+      const probe = await recommendedForge(opts.gameVersion, signal)
+      if (probe.status === 'unreachable') {
+        yield Op.failed(
+          'NETWORK_ERROR',
+          `查 ${kind} 推荐版本失败：${probe.detail}`,
+          '检查网络；也可以用 --loader 显式指定版本',
+        )
+        return
+      }
+      if (probe.status === 'absent') {
+        yield Op.failed(
+          'NO_INSTALLER_VERSION',
+          `查不到 MC ${opts.gameVersion} 推荐的 ${kind} 版本${probe.detail === undefined ? '' : `（${probe.detail}）`}`,
+          '用 --loader 显式指定',
+        )
+        return
+      }
+      forgeVersion = probe.value
     }
 
     const spec = installerSpec(kind, opts.gameVersion, forgeVersion)
@@ -174,8 +184,19 @@ export function createForgeSetup(opts: ForgeSetupOptions): Operation<ForgeSetupR
     const sha1Candidates = (opts.sources ?? defaultSources())
       .map((src) => src.rewrite(sha1Url))
       .filter((u): u is string => u !== null)
-    const sha1 = await fetchMavenSha1(url, { ...(signal === undefined ? {} : { signal }), candidates: sha1Candidates })
-    if (sha1 === null) {
+    const sha1 = await fetchMavenSha1(url, {
+      ...(signal === undefined ? {} : { signal }),
+      candidates: sha1Candidates,
+    })
+    if (sha1.status === 'unreachable') {
+      yield Op.failed(
+        'NETWORK_ERROR',
+        `取不到 installer 的 sha1（网络失败）：${sha1.detail}`,
+        '检查网络；国内可加 --china 走镜像，或用 --proxy 指定代理',
+      )
+      return
+    }
+    if (sha1.status === 'absent') {
       yield Op.failed('NO_HASH', `取不到 installer 的 sha1：${url}`, '没有哈希的文件不下载')
       return
     }
@@ -188,7 +209,7 @@ export function createForgeSetup(opts: ForgeSetupOptions): Operation<ForgeSetupR
         fileName: `forge-installer.jar`,
         destPath: tmpJar,
         expectedSize: 0,
-        hashes: { sha1 },
+        hashes: { sha1: sha1.value },
       },
       opts.sources ?? defaultSources(),
       signal,
@@ -212,7 +233,9 @@ export function createForgeSetup(opts: ForgeSetupOptions): Operation<ForgeSetupR
 
     ensureLauncherProfiles(opts.layout.root)
 
-    yield Op.log('info', 'forge.installer_run', { note: '下载依赖并给 client 打补丁，通常 1–3 分钟' })
+    yield Op.log('info', 'forge.installer_run', {
+      note: '下载依赖并给 client 打补丁，通常 1–3 分钟',
+    })
 
     // installer 下载几百 MB 的库，网络抖一下就整个失败。它自己有缓存，
     // 重跑会跳过已下载的部分，所以失败重试一次代价很小、收益很大——
@@ -234,11 +257,7 @@ export function createForgeSetup(opts: ForgeSetupOptions): Operation<ForgeSetupR
     }
 
     if (!existsSync(jsonPath)) {
-      yield Op.failed(
-        'INSTALLER_NO_OUTPUT',
-        'installer 报告成功，但没有生成版本 JSON',
-        jsonPath,
-      )
+      yield Op.failed('INSTALLER_NO_OUTPUT', 'installer 报告成功，但没有生成版本 JSON', jsonPath)
       return
     }
 

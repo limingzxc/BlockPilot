@@ -14,8 +14,7 @@ export interface LaunchEnv {
 
 export function detectEnv(platform: NodeJS.Platform = process.platform): LaunchEnv {
   const os: OsName = platform === 'win32' ? 'windows' : platform === 'darwin' ? 'osx' : 'linux'
-  const arch: OsArch =
-    process.arch === 'x64' ? 'x86_64' : process.arch === 'ia32' ? 'x86' : 'arm64'
+  const arch: OsArch = process.arch === 'x64' ? 'x86_64' : process.arch === 'ia32' ? 'x86' : 'arm64'
   return {
     os,
     arch,

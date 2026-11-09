@@ -5,15 +5,60 @@ import type { LoaderKind } from '../instance.js'
 
 export type Severity = 'blocker' | 'warning' | 'info'
 
+/**
+ * 全部合法的 Finding 机器码。
+ *
+ * `code` 是 LLM 的解释锚点、也是测试的断言对象，所以它不能是裸 `string`：
+ * 拼错一个码应该在编译期就红。新增结论必须先登记，
+ * `docs/finding-codes.md` 也由这张表校验。
+ */
+export const FINDING_CODES = [
+  'ASSETS_MISSING',
+  'CF_NO_MOD_CHECK',
+  'CLOSURE_TRUNCATED',
+  'CORRUPT_JAR',
+  'DECLARED_INCOMPATIBLE',
+  'DEPENDENCY_CYCLE',
+  'DEPENDENCY_VERSION_MISMATCH',
+  'DUPLICATE_MOD',
+  'JAVA_INCOMPATIBLE_WITH_MOD',
+  'JAVA_MISSING',
+  'JAVA_NEWER_ONLY',
+  'JAVA_OLDER_PRESENT',
+  'JAVA_TOO_NEW',
+  'LOADER_MISMATCH',
+  'LOW_MEMORY',
+  'MISSING_DEPENDENCY',
+  'PACK_BUILTIN_MODS',
+  'SERVER_ONLY_MOD',
+  'UNKNOWN_GAME_VERSION',
+  'UNREADABLE_JAR',
+  'UNRESOLVED_MOD',
+  'UNSATISFIABLE_DEPENDENCY',
+  'UNVERIFIED_DEPENDENCY',
+  'VERSION_MISMATCH',
+  'VERSION_UNVERIFIED',
+] as const
+
+export type FindingCode = (typeof FINDING_CODES)[number]
+
 export interface Finding {
   readonly severity: Severity
   /** 稳定的机器码。文案可以改，code 不能改——它是 LLM 的解释锚点，也是回归测试的断言对象。 */
-  readonly code: string
+  readonly code: FindingCode
   readonly message: string
   /** 出问题的模组 projectId 或文件名 */
   readonly subject?: string
   /** 建议动作 */
   readonly hint?: string
+  /**
+   * 结构化字段。
+   *
+   * `message` 是给人读的整句，AI 客户端想拿「谁缺谁」只能解析文本。
+   * core 只出 code + 参数，文案渲染留给消费者，也为 i18n 留了位置。
+   * 不要求每个 finding 都填——先把有明确字段的补上。
+   */
+  readonly data?: Readonly<Record<string, unknown>>
 }
 
 export type Verdict = 'ok' | 'warn' | 'blocked' | 'unknown'

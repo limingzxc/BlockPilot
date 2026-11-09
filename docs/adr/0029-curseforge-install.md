@@ -1,6 +1,6 @@
 # 0029. CurseForge 整合包用用户自己的 API key 安装
 
-- **Status**: Accepted
+- **Status**: Accepted（「必须自带 key」已被 ADR-0032 / ADR-0036 取代）
 - **Date**: 2026-11-07
 - **Deciders**: @liming
 - **Depends on**: ADR-0021、ADR-0014

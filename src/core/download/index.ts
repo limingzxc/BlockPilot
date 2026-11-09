@@ -1,20 +1,20 @@
 import { join } from 'node:path'
-
-import { Op } from '../events.js'
-import type { OpEvent } from '../events.js'
-import { defineOperation } from '../operation.js'
-import type { Operation } from '../operation.js'
 import type { RepairPlan } from '../deps/plan.js'
+import { errMessage } from '../errors.js'
+import type { OpEvent } from '../events.js'
+import { Op } from '../events.js'
+import type { Operation } from '../operation.js'
+import { defineOperation } from '../operation.js'
 import { downloadOne } from './downloader.js'
 import { AsyncQueue, runPool } from './queue.js'
 import { defaultSources } from './sources.js'
-import type { DownloadOutcome, DownloadSource, DownloadTask, InstallResult } from './types.js'
+import type { DownloadOutcome, DownloadTask, InstallResult, Mirror } from './types.js'
 
 export interface InstallOptions {
   readonly plan: RepairPlan
   /** 文件落地的目录，通常是实例的 mods/ */
   readonly modsDir: string
-  readonly sources?: readonly DownloadSource[]
+  readonly sources?: readonly Mirror[]
   readonly concurrency?: number
 }
 
@@ -66,7 +66,7 @@ export function createInstaller(opts: InstallOptions): Operation<InstallResult> 
           }),
         )
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
+        const message = errMessage(err)
         failures.push({ fileName: task.fileName, error: message })
         queue.push(Op.log('error', 'download.failed', { file: task.fileName, error: message }))
       } finally {

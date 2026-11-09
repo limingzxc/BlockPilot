@@ -17,14 +17,23 @@
  *   npm run e2e -- --list
  */
 import { spawn } from 'node:child_process'
-import { extractLogPath } from './lib/parse.js'
+import { createHash } from 'node:crypto'
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-
 import { strToU8, zipSync } from 'fflate'
+import { extractLogPath } from './lib/parse.js'
 
 const REPO = resolve(import.meta.dirname, '..')
 const CLI = join(REPO, 'dist', 'cli', 'index.js')
@@ -45,6 +54,7 @@ const CLEAN_LOG = join(TESTDATA, 'clean', 'logs', 'clean.log')
 // 基础设施
 // ---------------------------------------------------------------------------
 
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI 转义序列本来就有控制字符
 const ANSI = /\u001b\[[0-9;]*m/g
 
 /** 终端里带颜色，重定向到文件时也带。断言前统一剥掉。 */
@@ -311,7 +321,12 @@ interface CaseDef {
 // MCP 客户端（T0-013 / T1-107）
 // ---------------------------------------------------------------------------
 
-async function withMcp(fn: (call: (name: string, args: Record<string, unknown>) => Promise<Record<string, unknown>>, tools: string[]) => Promise<void>): Promise<void> {
+async function withMcp(
+  fn: (
+    call: (name: string, args: Record<string, unknown>) => Promise<Record<string, unknown>>,
+    tools: string[],
+  ) => Promise<void>,
+): Promise<void> {
   const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')
   const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js')
 
@@ -333,7 +348,10 @@ async function withMcp(fn: (call: (name: string, args: Record<string, unknown>) 
     await client.connect(transport)
     const { tools } = await client.listTools()
     const names = tools.map((t) => t.name).sort()
-    const call = async (name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    const call = async (
+      name: string,
+      args: Record<string, unknown>,
+    ): Promise<Record<string, unknown>> => {
       const res = await client.callTool({ name, arguments: args })
       return res as unknown as Record<string, unknown>
     }
@@ -426,15 +444,14 @@ const CASES: readonly CaseDef[] = [
     title: 'JSON 报告契约',
     tier: 0,
     async run(ctx) {
-      const r = await ctx.cli(
-        ['preflight', join(FIX, 'instance-miss'), '--no-host', '--json'],
-        { offline: true },
-      )
+      const r = await ctx.cli(['preflight', join(FIX, 'instance-miss'), '--no-host', '--json'], {
+        offline: true,
+      })
       assertCode(r, 2, 'instance-miss --json')
       const j = parseJson(r, '--json')
 
-      assert(j['verdict'] === 'blocked', `verdict 期望 blocked，实际 ${String(j['verdict'])}`)
-      const findings = asArray(j['findings'], 'findings')
+      assert(j.verdict === 'blocked', `verdict 期望 blocked，实际 ${String(j.verdict)}`)
+      const findings = asArray(j.findings, 'findings')
       assert(findings.length > 0, 'findings 不应为空')
       for (const f of findings) {
         const item = asRecord(f, 'finding')
@@ -443,15 +460,15 @@ const CASES: readonly CaseDef[] = [
         }
       }
 
-      const stats = asRecord(j['stats'], 'stats')
-      assert(asNumber(stats['mods'], 'stats.mods') === 2, 'stats.mods 期望 2')
-      assert(asNumber(stats['resolved'], 'stats.resolved') === 1, 'stats.resolved 期望 1')
+      const stats = asRecord(j.stats, 'stats')
+      assert(asNumber(stats.mods, 'stats.mods') === 2, 'stats.mods 期望 2')
+      assert(asNumber(stats.resolved, 'stats.resolved') === 1, 'stats.resolved 期望 1')
 
-      const plan = asRecord(j['plan'], 'plan')
-      assert(asArray(plan['installs'], 'plan.installs').length === 0, '离线计划应为空')
-      asArray(plan['manual'], 'plan.manual')
+      const plan = asRecord(j.plan, 'plan')
+      assert(asArray(plan.installs, 'plan.installs').length === 0, '离线计划应为空')
+      asArray(plan.manual, 'plan.manual')
 
-      const at = j['generatedAt']
+      const at = j.generatedAt
       assert(typeof at === 'string' && !Number.isNaN(Date.parse(at)), 'generatedAt 应是 ISO 时间')
     },
   },
@@ -543,16 +560,16 @@ const CASES: readonly CaseDef[] = [
         { offline: true },
       )
       const j = parseJson(r, 'FO 实例 --json')
-      const findings = asArray(j['findings'], 'findings').map((f) => asRecord(f, 'finding'))
-      const unreadable = findings.filter((f) => f['code'] === 'UNREADABLE_JAR')
+      const findings = asArray(j.findings, 'findings').map((f) => asRecord(f, 'finding'))
+      const unreadable = findings.filter((f) => f.code === 'UNREADABLE_JAR')
       if (unreadable.length > 0) {
         fail(
           `有 ${String(unreadable.length)} 条 UNREADABLE_JAR：` +
-            `${String(unreadable[0]?.['message'] ?? '')} / ${String(unreadable[0]?.['hint'] ?? '')}`,
+            `${String(unreadable[0]?.message ?? '')} / ${String(unreadable[0]?.hint ?? '')}`,
         )
       }
-      const stats = asRecord(j['stats'], 'stats')
-      assert(asNumber(stats['mods'], 'stats.mods') === 48, 'stats.mods 期望 48')
+      const stats = asRecord(j.stats, 'stats')
+      assert(asNumber(stats.mods, 'stats.mods') === 48, 'stats.mods 期望 48')
     },
   },
   {
@@ -571,20 +588,23 @@ const CASES: readonly CaseDef[] = [
     id: 'E2E-013',
     title: 'MCP stdio：工具清单与崩溃归因',
     tier: 0,
-    async run(ctx) {
+    async run(_ctx) {
       await withMcp(async (call, tools) => {
         assert(
           tools.join(',') === 'diagnose_crash,preflight_modpack',
           `工具清单期望 [diagnose_crash, preflight_modpack]，实际 [${tools.join(', ')}]`,
         )
         const res = await call('diagnose_crash', { logPath: FO_CRASH_LOG })
-        assert(res['isError'] !== true, 'diagnose_crash 不应 isError')
-        const structured = asRecord(res['structuredContent'], 'structuredContent')
-        assert(structured['verdict'] === 'crash', `verdict 期望 crash，实际 ${String(structured['verdict'])}`)
-        const culprits = asArray(structured['culprits'], 'culprits')
+        assert(res.isError !== true, 'diagnose_crash 不应 isError')
+        const structured = asRecord(res.structuredContent, 'structuredContent')
+        assert(
+          structured.verdict === 'crash',
+          `verdict 期望 crash，实际 ${String(structured.verdict)}`,
+        )
+        const culprits = asArray(structured.culprits, 'culprits')
         assert(culprits.length > 0, 'culprits 不应为空')
         const first = asRecord(culprits[0], 'culprit')
-        assert(first['modId'] === 'controlify', `第一嫌疑期望 controlify，实际 ${String(first['modId'])}`)
+        assert(first.modId === 'controlify', `第一嫌疑期望 controlify，实际 ${String(first.modId)}`)
       })
     },
   },
@@ -619,11 +639,175 @@ const CASES: readonly CaseDef[] = [
       // 合法值要真生成启动命令，只有本机有 mcroot 时才验（CI 上会跳过这一段）
       if (!existsSync(MCROOT)) return
       const ok = await ctx.cli(
-        ['launch', 'fabric-loader-0.19.3-1.21.1', '--root', MCROOT, '--instance', 'fo', '--memory', '4096'],
+        [
+          'launch',
+          'fabric-loader-0.19.3-1.21.1',
+          '--root',
+          MCROOT,
+          '--instance',
+          'fo',
+          '--memory',
+          '4096',
+        ],
         { timeoutMs: 60_000 },
       )
       assertCode(ok, 0, '--memory 4096')
       assertText(ok, '-Xmx4096M', '内存参数')
+    },
+  },
+
+  {
+    id: 'E2E-015',
+    title: 'verify：按 lock.json 核对缺失与哈希',
+    tier: 0,
+    async run(ctx) {
+      const root = join(ctx.tmp, 'verify-root')
+      const instance = 'v1'
+      const gameDir = join(root, 'instances', instance)
+      mkdirSync(join(gameDir, 'mods'), { recursive: true })
+      mkdirSync(join(gameDir, '.blockpilot'), { recursive: true })
+
+      const body = Buffer.from('hello verify')
+      writeFileSync(join(gameDir, 'mods', 'a.jar'), body)
+      const sha1 = createHash('sha1').update(body).digest('hex')
+      writeFileSync(
+        join(gameDir, '.blockpilot', 'lock.json'),
+        JSON.stringify({
+          version: 1,
+          pack: { name: 't', kind: 'mrpack', file: 'p.mrpack' },
+          target: { gameVersion: '1.20.1', loader: { kind: 'fabric', version: '0.16.14' } },
+          complete: true,
+          updatedAt: '2026-01-01T00:00:00.000Z',
+          files: [{ path: 'mods/a.jar', sha1, size: body.length }],
+        }),
+      )
+
+      const ok = await ctx.cli(['verify', '--root', root, '--instance', instance])
+      assertCode(ok, 0, 'verify 正常')
+      assertText(ok, /全部文件与清单一致/, 'verify 结论')
+
+      writeFileSync(join(gameDir, 'mods', 'a.jar'), 'tampered')
+      const bad = await ctx.cli(['verify', '--root', root, '--instance', instance, '--json'])
+      assertCode(bad, 2, 'verify 哈希不符')
+      const j = parseJson(bad, 'verify --json')
+      const issues = asArray(j.issues, 'issues')
+      assert(issues.length === 1, `期望 1 条问题，实际 ${String(issues.length)}`)
+      assert(asRecord(issues[0], 'issue').reason === 'mismatch', 'reason 应为 mismatch')
+    },
+  },
+
+  {
+    id: 'E2E-016',
+    title: 'diag 发现 hs_err：不能判成 clean',
+    tier: 0,
+    async run(ctx) {
+      const root = join(ctx.tmp, 'hs-root')
+      const instance = 'hs'
+      const gameDir = join(root, 'instances', instance)
+      mkdirSync(join(gameDir, 'logs'), { recursive: true })
+      writeFileSync(
+        join(gameDir, 'hs_err_pid123.log'),
+        [
+          '# A fatal error has been detected by the Java Runtime Environment:',
+          '#',
+          '#  EXCEPTION_ACCESS_VIOLATION (0xc0000005) at pc=0x1234, pid=123, tid=456',
+          '#',
+          '# JRE version: OpenJDK Runtime Environment (17.0.8+7)',
+          '# Problematic frame:',
+          '# C  [lwjgl.dll+0x1a2b]',
+          '#',
+          'Java frames: (J=compiled Java code, j=interpreted, Vv=VM code)',
+          'j  org.lwjgl.system.JNI.invokePV(JJ)V+8',
+          'j  com.example.render.Renderer.render()V+42',
+          '',
+        ].join('\n'),
+      )
+
+      const r = await ctx.cli(['diag', '--root', root, '--instance', instance, '--json'], {
+        timeoutMs: 60_000,
+      })
+      assertCode(r, 2, 'hs_err 应判 crash')
+      const j = parseJson(r, 'diag --json')
+      assert(j.format === 'hs-err', `format 期望 hs-err，实际 ${String(j.format)}`)
+      assert(j.verdict === 'crash', `verdict 期望 crash，实际 ${String(j.verdict)}`)
+      const primary = asRecord(j.primary, 'primary')
+      assert(primary.kind === 'graphics', `kind 期望 graphics，实际 ${String(primary.kind)}`)
+    },
+  },
+
+  {
+    id: 'E2E-017',
+    title: 'config：写入、读取、删除实例配置',
+    tier: 0,
+    async run(ctx) {
+      const root = join(ctx.tmp, 'config-root')
+      const instance = 'c1'
+      const base = ['config', '--root', root, '--instance', instance]
+
+      const set = await ctx.cli([
+        ...base,
+        '--memory',
+        '4096',
+        '--java',
+        '/opt/java/bin/java',
+        '--jvm-args',
+        '-XX:+UseG1GC -XX:+AlwaysPreTouch',
+      ])
+      assertCode(set, 0, 'config 写入')
+
+      const read = await ctx.cli([...base, '--json'])
+      assertCode(read, 0, 'config 读取')
+      const j = parseJson(read, 'config --json')
+      const config = asRecord(j.config, 'config')
+      assert(config.memoryMiB === 4096, `memoryMiB=${String(config.memoryMiB)}`)
+      assert(config.javaPath === '/opt/java/bin/java', 'javaPath')
+      assert(asArray(config.jvmArgs, 'jvmArgs').length === 2, 'jvmArgs')
+
+      const unset = await ctx.cli([...base, '--unset', 'memory', '--json'])
+      assertCode(unset, 0, 'config 删除')
+      const after = asRecord(parseJson(unset, 'config --unset --json').config, 'config')
+      assert(after.memoryMiB === undefined, 'memory 应被删除')
+      assert(after.javaPath === '/opt/java/bin/java', 'java 应保留')
+
+      const bad = await ctx.cli([...base, '--memory', 'abc'])
+      assertCode(bad, 1, '非法内存')
+      assertText(bad, 'BAD_MEMORY', '稳定错误码')
+    },
+  },
+
+  {
+    id: 'E2E-019',
+    title: '--events：ndjson 事件流与最终退出码',
+    tier: 0,
+    async run(ctx) {
+      const r = await ctx.cli(['preflight', join(FIX, 'instance-miss'), '--no-host', '--events'])
+      assertCode(r, 2, 'preflight 缺依赖应退出 2')
+
+      const lines = r.stdout
+        .trim()
+        .split('\n')
+        .filter((l) => l !== '')
+      assert(lines.length >= 3, `事件太少：${String(lines.length)}`)
+      const events = lines.map((l, i) => {
+        try {
+          return JSON.parse(l) as Record<string, unknown>
+        } catch {
+          throw new Error(`第 ${String(i + 1)} 行不是 JSON：${l.slice(0, 80)}`)
+        }
+      })
+      for (const e of events) assert(e.schemaVersion === 1, '每行都要带 schemaVersion')
+      assert(
+        events.some((e) => e.type === 'log'),
+        '应包含 log 事件',
+      )
+      assert(
+        events.some((e) => e.type === 'result'),
+        '应包含 result 事件',
+      )
+      const last = events[events.length - 1]
+      assert(last?.type === 'exit', '最后一行应是 exit')
+      assert(last?.code === 2, `exit.code 期望 2，实际 ${String(last?.code)}`)
+      assert(!r.stdout.includes('\u001b['), 'stdout 不应有 ANSI 颜色')
     },
   },
 
@@ -637,19 +821,22 @@ const CASES: readonly CaseDef[] = [
         timeoutMs: 180_000,
       })
       const j = parseJson(r, 'FO --json')
-      const verdict = j['verdict']
-      assert(verdict === 'ok' || verdict === 'warn', `verdict 期望 ok/warn，实际 ${String(verdict)}`)
-      const findings = asArray(j['findings'], 'findings').map((f) => asRecord(f, 'finding'))
-      const missing = findings.filter((f) => f['code'] === 'MISSING_DEPENDENCY')
+      const verdict = j.verdict
+      assert(
+        verdict === 'ok' || verdict === 'warn',
+        `verdict 期望 ok/warn，实际 ${String(verdict)}`,
+      )
+      const findings = asArray(j.findings, 'findings').map((f) => asRecord(f, 'finding'))
+      const missing = findings.filter((f) => f.code === 'MISSING_DEPENDENCY')
       if (missing.length > 0) {
         fail(
           `${String(missing.length)} 个依赖被判定缺失：` +
-            missing.map((f) => String(f['subject'] ?? '?')).join(', '),
+            missing.map((f) => String(f.subject ?? '?')).join(', '),
         )
       }
-      const stats = asRecord(j['stats'], 'stats')
-      assert(asNumber(stats['mods'], 'stats.mods') >= 48, 'stats.mods 期望 ≥ 48')
-      assert(asNumber(stats['unresolved'], 'stats.unresolved') <= 1, 'unresolved 应该只有 mixintrace')
+      const stats = asRecord(j.stats, 'stats')
+      assert(asNumber(stats.mods, 'stats.mods') >= 48, 'stats.mods 期望 ≥ 48')
+      assert(asNumber(stats.unresolved, 'stats.unresolved') <= 1, 'unresolved 应该只有 mixintrace')
     },
   },
   {
@@ -661,25 +848,25 @@ const CASES: readonly CaseDef[] = [
         timeoutMs: 180_000,
       })
       const j = parseJson(r, 'FO --json')
-      assert(j['verdict'] !== 'blocked', 'FO 不该被判 blocked')
-      const plan = asRecord(j['plan'], 'plan')
-      const installs = asArray(plan['installs'], 'plan.installs').map((x) => asRecord(x, 'install'))
+      assert(j.verdict !== 'blocked', 'FO 不该被判 blocked')
+      const plan = asRecord(j.plan, 'plan')
+      const installs = asArray(plan.installs, 'plan.installs').map((x) => asRecord(x, 'install'))
       // 字段契约：安装项必须是可直接下载的
       for (const item of installs) {
         for (const key of ['url', 'fileName', 'size', 'requiredBy', 'confidence']) {
           assert(item[key] !== undefined, `plan.installs.${key} 缺失`)
         }
       }
-      const verified = installs.filter((i) => i['confidence'] !== 'unverified')
+      const verified = installs.filter((i) => i.confidence !== 'unverified')
       if (verified.length > 0) {
         fail(
           `FO 的依赖都没有直接证据，却给出 ${String(verified.length)} 个确定安装项：` +
-            verified.map((i) => String(i['fileName'] ?? '?')).join(', '),
+            verified.map((i) => String(i.fileName ?? '?')).join(', '),
         )
       }
-      const findings = asArray(j['findings'], 'findings').map((x) => asRecord(x, 'finding'))
+      const findings = asArray(j.findings, 'findings').map((x) => asRecord(x, 'finding'))
       assert(
-        findings.every((f) => f['severity'] !== 'blocker'),
+        findings.every((f) => f.severity !== 'blocker'),
         'FO 不该出现 blocker 级 finding',
       )
     },
@@ -693,16 +880,19 @@ const CASES: readonly CaseDef[] = [
         timeoutMs: 180_000,
       })
       const j = parseJson(r, 'real-pack --json')
-      const verdict = j['verdict']
+      const verdict = j.verdict
       assert(
         verdict === 'ok' || verdict === 'warn' || verdict === 'unknown',
         `verdict 异常：${String(verdict)}`,
       )
-      const findings = asArray(j['findings'], 'findings').map((f) => asRecord(f, 'finding'))
-      const blockers = findings.filter((f) => f['severity'] === 'blocker')
-      assert(blockers.length === 0, `不应有 blocker：${blockers.map((b) => String(b['code'])).join(',')}`)
-      const stats = asRecord(j['stats'], 'stats')
-      assert(asNumber(stats['resolved'], 'stats.resolved') >= 2, 'resolved 期望 ≥ 2')
+      const findings = asArray(j.findings, 'findings').map((f) => asRecord(f, 'finding'))
+      const blockers = findings.filter((f) => f.severity === 'blocker')
+      assert(
+        blockers.length === 0,
+        `不应有 blocker：${blockers.map((b) => String(b.code)).join(',')}`,
+      )
+      const stats = asRecord(j.stats, 'stats')
+      assert(asNumber(stats.resolved, 'stats.resolved') >= 2, 'resolved 期望 ≥ 2')
     },
   },
   {
@@ -760,7 +950,14 @@ const CASES: readonly CaseDef[] = [
       assert(!existsSync(modsDir), '--dry-run 不应创建 mods 目录')
 
       const forced = await ctx.cli(
-        ['install', join(FIX, 'fo-6.5.0.mrpack'), '--mods-dir', modsDir, '--dry-run', '--include-unverified'],
+        [
+          'install',
+          join(FIX, 'fo-6.5.0.mrpack'),
+          '--mods-dir',
+          modsDir,
+          '--dry-run',
+          '--include-unverified',
+        ],
         { timeoutMs: 180_000 },
       )
       assertCode(forced, 0, 'install --include-unverified --dry-run')
@@ -773,21 +970,21 @@ const CASES: readonly CaseDef[] = [
     id: 'E2E-107',
     title: 'MCP preflight_modpack 契约',
     tier: 1,
-    async run(ctx) {
+    async run(_ctx) {
       await withMcp(async (call) => {
         const res = await call('preflight_modpack', { path: join(FIX, 'demo.mrpack') })
-        assert(res['isError'] !== true, 'preflight_modpack 不应 isError')
-        const structured = asRecord(res['structuredContent'], 'structuredContent')
-        const verdict = structured['verdict']
+        assert(res.isError !== true, 'preflight_modpack 不应 isError')
+        const structured = asRecord(res.structuredContent, 'structuredContent')
+        const verdict = structured.verdict
         assert(
           verdict === 'ok' || verdict === 'warn' || verdict === 'blocked' || verdict === 'unknown',
           `verdict 不合法：${String(verdict)}`,
         )
-        assert(Array.isArray(structured['findings']), 'findings 应是数组')
+        assert(Array.isArray(structured.findings), 'findings 应是数组')
       })
     },
   },
-// ---------------- T2 真实下载 ----------------
+  // ---------------- T2 真实下载 ----------------
   {
     id: 'E2E-201',
     title: '原版安装幂等：第二次全部跳过',
@@ -816,24 +1013,19 @@ const CASES: readonly CaseDef[] = [
     tier: 2,
     async run(ctx) {
       const r = await ctx.cli(
-        [
-          'fabric',
-          '1.21.1',
-          '--root',
-          MCROOT,
-          '--instance',
-          'fo',
-          '--loader',
-          '0.19.3',
-          '--china',
-        ],
+        ['fabric', '1.21.1', '--root', MCROOT, '--instance', 'fo', '--loader', '0.19.3', '--china'],
         { timeoutMs: 600_000 },
       )
       assertCode(r, 0, 'fabric --china')
       assertText(r, /失败 0/, '加载器库不应该失败')
       assert(
         existsSync(
-          join(MCROOT, 'versions', 'fabric-loader-0.19.3-1.21.1', 'fabric-loader-0.19.3-1.21.1.json'),
+          join(
+            MCROOT,
+            'versions',
+            'fabric-loader-0.19.3-1.21.1',
+            'fabric-loader-0.19.3-1.21.1.json',
+          ),
         ),
         '加载器版本 JSON 没写',
       )
@@ -851,7 +1043,7 @@ const CASES: readonly CaseDef[] = [
     title: '真实启动：FO 实例进游戏后按时结束',
     tier: 3,
     async run(ctx) {
-      const stop = process.env['BP_E2E_STOP'] ?? '60'
+      const stop = process.env.BP_E2E_STOP ?? '60'
       const r = await ctx.cli(
         [
           'run',
@@ -887,16 +1079,7 @@ const CASES: readonly CaseDef[] = [
     async run(ctx) {
       const bad = join(ctx.tmp, 'nope', 'java.exe')
       const r = await ctx.cli(
-        [
-          'run',
-          'fabric-loader-0.19.3-1.21.1',
-          '--root',
-          MCROOT,
-          '--instance',
-          'fo',
-          '--java',
-          bad,
-        ],
+        ['run', 'fabric-loader-0.19.3-1.21.1', '--root', MCROOT, '--instance', 'fo', '--java', bad],
         { timeoutMs: 60_000 },
       )
       assertCode(r, 1, '坏 java 路径')
@@ -930,7 +1113,7 @@ const CASES: readonly CaseDef[] = [
       }
     },
   },
-// ---------------- T4 故障注入 ----------------
+  // ---------------- T4 故障注入 ----------------
   {
     id: 'E2E-401',
     title: 'sha1 不符：拒绝落盘，不静默成功',
@@ -977,7 +1160,19 @@ const CASES: readonly CaseDef[] = [
 
         rmSync(dir, { recursive: true, force: true })
         const r = await ctx.cli(
-          ['deploy', packPath, '--root', MCROOT, '--instance', instance, '--china'],
+          [
+            'deploy',
+            packPath,
+            '--root',
+            MCROOT,
+            '--instance',
+            instance,
+            '--china',
+            // mrpack 的下载域名白名单默认只允许 Modrinth 规范里的域名；
+            // 这条用例故意用本地服务喂坏字节，必须显式放行
+            '--allow-host',
+            '127.0.0.1',
+          ],
           { timeoutMs: 300_000 },
         )
         assertCode(r, 2, 'deploy 坏哈希')
@@ -1102,7 +1297,7 @@ async function main(): Promise<number> {
     return 0
   }
 
-  if (process.env['CI'] !== undefined && opts.tiers.some((t) => t > 1)) {
+  if (process.env.CI !== undefined && opts.tiers.some((t) => t > 1)) {
     process.stdout.write('CI 环境拒绝执行 T2+：会下载上百 MB 并可能开窗口。\n')
     opts.tiers = opts.tiers.filter((t) => t <= 1)
   }
@@ -1166,7 +1361,13 @@ async function main(): Promise<number> {
           message: `已知缺陷 ${c.knownIssue} 看起来已修好，删掉 knownIssue 标记`,
         })
       } else {
-        outcomes.push({ id: c.id, title: c.title, tier: c.tier, status: 'PASS', ms: Date.now() - started })
+        outcomes.push({
+          id: c.id,
+          title: c.title,
+          tier: c.tier,
+          status: 'PASS',
+          ms: Date.now() - started,
+        })
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -1223,7 +1424,7 @@ async function main(): Promise<number> {
     process.stdout.write(
       `T${t}  ${String(outcomes.filter((o) => o.tier === t).length)} 条：` +
         `PASS ${count(t, 'PASS')} · KNOWN ${count(t, 'KNOWN')} · FAIL ${count(t, 'FAIL')} · ` +
-          `SKIP ${count(t, 'SKIP')} · XPASS ${count(t, 'XPASS')}\n`,
+        `SKIP ${count(t, 'SKIP')} · XPASS ${count(t, 'XPASS')}\n`,
     )
   }
 
@@ -1284,7 +1485,9 @@ async function main(): Promise<number> {
 main().then(
   (code) => process.exit(code),
   (err: unknown) => {
-    process.stderr.write(`执行器崩了：${err instanceof Error ? err.stack ?? err.message : String(err)}\n`)
+    process.stderr.write(
+      `执行器崩了：${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`,
+    )
     process.exit(1)
   },
 )

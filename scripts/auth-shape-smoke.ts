@@ -22,7 +22,11 @@ applyProxy()
 const failures: string[] = []
 
 /** 期望这次调用失败，且失败原因说明「令牌被拒」而不是「请求不合法」。 */
-async function expectRejected(label: string, call: () => Promise<unknown>, accept: RegExp): Promise<void> {
+async function expectRejected(
+  label: string,
+  call: () => Promise<unknown>,
+  accept: RegExp,
+): Promise<void> {
   try {
     await call()
     console.log(`  ✗ ${label}  居然成功了——探针用的是无效令牌，说明服务端没在验`)

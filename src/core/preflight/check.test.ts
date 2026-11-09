@@ -2,11 +2,13 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import type { Instance } from '../instance.js'
-import type { VersionInfo } from '../sources.js'
-import { checkInstance, checkJava } from './check.js'
 import { requiredJavaMajor } from '../java/types.js'
+import type { VersionInfo } from '../sources.js'
+import { checkInstance, checkJava, checkMemory } from './check.js'
 
-function v(partial: Partial<VersionInfo> & Pick<VersionInfo, 'projectId' | 'versionId'>): VersionInfo {
+function v(
+  partial: Partial<VersionInfo> & Pick<VersionInfo, 'projectId' | 'versionId'>,
+): VersionInfo {
   return {
     name: partial.projectId,
     gameVersions: ['1.20.1'],
@@ -34,7 +36,9 @@ test('干净的实例不产生 finding', () => {
   ])
   const findings = checkInstance({
     instance: instance({
-      mods: [{ projectId: 'sodium', versionId: 'a1', source: 'modrinth', fileName: 'mods/sodium.jar' }],
+      mods: [
+        { projectId: 'sodium', versionId: 'a1', source: 'modrinth', fileName: 'mods/sodium.jar' },
+      ],
     }),
     versions,
   })
@@ -44,12 +48,22 @@ test('干净的实例不产生 finding', () => {
 test('模组比游戏老 → VERSION_UNVERIFIED (warning)，不是 blocker', () => {
   // ADR-0026：目标 26.2，模组只勾到 26.1.2。作者可能只是没补勾
   const versions = new Map<string, VersionInfo>([
-    ['a1', v({ projectId: 'mixintrace', versionId: 'a1', gameVersions: ['26.1', '26.1.1', '26.1.2'] })],
+    [
+      'a1',
+      v({ projectId: 'mixintrace', versionId: 'a1', gameVersions: ['26.1', '26.1.1', '26.1.2'] }),
+    ],
   ])
   const findings = checkInstance({
     instance: instance({
       gameVersion: '26.2',
-      mods: [{ projectId: 'mixintrace', versionId: 'a1', source: 'modrinth', fileName: 'mods/mixintrace.jar' }],
+      mods: [
+        {
+          projectId: 'mixintrace',
+          versionId: 'a1',
+          source: 'modrinth',
+          fileName: 'mods/mixintrace.jar',
+        },
+      ],
     }),
     versions,
   })
@@ -232,7 +246,10 @@ test('Java：mod 声明 java >=17 <=21 时，不再建议装 Java 8（issue #11�
   assert.match(bad.hint ?? '', /java install 17/)
   assert.doesNotMatch(bad.hint ?? '', /java install 8\b/)
   // 不能再出现与 mod 声明矛盾的建议
-  assert.equal(findings.some((f) => f.code === 'JAVA_TOO_NEW' || f.code === 'JAVA_NEWER_ONLY'), false)
+  assert.equal(
+    findings.some((f) => f.code === 'JAVA_TOO_NEW' || f.code === 'JAVA_NEWER_ONLY'),
+    false,
+  )
 })
 
 test('Java：宿主已满足 mod 声明的范围就不报', () => {
@@ -242,4 +259,52 @@ test('Java：宿主已满足 mod 声明的范围就不报', () => {
     [{ modId: 'btwce', range: '>=17 <=21' }],
   )
   assert.equal(findings.length, 0)
+})
+
+test('内存：物理内存低于 4 GB 报 LOW_MEMORY，并给推荐堆', () => {
+  const findings = checkMemory(instance({ mods: [{ source: 'local', fileName: 'a.jar' }] }), {
+    os: 'windows',
+    totalMemoryMiB: 3072,
+    javaMajors: [17],
+  })
+  assert.equal(findings[0]?.code, 'LOW_MEMORY')
+  assert.equal(findings[0]?.severity, 'warning')
+  assert.match(findings[0]?.hint ?? '', /-Xmx\d+M/)
+})
+
+test('内存：大包 + 8 GB 以下也提示，16 GB 不提示', () => {
+  const mods = Array.from({ length: 300 }, (_, i) => ({
+    source: 'local' as const,
+    fileName: `m${String(i)}.jar`,
+  }))
+  assert.equal(
+    checkMemory(instance({ mods }), { os: 'windows', totalMemoryMiB: 8192, javaMajors: [17] })
+      .length,
+    1,
+  )
+  assert.equal(
+    checkMemory(instance({ mods }), { os: 'windows', totalMemoryMiB: 16384, javaMajors: [17] })
+      .length,
+    0,
+  )
+})
+
+test('内存：采集不到（0）时不下结论', () => {
+  assert.deepEqual(
+    checkMemory(instance(), { os: 'windows', totalMemoryMiB: 0, javaMajors: [17] }),
+    [],
+  )
+})
+
+test('Java：版本 JSON 的 javaMajor 优先于 gameVersion 表', () => {
+  // 1.20.1 查表是 17；版本 JSON 写 21 时必须按 21 判
+  const findings = checkJava(
+    instance({ gameVersion: '1.20.1' }),
+    { os: 'windows', totalMemoryMiB: 16384, javaMajors: [17] },
+    [],
+    { javaMajor: 21 },
+  )
+  const missing = findings.find((f) => f.code === 'JAVA_MISSING')
+  assert.ok(missing, '要报 JAVA_MISSING')
+  assert.match(missing.message, /Java 21/)
 })

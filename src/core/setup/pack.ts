@@ -1,12 +1,12 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { unzipSync } from 'fflate'
-
+import type { CfFileInfo } from '../curseforge.js'
 import type { DownloadTask } from '../download/types.js'
 import type { Layout } from '../layout.js'
-import type { MrpackIndex } from '../preflight/mrpack.js'
 import type { CurseforgeManifest } from '../preflight/curseforge.js'
-import type { CfFileInfo } from '../../sources/curseforge.js'
+import type { MrpackIndex } from '../preflight/mrpack.js'
+import { safeJoin } from '../safe-path.js'
 
 /**
  * 服务端专用的文件不该装到客户端。
@@ -20,22 +20,114 @@ function isClientRelevant(file: MrpackIndex['files'][number]): boolean {
   return true
 }
 
-export function buildPackTasks(index: MrpackIndex, layout: Layout): DownloadTask[] {
+/**
+ * 从 Modrinth CDN 地址反推 projectId / versionId。
+ *
+ * mrpack 的清单只有 `path` + `downloads`，没有 projectId；但规范要求
+ * 下载地址走 `cdn.modrinth.com/data/<pid>/versions/<vid>/<file>`，
+ * 所以这一层信息是现成的，不该再要求调用方去查一次 API。
+ */
+function modrinthMeta(url: string): DownloadTask['meta'] | undefined {
+  const m = /cdn\.modrinth\.com\/data\/([\w-]+)\/versions\/([\w-]+)\//.exec(url)
+  const projectId = m?.[1]
+  const versionId = m?.[2]
+  return projectId === undefined || versionId === undefined
+    ? undefined
+    : { projectId, versionId, source: 'modrinth' }
+}
+
+export function buildPackTasks(
+  index: MrpackIndex,
+  layout: Layout,
+  opts: PackTaskOptions = {},
+): PackTaskBuild {
   const tasks: DownloadTask[] = []
+  const rejected: { fileName: string; error: string }[] = []
+  const allowed = new Set([
+    ...MODRINTH_ALLOWED_HOSTS.map((h) => h.toLowerCase()),
+    ...(opts.allowHosts ?? []).map((h) => h.toLowerCase()),
+  ])
+
   for (const file of index.files) {
     if (!isClientRelevant(file)) continue
     const url = file.downloads[0]
     if (url === undefined) continue
+    const fileName = basename(file.path)
+
+    // 路径穿越在这里挡住：清单是外部输入，`../../evil.jar` 能把文件甩到实例外
+    const destPath = safeJoin(layout.gameDir, file.path)
+    if (destPath === null) {
+      rejected.push({ fileName, error: `清单里的路径不安全：${file.path}` })
+      continue
+    }
+
+    /**
+     * Modrinth 规范限制了下载域名。哈希能保证内容正确，但挡不住恶意包让
+     * 用户机器去请求内网地址（SSRF）。白名单之外的文件不下载，但要报出来，
+     * 不能静默少装一个模组。
+     */
+    let host: string
+    try {
+      host = new URL(url).hostname.toLowerCase()
+    } catch {
+      rejected.push({ fileName, error: `下载地址不是合法 URL：${url}` })
+      continue
+    }
+    if (!hostAllowed(host, allowed)) {
+      rejected.push({
+        fileName,
+        error:
+          `下载域名不在白名单：${host}。Modrinth 规范只允许 ` +
+          `${MODRINTH_ALLOWED_HOSTS.join(' / ')}；确认可信后用 --allow-host ${host} 显式放行`,
+      })
+      continue
+    }
+
+    const meta = modrinthMeta(url)
     tasks.push({
       url,
-      fileName: basename(file.path),
+      fileName,
       // mrpack 的 path 是相对实例根的，如 mods/xxx.jar
-      destPath: join(layout.gameDir, ...file.path.split('/')),
+      destPath,
       expectedSize: file.fileSize,
       hashes: file.hashes,
+      ...(meta === undefined ? {} : { meta }),
     })
   }
-  return tasks
+  return { tasks, rejected }
+}
+
+/**
+ * Modrinth 规范允许的下载域名。
+ *
+ * 只放行规范里列出的几个；`--allow-host` 用于本地服务测试与私有镜像。
+ * 以 `.` 开头的条目按后缀匹配（如 `.example.com`），其余精确匹配。
+ */
+export const MODRINTH_ALLOWED_HOSTS: readonly string[] = [
+  'cdn.modrinth.com',
+  'github.com',
+  'objects.githubusercontent.com',
+  'raw.githubusercontent.com',
+  'gitlab.com',
+]
+
+export interface PackTaskOptions {
+  /** 额外放行的下载域名（CLI 的 --allow-host，可重复、逗号分隔） */
+  readonly allowHosts?: readonly string[]
+}
+
+export interface PackTaskBuild {
+  readonly tasks: readonly DownloadTask[]
+  /** 清单里有、但不能下载的条目。必须并进 failed，否则「装完了」是假结论 */
+  readonly rejected: readonly { readonly fileName: string; readonly error: string }[]
+}
+
+function hostAllowed(host: string, allowed: ReadonlySet<string>): boolean {
+  if (allowed.has(host)) return true
+  for (const rule of allowed) {
+    if (rule.startsWith('.') && host.endsWith(rule)) return true
+  }
+  return false
 }
 
 /**
@@ -69,9 +161,10 @@ export function buildCurseforgeTasks(
         fileName: fallback,
         // 没有 key 时每个文件都「查不到」。用同一句「可能已下架」会把用户
         // 引去网页逐个核对 271 个文件，而不是去配 key（issue #13）
-        error: opts.noKey === true
-          ? '没有 BLOCKPILOT_CF_API_KEY，无法换出下载地址；到 console.curseforge.com 免费申请后重试'
-          : 'CurseForge 没有返回这个文件（可能已下架，或 key 没有该文件的权限）',
+        error:
+          opts.noKey === true
+            ? '没有 BLOCKPILOT_CF_API_KEY，无法换出下载地址；到 console.curseforge.com 免费申请后重试'
+            : 'CurseForge 没有返回这个文件（可能已下架，或 key 没有该文件的权限）',
       })
       continue
     }
@@ -99,6 +192,11 @@ export function buildCurseforgeTasks(
       destPath: join(layout.mods, name),
       expectedSize: info.size,
       hashes: info.hashes,
+      meta: {
+        projectId: String(info.modId),
+        versionId: String(info.fileId),
+        source: 'curseforge',
+      },
     })
   }
 
@@ -110,15 +208,30 @@ export function buildCurseforgeTasks(
  *
  * 这两个目录里放的是不在 CDN 上的文件：配置文件、资源包、脚本。
  * `client-overrides` 优先级更高，同名文件覆盖 `overrides`。
+ *
+ * 默认**不覆盖磁盘上已存在的文件**：ADR-0012 说「重跑是安全的」，而覆盖会
+ * 把用户改过的 config/、options.txt 冲掉。要更新时显式传 `overwrite: true`
+ * （CLI 的 --overwrite-overrides）。
  */
+export interface OverridesOptions {
+  /** true 时覆盖已存在的文件。缺省跳过并在结果里计数 */
+  readonly overwrite?: boolean
+}
+
 export interface OverridesResult {
-  /** 落盘的文件总数 */
+  /** 落盘的文件总数（同一个文件被 overrides 与 client-overrides 各写一次算 2） */
   readonly files: number
   /** 其中 mods/*.jar 的个数 */
   readonly mods: number
+  /** 因为已存在而跳过的文件数 */
+  readonly skipped: number
 }
 
-export function extractOverrides(zipPath: string, gameDir: string): OverridesResult {
+export function extractOverrides(
+  zipPath: string,
+  gameDir: string,
+  opts: OverridesOptions = {},
+): OverridesResult {
   const raw = readFileSync(zipPath)
   const entries = unzipSync(new Uint8Array(raw), {
     filter: (f) => f.name.startsWith('overrides/') || f.name.startsWith('client-overrides/'),
@@ -126,6 +239,9 @@ export function extractOverrides(zipPath: string, gameDir: string): OverridesRes
 
   let count = 0
   let mods = 0
+  let skipped = 0
+  /** 本次运行写过的路径：client-overrides 要能覆盖同一次运行里的 overrides */
+  const written = new Set<string>()
   // 先写 overrides，再写 client-overrides，后者自然覆盖前者
   const ordered = Object.entries(entries).sort(([a], [b]) => {
     const aClient = a.startsWith('client-overrides/') ? 1 : 0
@@ -135,16 +251,21 @@ export function extractOverrides(zipPath: string, gameDir: string): OverridesRes
 
   for (const [name, data] of ordered) {
     if (name.endsWith('/')) continue
-    if (name.includes('..')) continue
     const rel = name.replace(/^client-overrides\//, '').replace(/^overrides\//, '')
     if (rel === '') continue
-    const out = join(gameDir, ...rel.split('/'))
+    const out = safeJoin(gameDir, rel)
+    if (out === null) continue
+    if (opts.overwrite !== true && !written.has(out) && existsSync(out)) {
+      skipped += 1
+      continue
+    }
     mkdirSync(dirname(out), { recursive: true })
     writeFileSync(out, data)
+    written.add(out)
     count += 1
     if (rel.startsWith('mods/') && rel.toLowerCase().endsWith('.jar')) mods += 1
   }
-  return { files: count, mods }
+  return { files: count, mods, skipped }
 }
 
 /**
@@ -160,7 +281,8 @@ export function countOverridesMods(zipPath: string): number {
     unzipSync(new Uint8Array(readFileSync(zipPath)), {
       filter: (f) => {
         if (f.name.endsWith('/')) return false
-        if (!f.name.startsWith('overrides/') && !f.name.startsWith('client-overrides/')) return false
+        if (!f.name.startsWith('overrides/') && !f.name.startsWith('client-overrides/'))
+          return false
         const rel = f.name.replace(/^client-overrides\//, '').replace(/^overrides\//, '')
         if (rel.startsWith('mods/') && rel.toLowerCase().endsWith('.jar')) mods += 1
         // 一律返回 false：只要文件名，不需要解压任何内容

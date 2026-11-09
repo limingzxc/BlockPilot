@@ -14,8 +14,8 @@ import { join } from 'node:path'
 import type { Layout } from '../layout.js'
 import { resolveVersion } from '../version/resolve.js'
 import { detectJava } from './detect.js'
-import { pickJava, requiredJavaMajor } from './types.js'
 import type { JavaInstall, JavaScanResult } from './types.js'
+import { pickJava, requiredJavaMajor } from './types.js'
 
 export type SelectJavaOutcome =
   | {

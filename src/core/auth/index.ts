@@ -1,12 +1,14 @@
+import { errMessage } from '../errors.js'
 import { Op } from '../events.js'
-import { defineOperation } from '../operation.js'
 import type { Operation } from '../operation.js'
+import { defineOperation } from '../operation.js'
 import { exchangeMsaForAccount, isExpired, refreshAccount } from './chain.js'
+import type { CredentialStore } from './credentials.js'
 import type { HttpClient } from './http.js'
 import { pollForToken, requestDeviceCode, type SleepFn } from './msa.js'
 import { loadStore, pickAccount, upsertAccount } from './store.js'
-import { authError, isAuthError, type AuthAccount, type MsaToken } from './types.js'
 import type { DeviceCode } from './types.js'
+import { type AuthAccount, authError, isAuthError, type MsaToken } from './types.js'
 
 export interface LoginOptions {
   readonly clientId: string
@@ -22,6 +24,8 @@ export interface LoginOptions {
    * 没人输码时让进程干等满 15 分钟，是最贵的空转。
    */
   readonly timeoutMs?: number
+  /** 系统凭据存储。给了就把 refresh_token 从文件里挪走 */
+  readonly credentials?: CredentialStore | null
 }
 
 /**
@@ -70,7 +74,7 @@ export function createLogin(opts: LoginOptions): Operation<AuthAccount> {
       const account = await exchangeMsaForAccount(msa, { ...shared, signal })
       const full: AuthAccount = { ...account, clientId: opts.clientId, userType: 'msa' }
 
-      upsertAccount(opts.storePath, full)
+      upsertAccount(opts.storePath, full, opts.credentials ?? null)
       yield Op.result(full)
       yield Op.done()
     } catch (err) {
@@ -134,6 +138,7 @@ export interface ResolveAccountOptions {
   readonly http?: HttpClient
   readonly signal?: AbortSignal
   readonly now?: () => number
+  readonly credentials?: CredentialStore | null
 }
 
 export type ResolveResult =
@@ -151,7 +156,7 @@ export type ResolveResult =
  *     悄悄用离线身份进游戏，朋友会看到「这不是你」
  */
 export async function resolveAccount(opts: ResolveAccountOptions): Promise<ResolveResult> {
-  const store = loadStore(opts.storePath)
+  const store = loadStore(opts.storePath, opts.credentials ?? null)
   const account = pickAccount(store, opts.selector)
   const explicit = opts.selector !== undefined && opts.selector.trim() !== ''
 
@@ -177,11 +182,11 @@ export async function resolveAccount(opts: ResolveAccountOptions): Promise<Resol
       ...(opts.now === undefined ? {} : { now: opts.now }),
       ...(opts.signal === undefined ? {} : { signal: opts.signal }),
     })
-    upsertAccount(opts.storePath, fresh)
+    upsertAccount(opts.storePath, fresh, opts.credentials ?? null)
     return { kind: 'online', account: fresh, refreshed: true }
   } catch (err) {
     if (explicit) throw err
-    const message = err instanceof Error ? err.message : String(err)
+    const message = errMessage(err)
     return { kind: 'offline', reason: `账号 ${account.name} 的令牌刷新失败：${message}` }
   }
 }
@@ -192,7 +197,7 @@ async function* asFailed(err: unknown): AsyncGenerator<ReturnType<typeof Op.fail
     yield Op.failed(err.code, err.message, err.hint)
     return
   }
-  const message = err instanceof Error ? err.message : String(err)
+  const message = errMessage(err)
   yield Op.failed(
     'AUTH_UNEXPECTED',
     `登录过程中出现未预期的错误：${message}`,
@@ -200,10 +205,10 @@ async function* asFailed(err: unknown): AsyncGenerator<ReturnType<typeof Op.fail
   )
 }
 
-export type { DeviceCode }
 export { DEFAULT_CLIENT_ID, resolveClientId } from './app.js'
-export { DEVICE_AUTH_FALLBACK_URI } from './msa.js'
-export { loadStore, pickAccount, removeAccount, authStorePath, upsertAccount } from './store.js'
 export { isExpired } from './chain.js'
-export { AuthError, isAuthError } from './types.js'
+export { DEVICE_AUTH_FALLBACK_URI } from './msa.js'
+export { authStorePath, loadStore, pickAccount, removeAccount, upsertAccount } from './store.js'
 export type { AuthAccount, AuthErrorCode } from './types.js'
+export { AuthError, isAuthError } from './types.js'
+export type { DeviceCode }

@@ -13,18 +13,28 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
+        # undici 8 要求 Node >=22.19，engines 已改成同一口径。
+        # 再加一个更高的主版本，避免「只在最低版本能跑」的写法混进来。
+        node: [22, 24]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
           cache: npm
 
       - run: npm ci
 
+      - run: npm run lint
+
       - run: npm run typecheck
+
+      # 构建后按包名 import 一次：exports 写错只有这里会红
+      - run: npm run build
+
+      - run: npm run smoke:entry
 
       # 测试全部离线：下载器测试用本地假源，tar 测试用系统 GNU tar。
       # 不设任何代理环境变量，也不断网——避免 CI 环境差异造成假失败。

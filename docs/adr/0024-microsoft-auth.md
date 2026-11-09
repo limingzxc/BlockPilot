@@ -73,6 +73,10 @@ api.minecraftservices.com/minecraft/profile                  → uuid 与玩家�
 
 ### 4. 存档明文，权限 0600
 
+*后续（ADR-0043）*：不引原生依赖，改用平台自带 CLI（Windows DPAPI / macOS
+`security` / Linux `secret-tool`）。有可用后端时 `refresh_token` 不再落盘；
+后端不可用时仍退回本节描述的 0600 文件。
+
 `<root>/auth/accounts.json`，只存「够启动 + 够刷新」的字段：uuid / name / accessToken / expiresAt / xuid / refreshToken / clientId。
 
 不引系统钥匙串（keytar 之类）的原因：它是原生模块，会把「参考实现」变成「需要编译的工程」，还得为三个平台各准备一份二进制。代价必须说清——**能读到这个文件的人就能接管账号**。所以：

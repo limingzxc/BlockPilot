@@ -9,7 +9,7 @@ import type { HttpClient } from './http.js'
 import { createLogin, resolveAccount } from './index.js'
 import { pollForToken, requestDeviceCode } from './msa.js'
 import { authStorePath, loadStore, upsertAccount } from './store.js'
-import { AuthError, type AuthAccount } from './types.js'
+import { type AuthAccount, AuthError } from './types.js'
 
 interface Call {
   readonly method: 'form' | 'json' | 'get'
@@ -22,7 +22,11 @@ type RecordingHttp = HttpClient & { readonly calls: Call[] }
 
 function httpRecorder(handler: Handler): RecordingHttp {
   const calls: Call[] = []
-  const record = (method: Call['method'], url: string, payload: unknown): { status: number; body: unknown } => {
+  const record = (
+    method: Call['method'],
+    url: string,
+    payload: unknown,
+  ): { status: number; body: unknown } => {
     const call: Call = { method, url, payload }
     calls.push(call)
     return handler(call)
@@ -46,7 +50,9 @@ const DEVICE = {
 const PROFILE = { id: '069a79f4-44e9-4726-a5be-fca90e38aaf5', name: 'Notch' }
 
 /** 一条一切正常的链。每个用例覆盖自己要改的那一段。 */
-function happyPath(overrides: Partial<Record<string, () => { status: number; body: unknown }>> = {}): Handler {
+function happyPath(
+  overrides: Partial<Record<string, () => { status: number; body: unknown }>> = {},
+): Handler {
   return (req) => {
     const key = Object.keys(overrides).find((k) => req.url.includes(k))
     if (key !== undefined) {
@@ -55,22 +61,34 @@ function happyPath(overrides: Partial<Record<string, () => { status: number; bod
     }
     if (req.url.endsWith('/devicecode')) return { status: 200, body: DEVICE }
     if (req.url.endsWith('/token')) {
-      return { status: 200, body: { access_token: 'msa-at', refresh_token: 'msa-rt-1', expires_in: 3600 } }
+      return {
+        status: 200,
+        body: { access_token: 'msa-at', refresh_token: 'msa-rt-1', expires_in: 3600 },
+      }
     }
     if (req.url.includes('user.auth.xboxlive.com')) {
-      return { status: 200, body: { Token: 'xbl-token', DisplayClaims: { xui: [{ uhs: 'uhs-1' }] } } }
+      return {
+        status: 200,
+        body: { Token: 'xbl-token', DisplayClaims: { xui: [{ uhs: 'uhs-1' }] } },
+      }
     }
     if (req.url.includes('xsts.auth.xboxlive.com')) {
       return {
         status: 200,
-        body: { Token: 'xsts-token', DisplayClaims: { xui: [{ uhs: 'uhs-1', xid: '2535410000000000' }] } },
+        body: {
+          Token: 'xsts-token',
+          DisplayClaims: { xui: [{ uhs: 'uhs-1', xid: '2535410000000000' }] },
+        },
       }
     }
     if (req.url.includes('login_with_xbox')) {
       return { status: 200, body: { access_token: 'mc-at', expires_in: 86_400 } }
     }
     if (req.url.includes('entitlements')) {
-      return { status: 200, body: { items: [{ name: 'product_minecraft' }, { name: 'game_minecraft' }] } }
+      return {
+        status: 200,
+        body: { items: [{ name: 'product_minecraft' }, { name: 'game_minecraft' }] },
+      }
     }
     if (req.url.includes('/minecraft/profile')) return { status: 200, body: PROFILE }
     return { status: 404, body: null }
@@ -114,11 +132,14 @@ test('设备码：字段映射正确，deviceCode 与 userCode 不混淆', async
 
 test('设备码：没配 client id 时直接失败，不发请求', async () => {
   const http = httpRecorder(happyPath())
-  await assert.rejects(() => requestDeviceCode({ clientId: '', http }), (err: unknown) => {
-    assert.ok(err instanceof AuthError)
-    assert.equal(err.code, 'AUTH_NO_CLIENT_ID')
-    return true
-  })
+  await assert.rejects(
+    () => requestDeviceCode({ clientId: '', http }),
+    (err: unknown) => {
+      assert.ok(err instanceof AuthError)
+      assert.equal(err.code, 'AUTH_NO_CLIENT_ID')
+      return true
+    },
+  )
   assert.equal(http.calls.length, 0)
 })
 
@@ -170,7 +191,13 @@ test('轮询：slow_down 把间隔加 5 秒（RFC 8628 的要求）', async () =
   const waits: number[] = []
   await pollForToken({
     clientId: 'c',
-    code: { deviceCode: 'DC', userCode: 'U', verificationUri: 'v', expiresAt: 1e9, intervalMs: 1000 },
+    code: {
+      deviceCode: 'DC',
+      userCode: 'U',
+      verificationUri: 'v',
+      expiresAt: 1e9,
+      intervalMs: 1000,
+    },
     http,
     now: () => 0,
     sleepFn: async (ms) => {
@@ -186,7 +213,13 @@ test('轮询：用户拒绝 → AUTH_DENIED，不是「网络错误」', async (
     () =>
       pollForToken({
         clientId: 'c',
-        code: { deviceCode: 'DC', userCode: 'U', verificationUri: 'v', expiresAt: 1e9, intervalMs: 1 },
+        code: {
+          deviceCode: 'DC',
+          userCode: 'U',
+          verificationUri: 'v',
+          expiresAt: 1e9,
+          intervalMs: 1,
+        },
         http,
         now: () => 0,
         sleepFn: noSleep,
@@ -202,7 +235,13 @@ test('轮询：设备码过期后不再请求，直接报 AUTH_EXPIRED', async (
     () =>
       pollForToken({
         clientId: 'c',
-        code: { deviceCode: 'DC', userCode: 'U', verificationUri: 'v', expiresAt: 5000, intervalMs: 1000 },
+        code: {
+          deviceCode: 'DC',
+          userCode: 'U',
+          verificationUri: 'v',
+          expiresAt: 5000,
+          intervalMs: 1000,
+        },
         http,
         now: () => clock,
         sleepFn: async () => {
@@ -284,11 +323,12 @@ test('XBL 401 → 说「令牌被拒」，而不是让用户去查请求形状',
 test('MC 登录说「Invalid app registration」→ 白名单问题，别让用户重试', async () => {
   const http = httpRecorder(
     happyPath({
-      'login_with_xbox': () => ({
+      login_with_xbox: () => ({
         status: 401,
         body: {
           path: '/authentication/login_with_xbox',
-          errorMessage: 'Invalid app registration, see https://aka.ms/AppRegInfo for more information',
+          errorMessage:
+            'Invalid app registration, see https://aka.ms/AppRegInfo for more information',
         },
       }),
     }),
@@ -338,7 +378,9 @@ test('XSTS 2148916238 → 未成年账号，hint 指向家庭组', async () => {
 })
 
 test('所有权为空清单 → MC_NO_GAME_OWNERSHIP（不是「没档案」）', async () => {
-  const http = httpRecorder(happyPath({ entitlements: () => ({ status: 200, body: { items: [] } }) }))
+  const http = httpRecorder(
+    happyPath({ entitlements: () => ({ status: 200, body: { items: [] } }) }),
+  )
   await assert.rejects(
     () => exchangeMsaForAccount({ accessToken: 'a', refreshToken: 'r', expiresAt: 0 }, { http }),
     (err: unknown) => {
@@ -348,17 +390,25 @@ test('所有权为空清单 → MC_NO_GAME_OWNERSHIP（不是「没档案」）'
       return true
     },
   )
-  assert.equal(http.calls.some((c) => c.url.includes('/minecraft/profile')), false)
+  assert.equal(
+    http.calls.some((c) => c.url.includes('/minecraft/profile')),
+    false,
+  )
 })
 
 test('所有权接口故障（500）不拦登录——附加校验不该变成门槛', async () => {
   const http = httpRecorder(happyPath({ entitlements: () => ({ status: 500, body: null }) }))
-  const acc = await exchangeMsaForAccount({ accessToken: 'a', refreshToken: 'r', expiresAt: 0 }, { http })
+  const acc = await exchangeMsaForAccount(
+    { accessToken: 'a', refreshToken: 'r', expiresAt: 0 },
+    { http },
+  )
   assert.equal(acc.name, 'Notch')
 })
 
 test('档案 404 → MC_NO_PROFILE，hint 区分「只买了基岩版」', async () => {
-  const http = httpRecorder(happyPath({ '/minecraft/profile': () => ({ status: 404, body: null }) }))
+  const http = httpRecorder(
+    happyPath({ '/minecraft/profile': () => ({ status: 404, body: null }) }),
+  )
   await assert.rejects(
     () => exchangeMsaForAccount({ accessToken: 'a', refreshToken: 'r', expiresAt: 0 }, { http }),
     (err: unknown) => {
@@ -373,7 +423,10 @@ test('档案 404 → MC_NO_PROFILE，hint 区分「只买了基岩版」', async
 test('刷新：换到新的 refresh_token 并保留 clientId', async () => {
   const http = httpRecorder(
     happyPath({
-      '/token': () => ({ status: 200, body: { access_token: 'msa-at-2', refresh_token: 'rt-2', expires_in: 3600 } }),
+      '/token': () => ({
+        status: 200,
+        body: { access_token: 'msa-at-2', refresh_token: 'rt-2', expires_in: 3600 },
+      }),
     }),
   )
   const acc = await refreshAccount(account(0), { http, now: () => 10_000 })
@@ -389,11 +442,14 @@ test('刷新：换到新的 refresh_token 并保留 clientId', async () => {
 
 test('刷新：没有 refresh_token 的旧账号给出明确结论', async () => {
   const legacy: AuthAccount = { ...account(0), refreshToken: undefined, clientId: undefined }
-  await assert.rejects(() => refreshAccount(legacy, { http: httpRecorder(happyPath()) }), (err: unknown) => {
-    assert.ok(err instanceof AuthError)
-    assert.equal(err.code, 'AUTH_REFRESH_UNAVAILABLE')
-    return true
-  })
+  await assert.rejects(
+    () => refreshAccount(legacy, { http: httpRecorder(happyPath()) }),
+    (err: unknown) => {
+      assert.ok(err instanceof AuthError)
+      assert.equal(err.code, 'AUTH_REFRESH_UNAVAILABLE')
+      return true
+    },
+  )
 })
 
 test('isExpired 留 60 秒余量：到期前一分钟就算过期', () => {
@@ -507,11 +563,21 @@ test('resolveAccount：过期且刷新成功 → online + refreshed，存档已�
   const dir = mkdtempSync(join(tmpdir(), 'bp-auth-res3-'))
   try {
     const storePath = authStorePath(dir)
-    const expired: AuthAccount = { ...account(0), expiresAt: 1000, refreshToken: 'rt', clientId: 'client-1' }
+    const expired: AuthAccount = {
+      ...account(0),
+      expiresAt: 1000,
+      refreshToken: 'rt',
+      clientId: 'client-1',
+    }
     upsertAccount(storePath, expired)
 
     const http = httpRecorder(
-      happyPath({ '/token': () => ({ status: 200, body: { access_token: 'new', refresh_token: 'rt-9', expires_in: 3600 } }) }),
+      happyPath({
+        '/token': () => ({
+          status: 200,
+          body: { access_token: 'new', refresh_token: 'rt-9', expires_in: 3600 },
+        }),
+      }),
     )
     const r = await resolveAccount({ storePath, http, now: () => 5000 })
     assert.equal(r.kind, 'online')
@@ -548,7 +614,9 @@ test('resolveAccount：点名账号刷新失败 → 抛错，不退化成离线�
     const http = httpRecorder(
       happyPath({ '/token': () => ({ status: 400, body: { error: 'invalid_grant' } }) }),
     )
-    await assert.rejects(() => resolveAccount({ storePath, selector: 'Notch', http, now: () => 5000 }))
+    await assert.rejects(() =>
+      resolveAccount({ storePath, selector: 'Notch', http, now: () => 5000 }),
+    )
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -559,7 +627,10 @@ test('createLogin 的失败走 failed 事件，不是抛异常', async () => {
   try {
     const http = httpRecorder(() => ({
       status: 400,
-      body: { error: 'unauthorized_client', error_description: 'not a valid application identifier' },
+      body: {
+        error: 'unauthorized_client',
+        error_description: 'not a valid application identifier',
+      },
     }))
     let code: string | undefined
     let hint: string | undefined

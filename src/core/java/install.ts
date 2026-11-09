@@ -1,25 +1,25 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { unzipSync } from 'fflate'
-
-import { Op } from '../events.js'
-import { defineOperation } from '../operation.js'
-import type { Operation } from '../operation.js'
 import { downloadOne } from '../download/downloader.js'
 import { defaultSources } from '../download/sources.js'
-import type { DownloadSource } from '../download/types.js'
+import type { Mirror } from '../download/types.js'
+import { Op } from '../events.js'
 import type { Layout } from '../layout.js'
-import { fetchJavaBinary } from '../sources/adoptium.js'
+import type { Operation } from '../operation.js'
+import { defineOperation } from '../operation.js'
+import { safeJoin } from '../safe-path.js'
 import type { JavaOs } from '../sources/adoptium.js'
-import { readTarGz, writeTarEntries } from './tar.js'
+import { fetchJavaBinary } from '../sources/adoptium.js'
 import { probeJava } from './probe.js'
+import { readTarGz, writeTarEntries } from './tar.js'
 import type { JavaInstall } from './types.js'
 
 export interface JavaInstallOptions {
   readonly layout: Layout
   /** 需要的大版本，如 17 / 21 */
   readonly major: number
-  readonly sources?: readonly DownloadSource[]
+  readonly sources?: readonly Mirror[]
   readonly runtimeOs?: JavaOs
   /** 测试注入：探测某个 java 可执行文件的大版本 */
   readonly probe?: (path: string) => Promise<JavaInstall | null>
@@ -82,8 +82,8 @@ function extractZip(zipPath: string, destDir: string): number {
   let count = 0
   for (const [name, data] of Object.entries(entries)) {
     if (name.endsWith('/')) continue
-    if (name.includes('..')) continue
-    const out = join(destDir, ...name.split('/'))
+    const out = safeJoin(destDir, name)
+    if (out === null) continue
     mkdirSync(dirname(out), { recursive: true })
     writeFileSync(out, data)
     count += 1
@@ -104,8 +104,8 @@ export function createJavaInstall(opts: JavaInstallOptions): Operation<JavaInsta
     /**
      * 已经装过**同一大版本**就不重复下载。
      *
-     * 以前的条件是 `major >= opts.major`，于是 `java install 17` 在只装了 21 的机器上
-     * 直接回「已存在 Java 21」——用户要 17 却拿到 21，而 Forge 1.20.1 这类老包
+     * 条件必须是「恰好相等」：`major >= 目标` 会让 `java install 17` 在只装了 21 的
+     * 机器上回「已存在 Java 21」——用户要 17 却拿到 21，而 Forge 1.20.1 这类老包
      * 恰恰在 21 上有毛病（实测会在标题画面自行退出）。
      */
     const probe = opts.probe ?? defaultProbe
@@ -119,11 +119,25 @@ export function createJavaInstall(opts: JavaInstallOptions): Operation<JavaInsta
 
     const os = opts.runtimeOs ?? detectOs()
     yield Op.log('info', 'java.lookup', { major: opts.major, os })
-    const binary = await (opts.fetchBinary ?? fetchJavaBinary)(opts.major, os, signal)
-    if (binary === null) {
-      yield Op.failed('JAVA_NOT_FOUND', `Adoptium 没有 Java ${opts.major} 的 ${os} 构建`)
+    const binaryProbe = await (opts.fetchBinary ?? fetchJavaBinary)(opts.major, os, signal)
+    if (binaryProbe.status === 'unreachable') {
+      // 断网 ≠ 没有这个构建。前者换网络，后者换版本，说错一个用户就白折腾一轮
+      yield Op.failed(
+        'NETWORK_ERROR',
+        `查 Java ${opts.major} 的下载地址失败：${binaryProbe.detail}`,
+        '检查网络；国内可加 --china 走 TUNA 镜像，或用 --proxy 指定代理',
+      )
       return
     }
+    if (binaryProbe.status === 'absent') {
+      yield Op.failed(
+        'JAVA_NOT_FOUND',
+        `Adoptium 没有 Java ${opts.major} 的 ${os} 构建${binaryProbe.detail === undefined ? '' : `（${binaryProbe.detail}）`}`,
+        '换一个 LTS 大版本，或用 --java 指定本机已有的 Java',
+      )
+      return
+    }
+    const binary = binaryProbe.value
 
     yield Op.log('info', 'java.download', {
       release: binary.release,
@@ -176,10 +190,7 @@ export function createJavaInstall(opts: JavaInstallOptions): Operation<JavaInsta
       return
     }
     if (probed.major < opts.major) {
-      yield Op.failed(
-        'JAVA_VERSION_MISMATCH',
-        `装到的是 Java ${probed.major}，需要 ${opts.major}`,
-      )
+      yield Op.failed('JAVA_VERSION_MISMATCH', `装到的是 Java ${probed.major}，需要 ${opts.major}`)
       return
     }
 

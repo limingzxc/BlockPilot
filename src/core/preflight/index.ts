@@ -1,24 +1,25 @@
 import { statSync } from 'node:fs'
-
-import { Op } from '../events.js'
-import { defineOperation } from '../operation.js'
-import type { Operation } from '../operation.js'
-import type { HostProfile, LoaderKind } from '../instance.js'
-import { NetworkError } from '../http.js'
-import type { ContentSource, DependencyResolver, ProjectNamer, VersionInfo } from '../sources.js'
-import { closureToFindings, computeClosure } from '../deps/closure.js'
+import type { CurseforgeLike } from '../curseforge.js'
+import { cfFileToVersionInfo, unconfiguredCurseforge } from '../curseforge.js'
 import type { ClosureResult } from '../deps/closure.js'
-import { buildRepairPlan, EMPTY_PLAN } from '../deps/plan.js'
+import { closureToFindings, computeClosure } from '../deps/closure.js'
 import type { RepairPlan } from '../deps/plan.js'
+import { buildRepairPlan, EMPTY_PLAN } from '../deps/plan.js'
+import { errMessage } from '../errors.js'
+import { Op } from '../events.js'
+import { NetworkError } from '../http.js'
 import { scanInstanceDir } from '../instance/scan.js'
-import { readPackFile } from './read-pack.js'
-import { checkInstance, checkJava } from './check.js'
+import type { HostProfile, LoaderKind } from '../instance.js'
+import type { Operation } from '../operation.js'
+import { defineOperation } from '../operation.js'
+import type { ContentSource, DependencyResolver, ProjectNamer, VersionInfo } from '../sources.js'
 import { cfDependencyFindings } from './cf-deps.js'
-import { cfFileToVersionInfo, resolveCurseforge } from '../../sources/curseforge.js'
-import type { CurseforgeLike } from '../../sources/curseforge.js'
+import { checkInstance, checkJava } from './check.js'
 import type { CurseforgeManifest } from './curseforge.js'
-import { assembleReport, preflightDir } from './report.js'
+import type { PackFileRead } from './read-pack.js'
+import { readPackFile } from './read-pack.js'
 import type { ReportStats } from './report.js'
+import { assembleReport, preflightDir } from './report.js'
 import type { Finding, PreflightReport } from './types.js'
 
 export interface PreflightOptions {
@@ -31,9 +32,9 @@ export interface PreflightOptions {
    * 测试注入假实现就能离线验证 CF 的 mod 级校验。
    */
   readonly curseforge?: CurseforgeLike
-  /** false 时禁用 MCIM 回落（`--no-cf-mirror`） */
-  readonly cfMirror?: boolean
   readonly host?: HostProfile
+  /** 版本 JSON 的 Java 需求；缺省按 gameVersion 查表 */
+  readonly javaMajor?: number
   /** 扫描目录时，目录内没有版本信息则用这个兜底 */
   readonly fallback?: {
     readonly gameVersion: string
@@ -76,6 +77,7 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
           dir: opts.target,
           scan,
           ...(opts.host === undefined ? {} : { host: opts.host }),
+          ...(opts.javaMajor === undefined ? {} : { javaMajor: opts.javaMajor }),
         }),
       )
       yield Op.done()
@@ -87,14 +89,14 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
      *
      * 下面两个分支的区别只在「元数据从哪来」，装配是同一份。
      */
-    let pack
+    let pack: PackFileRead
     yield Op.log('info', 'modpack.reading', { path: opts.target })
     try {
       pack = readPackFile(opts.target)
     } catch (err) {
       yield Op.failed(
         'BAD_MODPACK',
-        String(err instanceof Error ? err.message : err),
+        errMessage(err),
         '目前支持 .mrpack、CurseForge 的 .zip（带 manifest.json）和实例目录',
       )
       return
@@ -106,7 +108,8 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
     const cfGated = !pack.ability.checksMods
     // overrides 里的 jar 不属于「清单」，但解压后确实会进 mods/
     const overridesMods = pack.overridesMods
-    const cfManifest: CurseforgeManifest | undefined = pack.curseforgeManifest
+    const cfManifest: CurseforgeManifest | undefined =
+      pack.kind === 'curseforge' ? pack.curseforgeManifest : undefined
 
     yield Op.log('info', pack.kind === 'curseforge' ? 'modpack.curseforge' : 'modpack.parsed', {
       name: instance.name,
@@ -144,13 +147,11 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
       /**
        * ---- CurseForge：补上 mod 级校验 ----
        *
-       * 以前这里只能说「做不了」。现在文件元数据可以免 key 拿到（镜像），
-       * 于是能判版本、判加载器、判声明依赖——判不了的（拿不到元数据的文件）
-       * 仍然算 unresolved，verdict 会落到 unknown，不会给假通过。
+       * 文件元数据可以免 key 拿到（镜像），所以能判版本、判加载器、判声明依赖——
+       * 判不了的（拿不到元数据的文件）仍然算 unresolved，verdict 落到 unknown，
+       * 不会给假通过。
        */
-      const cf =
-        opts.curseforge ??
-        resolveCurseforge(opts.cfMirror === false ? { allowMirror: false } : {})
+      const cf = opts.curseforge ?? unconfiguredCurseforge
       const queries = (cfManifest?.files ?? [])
         .filter((f) => f.required !== false)
         .map((f) => ({ projectId: f.projectID, fileId: f.fileID }))
@@ -213,7 +214,11 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
       } catch (err) {
         // 断网不是「这些模组没有元数据」。分开报，用户才知道该修网络还是修包。
         if (err instanceof NetworkError) {
-          yield Op.failed('NETWORK_ERROR', err.message, '检查网络；国内可加 --china 走镜像，或用 --proxy 指定代理')
+          yield Op.failed(
+            'NETWORK_ERROR',
+            err.message,
+            '检查网络；国内可加 --china 走镜像，或用 --proxy 指定代理',
+          )
           return
         }
         throw err
@@ -244,7 +249,11 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
           })
         } catch (err) {
           if (err instanceof NetworkError) {
-            yield Op.failed('NETWORK_ERROR', err.message, '检查网络；国内可加 --china 走镜像，或用 --proxy 指定代理')
+            yield Op.failed(
+              'NETWORK_ERROR',
+              err.message,
+              '检查网络；国内可加 --china 走镜像，或用 --proxy 指定代理',
+            )
             return
           }
           throw err
@@ -285,7 +294,9 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
           truncated: closure.truncated,
         })
       } else {
-        yield Op.log('warn', 'deps.closure.skipped', { reason: 'source cannot resolve by projectId' })
+        yield Op.log('warn', 'deps.closure.skipped', {
+          reason: 'source cannot resolve by projectId',
+        })
       }
 
       plan =

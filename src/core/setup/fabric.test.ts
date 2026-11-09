@@ -5,8 +5,8 @@ import { dirname, join } from 'node:path'
 import test from 'node:test'
 
 import { resolveLayout } from '../layout.js'
-import { buildFabricTasks } from './fabric.js'
 import type { FabricProfile } from '../sources/fabric.js'
+import { buildFabricTasks } from './fabric.js'
 
 const winEnv = { os: 'windows', arch: 'x86_64', features: {} } as const
 
@@ -65,11 +65,13 @@ test('没有 natives 的库照旧走 maven 解析（不误判成原生库）', a
       ]),
       layout,
       undefined,
-      [{
-        name: 'noop',
-        credit: 'noop',
-        rewrite: () => null,
-      }],
+      [
+        {
+          name: 'noop',
+          credit: 'noop',
+          rewrite: () => null,
+        },
+      ],
       winEnv,
     )
     assert.equal(built.nativeJars.length, 0)

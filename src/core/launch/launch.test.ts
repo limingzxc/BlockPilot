@@ -4,8 +4,8 @@ import { test } from 'node:test'
 import { resolveLayout } from '../layout.js'
 import type { VersionJson } from '../version/types.js'
 import { expandArgs, substitute } from './command.js'
-import { detectEnv, rulesAllow } from './env.js'
 import type { LaunchEnv } from './env.js'
+import { detectEnv, rulesAllow } from './env.js'
 import { buildLaunchPlan } from './plan.js'
 
 const win: LaunchEnv = {
@@ -14,7 +14,8 @@ const win: LaunchEnv = {
   osVersion: '10.0',
   features: {},
 }
-const mac: LaunchEnv = { ...win, os: 'osx', osVersion: undefined }
+const { osVersion: _osVersion, ...winBase } = win
+const mac: LaunchEnv = { ...winBase, os: 'osx' }
 
 test('没有 rules 的库默认允许', () => {
   assert.equal(rulesAllow(undefined, win), true)
@@ -112,7 +113,10 @@ test('buildLaunchPlan 只把当前平台需要的 jar 放进 classpath', () => {
   assert.equal(plan.classpath.length, 2, 'common lib + client jar')
   assert.ok(plan.classpath.some((p) => p.includes('lib-1.jar')))
   assert.ok(!plan.classpath.some((p) => p.includes('only-1.jar')), 'mac 专用库被排除')
-  assert.ok(plan.classpath.some((p) => p.endsWith('1.20.1.jar')), 'client jar 在末尾')
+  assert.ok(
+    plan.classpath.some((p) => p.endsWith('1.20.1.jar')),
+    'client jar 在末尾',
+  )
 })
 
 test('buildLaunchPlan 替换所有已知占位符，不留下 ${...}', () => {
@@ -158,12 +162,18 @@ function authVersion(): VersionJson {
     arguments: {
       jvm: ['-cp', '${classpath}'],
       game: [
-        '--username', '${auth_player_name}',
-        '--uuid', '${auth_uuid}',
-        '--accessToken', '${auth_access_token}',
-        '--clientId', '${clientid}',
-        '--xuid', '${auth_xuid}',
-        '--userType', '${user_type}',
+        '--username',
+        '${auth_player_name}',
+        '--uuid',
+        '${auth_uuid}',
+        '--accessToken',
+        '${auth_access_token}',
+        '--clientId',
+        '${clientid}',
+        '--xuid',
+        '${auth_xuid}',
+        '--userType',
+        '${user_type}',
       ],
     },
   }
@@ -181,11 +191,12 @@ function planFor(account?: Parameters<typeof buildLaunchPlan>[0]['account']) {
   })
 }
 
-test('离线身份：全零 uuid、令牌 0、userType legacy', () => {
+test('离线身份：按 OfflinePlayer 规则派生 uuid、令牌 0、userType legacy', () => {
   const plan = planFor()
   assert.equal(plan.mode, 'offline')
   assert.equal(plan.playerName, 'Steve')
-  assert.ok(plan.args.includes('00000000000000000000000000000000'))
+  // UUID.nameUUIDFromBytes("OfflinePlayer:Steve")：与官方离线服务器一致
+  assert.ok(plan.args.includes('5627dd98e6be3c21b8a8e92344183641'))
   assert.ok(plan.args.includes('legacy'))
   assert.ok(!plan.args.includes('msa'))
 })
@@ -223,4 +234,18 @@ test('正版但没拿到 xuid：退化成占位值，不产生空参数', () => 
   })
   const i = plan.args.indexOf('--xuid')
   assert.equal(plan.args[i + 1], '0')
+})
+
+test('展示用 commandLine 脱敏，args 保留真实令牌（启动必需）', () => {
+  const plan = planFor({
+    uuid: '069a79f444e94726a5befca90e38aaf5',
+    name: 'Notch',
+    accessToken: 'mc-token',
+    expiresAt: Date.now() + 3_600_000,
+    obtainedAt: 1,
+    userType: 'msa',
+  })
+  assert.ok(plan.args.includes('mc-token'), '真正传给 java 的参数不能改')
+  assert.doesNotMatch(plan.commandLine, /mc-token/)
+  assert.match(plan.commandLine, /--accessToken \*\*\*/)
 })

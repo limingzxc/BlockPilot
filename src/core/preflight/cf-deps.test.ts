@@ -27,7 +27,11 @@ function info(projectId: string, name: string, required: readonly string[]): Ver
     name,
     gameVersions: ['1.12.2'],
     loaders: ['forge'],
-    dependencies: required.map((id) => ({ projectId: id, versionId: null, kind: 'required' as const })),
+    dependencies: required.map((id) => ({
+      projectId: id,
+      versionId: null,
+      kind: 'required' as const,
+    })),
     files: [],
   }
 }
@@ -48,10 +52,7 @@ test('声明了 required 但清单里没有 → UNVERIFIED_DEPENDENCY（warning�
 })
 
 test('依赖在清单里就不报；多个模组依赖同一个缺失项时合并', () => {
-  assert.equal(
-    cfDependencyFindings(instance(['1', '2']), [info('1', 'A', ['2'])]).length,
-    0,
-  )
+  assert.equal(cfDependencyFindings(instance(['1', '2']), [info('1', 'A', ['2'])]).length, 0)
 
   const merged = cfDependencyFindings(instance(['1', '2']), [
     info('1', 'A', ['999']),

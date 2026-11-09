@@ -53,10 +53,7 @@ export interface PlanOptions {
  * 只处理「缺依赖」这一类问题——版本不匹配、声明不兼容都不是装一个东西能解决的，
  * 硬塞进 plan 只会让消费者误以为能一键修复。
  */
-export function buildRepairPlan(
-  closure: ClosureResult,
-  opts: PlanOptions = {},
-): RepairPlan {
+export function buildRepairPlan(closure: ClosureResult, opts: PlanOptions = {}): RepairPlan {
   const installs: PlannedInstall[] = []
   const manual: ManualFix[] = []
   const confidence: InstallConfidence = opts.verified === false ? 'unverified' : 'verified'

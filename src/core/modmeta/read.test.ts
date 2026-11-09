@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { strToU8, zipSync } from 'fflate'
-
-import { NON_MOD_DEPENDENCY_IDS } from './types.js'
 import { readModMetadata } from './read.js'
+import { NON_MOD_DEPENDENCY_IDS } from './types.js'
 
 function jar(files: Record<string, string>): Uint8Array {
   const entries: Record<string, Uint8Array> = {}
@@ -352,7 +351,13 @@ test('Forge 的 jar-in-jar 在 META-INF/jarjar/，子模块要读出来', () => 
   const sub = (id: string, version: string) =>
     zipSync({
       'META-INF/mods.toml': strToU8(
-        ['modLoader="javafml"', 'loaderVersion="[47,)"', '[[mods]]', `modId="${id}"`, `version="${version}"`].join('\n'),
+        [
+          'modLoader="javafml"',
+          'loaderVersion="[47,)"',
+          '[[mods]]',
+          `modId="${id}"`,
+          `version="${version}"`,
+        ].join('\n'),
       ),
     })
 
@@ -379,4 +384,89 @@ test('Forge 的 jar-in-jar 在 META-INF/jarjar/，子模块要读出来', () => 
   assert.ok(meta)
   const ids = (meta.nested ?? []).map((n) => n.modId).sort()
   assert.deepEqual(ids, ['fabric-api-base', 'fabric-resource-loader-v0'])
+})
+
+test('NeoForge 1.20.5+ 的 type 字段：optional / incompatible 不是必需', () => {
+  const buf = jar({
+    'META-INF/neoforge.mods.toml': `
+modLoader = "javafml"
+loaderVersion = "[4,)"
+[[mods]]
+modId = "example"
+version = "1.0.0"
+displayName = "Example"
+[[dependencies.example]]
+modId = "minecraft"
+type = "required"
+versionRange = "[1.21,1.22)"
+[[dependencies.example]]
+modId = "jei"
+type = "optional"
+versionRange = "[1.0,)"
+[[dependencies.example]]
+modId = "bad"
+type = "incompatible"
+[[dependencies.example]]
+modId = "legacy"
+mandatory = false
+`,
+  })
+  const meta = readModMetadata(buf)
+  assert.ok(meta)
+  const byId = new Map(meta.dependencies.map((d) => [d.modId, d]))
+  assert.equal(byId.get('minecraft')?.mandatory, true)
+  assert.equal(byId.get('jei')?.mandatory, false)
+  assert.equal(byId.get('bad')?.mandatory, false)
+  assert.equal(byId.get('legacy')?.mandatory, false)
+})
+
+test('显式 mandatory 优先于 type（老写法不能被新字段改写）', () => {
+  const buf = jar({
+    'META-INF/mods.toml': `
+modLoader = "javafml"
+[[mods]]
+modId = "example"
+version = "1.0.0"
+[[dependencies.example]]
+modId = "jei"
+mandatory = true
+type = "optional"
+`,
+  })
+  const meta = readModMetadata(buf)
+  assert.equal(meta?.dependencies.find((d) => d.modId === 'jei')?.mandatory, true)
+})
+
+test('Fabric breaks 解析为 kind=breaks，且不是 mandatory', () => {
+  const buf = jar({
+    'fabric.mod.json': JSON.stringify({
+      schemaVersion: 1,
+      id: 'a',
+      version: '1.0.0',
+      breaks: { b: '<1.0' },
+    }),
+  })
+  const meta = readModMetadata(buf)
+  const dep = meta?.dependencies.find((d) => d.modId === 'b')
+  assert.equal(dep?.kind, 'breaks')
+  assert.equal(dep?.mandatory, false)
+  assert.equal(dep?.versionRange, '<1.0')
+})
+
+test('NeoForge type=incompatible 解析为 kind=breaks', () => {
+  const buf = jar({
+    'META-INF/neoforge.mods.toml': `
+modLoader = "javafml"
+[[mods]]
+modId = "a"
+version = "1.0.0"
+[[dependencies.a]]
+modId = "b"
+type = "incompatible"
+`,
+  })
+  const meta = readModMetadata(buf)
+  const dep = meta?.dependencies.find((d) => d.modId === 'b')
+  assert.equal(dep?.kind, 'breaks')
+  assert.equal(dep?.mandatory, false)
 })

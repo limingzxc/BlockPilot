@@ -27,10 +27,7 @@ export function libraryKey(lib: Library): string {
   }`
 }
 
-function mergeLibraries(
-  parent: readonly Library[],
-  child: readonly Library[],
-): readonly Library[] {
+function mergeLibraries(parent: readonly Library[], child: readonly Library[]): readonly Library[] {
   const map = new Map<string, Library>()
   for (const lib of parent) map.set(libraryKey(lib), lib)
   // 子覆盖父：后写入的赢
@@ -71,9 +68,10 @@ function overlay(parent: VersionJson, child: Partial<VersionJson>): VersionJson 
  * 全在父 JSON 里。替换掉就启动不了。
  */
 export function mergeVersionJson(parent: VersionJson, child: VersionJson): VersionJson {
+  const args = mergeArguments(parent.arguments, child.arguments)
   return overlay(parent, {
     ...child,
     libraries: mergeLibraries(parent.libraries, child.libraries ?? []),
-    arguments: mergeArguments(parent.arguments, child.arguments),
+    ...(args === undefined ? {} : { arguments: args }),
   })
 }

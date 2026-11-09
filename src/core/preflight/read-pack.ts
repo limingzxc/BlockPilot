@@ -10,12 +10,14 @@
  * 目录扫描不进这个 module：它返回的不是 Instance 而是 ScannedMod 明细，
  * 那是 preflight 离线检查的输入，与「整合包文件」是两件事。
  */
+
+import { errMessage } from '../errors.js'
 import type { Instance } from '../instance.js'
-import { mrpackToInstance, readMrpackIndex } from './mrpack.js'
-import type { MrpackIndex } from './mrpack.js'
-import { readCurseforgePack } from './curseforge.js'
-import type { CurseforgeManifest } from './curseforge.js'
 import { countOverridesMods } from '../setup/pack.js'
+import type { CurseforgeManifest } from './curseforge.js'
+import { readCurseforgePack } from './curseforge.js'
+import type { MrpackIndex } from './mrpack.js'
+import { mrpackToInstance, readMrpackIndex } from './mrpack.js'
 
 export type PackFileKind = 'mrpack' | 'curseforge'
 
@@ -26,20 +28,36 @@ export interface PackAbility {
   readonly checksMods: boolean
 }
 
-export interface PackFileRead {
+export interface PackFileBase {
   readonly kind: PackFileKind
   readonly instance: Instance
   readonly ability: PackAbility
-  /** mrpack 才有：CF 的文件清单只有 projectID/fileID，没有 URL */
-  readonly mrpackIndex?: MrpackIndex
-  /** CurseForge 才有：deploy 要拿它的 files 去换下载地址 */
-  readonly curseforgeManifest?: CurseforgeManifest
   /**
    * overrides/mods 里的 jar 数。它们不需要 API key、解压后直接进 mods/，
    * 但不算在清单里——不单独报出来，「271 个模组」和日志里的「Loading 304 mods」对不上。
    */
   readonly overridesMods: number
 }
+
+/** mrpack：清单自带下载地址与哈希。 */
+export interface MrpackFileRead extends PackFileBase {
+  readonly kind: 'mrpack'
+  readonly mrpackIndex: MrpackIndex
+}
+
+/** CurseForge：清单只有 projectID/fileID，deploy 要拿它去换下载地址。 */
+export interface CurseforgeFileRead extends PackFileBase {
+  readonly kind: 'curseforge'
+  readonly curseforgeManifest: CurseforgeManifest
+}
+
+/**
+ * 判别联合，而不是「两个可选字段 + 调用方自己 `!`」。
+ *
+ * 判别联合让 `kind` 一收窄两个字段都确定存在，调用方不必写
+ * `pack.curseforgeManifest!`——非空断言会把「格式判断错了」变成运行时崩溃。
+ */
+export type PackFileRead = MrpackFileRead | CurseforgeFileRead
 
 /**
  * 读一个整合包文件。两种格式都读不出就抛错（调用方转成 BAD_MODPACK）。
@@ -73,8 +91,6 @@ export function readPackFile(path: string): PackFileRead {
       overridesMods: countOverridesMods(path),
     }
   } catch {
-    throw new Error(
-      `无法解析整合包：${mrpackError instanceof Error ? mrpackError.message : String(mrpackError)}`,
-    )
+    throw new Error(`无法解析整合包：${errMessage(mrpackError)}`)
   }
 }

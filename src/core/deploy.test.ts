@@ -12,17 +12,17 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { strToU8, zipSync } from 'fflate'
-
-import { collect, defineOperation } from './operation.js'
-import { Op } from './events.js'
-import type { OpEvent } from './events.js'
-import { createDeploy } from './deploy.js'
-import { createPreflight } from './preflight/index.js'
-import type { HostProfile } from './instance.js'
 import type { CurseforgeSource } from '../sources/curseforge.js'
 import type { DeployResult } from './deploy.js'
-import { resolveLayout } from './layout.js'
+import { createDeploy, SUPPORTED_LOADERS } from './deploy.js'
+import type { OpEvent } from './events.js'
+import { Op } from './events.js'
+import { readLock } from './instance/lock.js'
 import { scanInstanceDir } from './instance/scan.js'
+import type { HostProfile, LoaderKind } from './instance.js'
+import { resolveLayout } from './layout.js'
+import { collect, defineOperation } from './operation.js'
+import { createPreflight } from './preflight/index.js'
 
 function withTemp(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'bp-deploy-'))
@@ -69,9 +69,11 @@ const fakeLoader = (versionId: string) =>
     yield Op.done()
   })
 
-function collectEvents(
-  gen: AsyncIterable<OpEvent<DeployResult>>,
-): Promise<{ events: OpEvent<DeployResult>[]; result?: DeployResult; failed?: { code: string } }> {
+function collectEvents(gen: AsyncIterable<OpEvent<DeployResult>>): Promise<{
+  events: OpEvent<DeployResult>[]
+  result: DeployResult | undefined
+  failed: { code: string } | undefined
+}> {
   return (async () => {
     const events: OpEvent<DeployResult>[] = []
     let result: DeployResult | undefined
@@ -102,6 +104,14 @@ test('完整编排：结果里的 playableVersionId 来自 loader 的契约', as
     assert.equal(result.loaderKind, 'fabric')
     assert.equal(result.mods, 0)
     assert.equal(result.failed.length, 0)
+
+    // 部署完成要留下可核对的清单：verify / update 的前提
+    const lock = readLock(layout.gameDir)
+    assert.ok(lock, '应写入 .blockpilot/lock.json')
+    assert.equal(lock.complete, true)
+    assert.equal(lock.pack.name, 'Test Pack')
+    assert.equal(lock.target.loader.kind, 'fabric')
+    assert.equal(result.lockPath !== undefined, true)
   })
 })
 
@@ -208,7 +218,10 @@ test('CurseForge 包没有 key：降级安装，清单文件进 failed 而不是
       layout: resolveLayout(dir, 'test'),
       // 不读环境变量：这条用例要验的是「没 key 时的行为」
       curseforge: { configured: false } as unknown as CurseforgeSource,
-      deps: { vanilla: () => fakeVanilla(), loader: () => fakeLoader('fabric-loader-0.15.11-1.20.1') },
+      deps: {
+        vanilla: () => fakeVanilla(),
+        loader: () => fakeLoader('fabric-loader-0.15.11-1.20.1'),
+      },
     })
     const { events, result } = await collectEvents(op.run(new AbortController().signal))
 
@@ -222,7 +235,7 @@ test('CurseForge 包没有 key：降级安装，清单文件进 failed 而不是
   })
 })
 
-test('不支持的加载器：UNSUPPORTED_LOADER', async () => {
+test('Quilt 已在支持列表里，不再报 UNSUPPORTED_LOADER', async () => {
   await withTemp(async (dir) => {
     const layout = resolveLayout(dir, 'test')
     const op = createDeploy({
@@ -230,7 +243,9 @@ test('不支持的加载器：UNSUPPORTED_LOADER', async () => {
       layout,
     })
     const { failed } = await collectEvents(op.run(new AbortController().signal))
-    assert.equal(failed?.code, 'UNSUPPORTED_LOADER')
+    assert.notEqual(failed?.code, 'UNSUPPORTED_LOADER')
+    assert.equal(SUPPORTED_LOADERS.has('quilt'), true)
+    assert.equal(SUPPORTED_LOADERS.has('liteloader' as LoaderKind), false)
   })
 })
 
@@ -260,13 +275,10 @@ test('部署成功后写版本标记：preflight 能直接认出游戏版本与�
     })
     await collect(op)
 
-    const marker = JSON.parse(
-      readFileSync(join(layout.gameDir, 'mmc-pack.json'), 'utf8'),
-    ) as { components?: { uid?: string; version?: string }[] }
-    assert.equal(
-      marker.components?.find((c) => c.uid === 'net.minecraft')?.version,
-      '1.20.1',
-    )
+    const marker = JSON.parse(readFileSync(join(layout.gameDir, 'mmc-pack.json'), 'utf8')) as {
+      components?: { uid?: string; version?: string }[]
+    }
+    assert.equal(marker.components?.find((c) => c.uid === 'net.minecraft')?.version, '1.20.1')
     assert.equal(
       marker.components?.find((c) => c.uid === 'net.fabricmc.fabric-loader')?.version,
       '0.16.14',

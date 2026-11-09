@@ -1,6 +1,6 @@
 import { Op } from '../events.js'
-import { defineOperation } from '../operation.js'
 import type { Operation } from '../operation.js'
+import { defineOperation } from '../operation.js'
 import { detectJava } from './detect.js'
 import type { JavaScanResult } from './types.js'
 

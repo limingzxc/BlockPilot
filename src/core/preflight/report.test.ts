@@ -33,3 +33,12 @@ test('不给 plan 时是空计划，不是 undefined；target 缺省不带', () 
   assert.deepEqual(r.plan, { installs: [], manual: [] })
   assert.equal(r.target, undefined)
 })
+
+test('generatedAt 来自注入的时钟，装配函数不直接读系统时间', () => {
+  const r = assembleReport({
+    findings: [],
+    stats: { mods: 0, resolved: 0, unresolved: 0 },
+    now: () => new Date('2026-01-02T03:04:05.000Z'),
+  })
+  assert.equal(r.generatedAt, '2026-01-02T03:04:05.000Z')
+})

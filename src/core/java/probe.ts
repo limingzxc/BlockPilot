@@ -37,10 +37,7 @@ export function majorOf(version: string): number {
   return Number.isFinite(head) ? head : 0
 }
 
-export async function probeJava(
-  path: string,
-  source: JavaSource,
-): Promise<JavaInstall | null> {
+export async function probeJava(path: string, source: JavaSource): Promise<JavaInstall | null> {
   try {
     const { stderr } = await execFileAsync(path, ['-XshowSettings:properties', '-version'], {
       timeout: PROBE_TIMEOUT_MS,

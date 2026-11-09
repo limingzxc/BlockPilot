@@ -1,26 +1,24 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { unzipSync } from 'fflate'
-
-import { Op } from '../events.js'
-import type { OpEvent } from '../events.js'
-import { defineOperation } from '../operation.js'
-import type { Operation } from '../operation.js'
-import { downloadOne } from '../download/downloader.js'
 import { runDownloadBatch } from '../download/batch.js'
 import { defaultSources } from '../download/sources.js'
-import type { DownloadSource, DownloadTask } from '../download/types.js'
+import type { DownloadTask, Mirror } from '../download/types.js'
+import { Op } from '../events.js'
 import { writeInstanceMarker } from '../instance/marker.js'
+import { pickLibraries } from '../launch/command.js'
+import { detectEnv, type LaunchEnv } from '../launch/env.js'
 import type { Layout } from '../layout.js'
+import type { Operation } from '../operation.js'
+import { defineOperation } from '../operation.js'
+import { safeJoin } from '../safe-path.js'
 import { fetchVersionJson } from '../version/fetch.js'
 import type { Library, VersionFileRef, VersionJson } from '../version/types.js'
-import { detectEnv, type LaunchEnv } from '../launch/env.js'
-import { pickLibraries } from '../launch/command.js'
 
 export interface VanillaSetupOptions {
   readonly layout: Layout
   readonly versionId: string
-  readonly sources?: readonly DownloadSource[]
+  readonly sources?: readonly Mirror[]
   readonly concurrency?: number
   readonly mirror?: boolean
   /** 只打印任务不下载 */
@@ -127,6 +125,7 @@ export function buildVanillaTasks(
  */
 export function usesSplitNatives(version: VersionJson): boolean {
   const jvm = version.arguments?.jvm ?? []
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: 这是版本 JSON 里的字面量，不是模板
   return jvm.some((a) => typeof a === 'string' && a.includes('${natives_directory}/java'))
 }
 
@@ -171,9 +170,9 @@ export function extractNatives(version: VersionJson, env: LaunchEnv, layout: Lay
     const exclude = lib.extract?.exclude ?? ['META-INF/']
     for (const [name, data] of Object.entries(entries)) {
       if (name.endsWith('/')) continue
-      if (name.includes('..')) continue
       if (exclude.some((e) => name.startsWith(e))) continue
-      const out = join(dir, name)
+      const out = safeJoin(dir, name)
+      if (out === null) continue
       mkdirSync(dirname(out), { recursive: true })
       writeFileSync(out, data)
       count += 1
@@ -206,9 +205,9 @@ export function extractNativeJars(
     }
     for (const [name, data] of Object.entries(entries)) {
       if (name.endsWith('/')) continue
-      if (name.includes('..')) continue
       if (exclude.some((e) => name.startsWith(e))) continue
-      const out = join(destDir, name)
+      const out = safeJoin(destDir, name)
+      if (out === null) continue
       mkdirSync(dirname(out), { recursive: true })
       writeFileSync(out, data)
       count += 1
@@ -263,7 +262,12 @@ export function createVanillaSetup(opts: VanillaSetupOptions): Operation<Vanilla
       sources,
       concurrency,
       signal,
-      codes: { ok: 'setup.ok', cached: 'setup.cached', failed: 'setup.failed', progressId: 'setup' },
+      codes: {
+        ok: 'setup.ok',
+        cached: 'setup.cached',
+        failed: 'setup.failed',
+        progressId: 'setup',
+      },
     })
 
     const nativesExtracted = extractNatives(version, env, opts.layout)

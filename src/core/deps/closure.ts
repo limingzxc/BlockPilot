@@ -1,5 +1,5 @@
-import type { DepFilter, DependencyResolver, VersionInfo } from '../sources.js'
 import type { Finding } from '../preflight/types.js'
+import type { DependencyResolver, DepFilter, VersionInfo } from '../sources.js'
 
 export interface MissingDep {
   readonly projectId: string
@@ -146,6 +146,7 @@ export function closureToFindings(
             ? `${by}${more} 需要前置模组 ${label(m.projectId)}，元数据里没有兼容版本（也可能已内置在某个模组里）`
             : `${by}${more} 需要前置模组 ${label(m.projectId)}，整合包里没有它（可能已内置在某个模组里）`,
         subject: m.projectId,
+        data: { projectId: m.projectId, requiredBy: m.requiredBy },
         hint: '整合包常把依赖打在 jar-in-jar 里；装完跑一次 preflight <实例目录> 确认，确有缺失再补装',
       })
       continue
@@ -156,6 +157,7 @@ export function closureToFindings(
         code: 'MISSING_DEPENDENCY',
         message: `${by}${more} 需要前置模组 ${label(m.projectId)}，它不在实例中`,
         subject: m.projectId,
+        data: { projectId: m.projectId, requiredBy: m.requiredBy },
         hint: `可安装 ${m.resolved.name}`,
       })
     } else {
@@ -164,6 +166,7 @@ export function closureToFindings(
         code: 'UNSATISFIABLE_DEPENDENCY',
         message: `${by}${more} 需要前置模组 ${label(m.projectId)}，但找不到兼容当前游戏版本与加载器的版本`,
         subject: m.projectId,
+        data: { projectId: m.projectId, requiredBy: m.requiredBy },
         hint: '需要降级游戏版本、更换加载器，或找替代模组',
       })
     }
@@ -174,7 +177,7 @@ export function closureToFindings(
       severity: 'warning',
       code: 'DEPENDENCY_CYCLE',
       message: `检测到循环依赖：${cycle.join(' → ')}`,
-      subject: cycle[0],
+      ...(cycle[0] === undefined ? {} : { subject: cycle[0] }),
       hint: '多数加载器能容忍这种声明，但它通常意味着模组元数据有误',
     })
   }

@@ -4,8 +4,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { authStorePath, loadStore, pickAccount, removeAccount, saveStore, upsertAccount } from './store.js'
-import { AuthError, type AuthAccount } from './types.js'
+import {
+  authStorePath,
+  loadStore,
+  pickAccount,
+  removeAccount,
+  saveStore,
+  upsertAccount,
+} from './store.js'
+import { type AuthAccount, AuthError } from './types.js'
 
 function acc(uuid: string, name: string): AuthAccount {
   return {
@@ -52,7 +59,7 @@ test('pickAccount：按名字大小写不敏感，按 uuid 也认，缺省取 ac
     const store = loadStore(path)
     assert.equal(pickAccount(store, 'notch')?.uuid, A.uuid)
     assert.equal(pickAccount(store, A.uuid.toUpperCase())?.uuid, A.uuid)
-    assert.equal(pickAccount(store, A.uuid.slice(0, 8) + '-' + A.uuid.slice(8))?.uuid, A.uuid)
+    assert.equal(pickAccount(store, `${A.uuid.slice(0, 8)}-${A.uuid.slice(8)}`)?.uuid, A.uuid)
     assert.equal(pickAccount(store)?.uuid, B.uuid, '最后写入的是 active')
     assert.equal(pickAccount(store, 'nobody'), null)
   })
@@ -119,5 +126,64 @@ test('空存档：没有账号也不报错', () => {
     const store = loadStore(path)
     assert.deepEqual(store.accounts, [])
     assert.equal(pickAccount(store), null)
+  })
+})
+
+test('有系统凭据存储时 refresh_token 不落盘，load 时取回', () => {
+  withDir((_, path) => {
+    const saved = new Map<string, string>()
+    const credentials = {
+      kind: 'keychain' as const,
+      get: (k: string) => saved.get(k) ?? null,
+      set: (k: string, v: string) => {
+        saved.set(k, v)
+        return true
+      },
+      delete: (k: string) => {
+        saved.delete(k)
+      },
+    }
+    const withToken: AuthAccount = { ...A, refreshToken: 'rt-secret' }
+    upsertAccount(path, withToken, credentials)
+
+    const text = readFileSync(path, 'utf8')
+    assert.doesNotMatch(text, /rt-secret/, 'refresh_token 不应写进文件')
+    assert.equal(saved.get(A.uuid), 'rt-secret')
+
+    const loaded = loadStore(path, credentials)
+    assert.equal(loaded.accounts[0]?.refreshToken, 'rt-secret')
+  })
+})
+
+test('凭据存储写失败时留在文件里，不制造「以为存了」', () => {
+  withDir((_, path) => {
+    const broken = {
+      kind: 'keychain' as const,
+      get: () => null,
+      set: () => false,
+      delete: () => {},
+    }
+    upsertAccount(path, { ...A, refreshToken: 'rt-fallback' }, broken)
+    assert.match(readFileSync(path, 'utf8'), /rt-fallback/)
+  })
+})
+
+test('移除账号时同时删掉钥匙串条目', () => {
+  withDir((_, path) => {
+    const saved = new Map<string, string>()
+    const credentials = {
+      kind: 'keychain' as const,
+      get: (k: string) => saved.get(k) ?? null,
+      set: (k: string, v: string) => {
+        saved.set(k, v)
+        return true
+      },
+      delete: (k: string) => {
+        saved.delete(k)
+      },
+    }
+    upsertAccount(path, { ...A, refreshToken: 'rt' }, credentials)
+    assert.equal(removeAccount(path, A.uuid, credentials), true)
+    assert.equal(saved.has(A.uuid), false)
   })
 })

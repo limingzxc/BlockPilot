@@ -12,8 +12,9 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { collect } from '../operation.js'
-import { createLauncher } from './run.js'
 import type { LaunchPlan } from './plan.js'
+import type { RunResult } from './run.js'
+import { createLauncher } from './run.js'
 
 function planWith(script: string, cwd: string): LaunchPlan {
   return {
@@ -39,7 +40,10 @@ function withTemp(fn: (dir: string) => Promise<void>): Promise<void> {
 
 test('正常退出：退出码 0、行数正确、日志落盘', async () => {
   await withTemp(async (dir) => {
-    const plan = planWith('console.log("hello game"); console.log("ERROR boom"); process.exit(0)', dir)
+    const plan = planWith(
+      'console.log("hello game"); console.log("ERROR boom"); process.exit(0)',
+      dir,
+    )
     const r = await collect(createLauncher({ plan, logsDir: join(dir, 'logs') }))
     assert.equal(r.exitCode, 0)
     assert.equal(r.crashed, false)
@@ -63,9 +67,38 @@ test('异常退出：crashed=true，退出码原样透出', async () => {
   })
 })
 
+test('会话令牌在 tail、日志与事件里都被脱敏', async () => {
+  await withTemp(async (dir) => {
+    const uuid = '00000000000000000000000000000000'
+    const plan = planWith(
+      `console.log("Session ID is token:supersecret:${uuid}"); console.log("--accessToken abc.def")`,
+      dir,
+    )
+    const lines: string[] = []
+    for await (const ev of createLauncher({ plan, logsDir: join(dir, 'logs') }).run(
+      new AbortController().signal,
+    )) {
+      if (ev.type === 'log' && ev.code === 'game.output') {
+        lines.push((ev.data as { line: string }).line)
+      }
+    }
+    const r = await collect(createLauncher({ plan, logsDir: join(dir, 'logs2') }))
+    const written = readFileSync(r.logPath ?? '', 'utf8')
+
+    for (const text of [...lines, ...r.tail, written]) {
+      assert.doesNotMatch(text, /supersecret/)
+      assert.doesNotMatch(text, /abc\.def/)
+    }
+    assert.ok(lines.some((l) => l.includes(`token:***:${uuid}`)))
+  })
+})
+
 test('崩溃行的级别是 error（下游 consumer 靠它做 --quiet 过滤）', async () => {
   await withTemp(async (dir) => {
-    const plan = planWith('console.log("plain line"); console.log("FATAL kaboom"); process.exit(1)', dir)
+    const plan = planWith(
+      'console.log("plain line"); console.log("FATAL kaboom"); process.exit(1)',
+      dir,
+    )
     const op = createLauncher({ plan })
     const levels: { code: string; level: string }[] = []
     for await (const ev of op.run(new AbortController().signal)) {
@@ -73,7 +106,10 @@ test('崩溃行的级别是 error（下游 consumer 靠它做 --quiet 过滤）'
         levels.push({ code: ev.code, level: ev.level })
       }
     }
-    assert.deepEqual(levels.map((l) => l.level), ['info', 'error'])
+    assert.deepEqual(
+      levels.map((l) => l.level),
+      ['info', 'error'],
+    )
   })
 })
 
@@ -83,7 +119,7 @@ test('autoStopSeconds 到点杀进程：stopped=true、crashed=false 且发出 a
     const plan = planWith('setTimeout(() => {}, 30000)', dir)
     const events: string[] = []
     const op = createLauncher({ plan, autoStopSeconds: 0.4 })
-    let result
+    let result: RunResult | undefined
     for await (const ev of op.run(new AbortController().signal)) {
       if (ev.type === 'log') events.push(ev.code)
       if (ev.type === 'result') result = ev.value

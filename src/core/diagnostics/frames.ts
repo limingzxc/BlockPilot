@@ -148,7 +148,7 @@ export function rootCauseStart(lines: readonly string[]): number {
   let found = 0
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i]
-    if (line !== undefined && line.includes('Caused by:')) found = i
+    if (line?.includes('Caused by:')) found = i
   }
   return found
 }

@@ -32,7 +32,9 @@ export interface Library {
 }
 
 /** 1.13+ 的参数可以是裸字符串，也可以是带 rules 的对象。 */
-export type ArgEntry = string | { readonly rules?: readonly Rule[]; readonly value: string | readonly string[] }
+export type ArgEntry =
+  | string
+  | { readonly rules?: readonly Rule[]; readonly value: string | readonly string[] }
 
 export interface VersionJson {
   readonly id: string
@@ -43,7 +45,12 @@ export interface VersionJson {
   readonly inheritsFrom?: string
   /** 显式指定要用哪个版本的 client jar。极少出现，没写就用根版本 */
   readonly jar?: string
-  readonly assetIndex?: { readonly id: string; readonly sha1: string; readonly size: number; readonly url: string }
+  readonly assetIndex?: {
+    readonly id: string
+    readonly sha1: string
+    readonly size: number
+    readonly url: string
+  }
   readonly downloads?: {
     readonly client?: VersionFileRef
     readonly server?: VersionFileRef

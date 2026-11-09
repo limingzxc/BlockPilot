@@ -1,0 +1,5 @@
+#!/bin/sh
+# 提交前只跑快检查；全量测试交给 npm run check / CI。
+set -e
+npm run lint
+npm run typecheck

@@ -49,10 +49,7 @@ test('部分缺失按 warning；装齐了不报', () => {
         writeFileSync(join(objectsDir, hash.slice(0, 2), hash), 'x')
       }
     }
-    writeFileSync(
-      join(root, 'assets', 'indexes', '1.21.1.json'),
-      JSON.stringify({ objects }),
-    )
+    writeFileSync(join(root, 'assets', 'indexes', '1.21.1.json'), JSON.stringify({ objects }))
 
     const partial = checkAssets(instanceDir, '1.21.1').find((f) => f.code === 'ASSETS_MISSING')
     assert.ok(partial)

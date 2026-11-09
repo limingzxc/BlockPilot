@@ -54,11 +54,32 @@ registry 上有个废弃的同名包，装出来会打印 `This is not the tsc c
 
 | 命令 | 覆盖 |
 |---|---|
+| `npm run lint` | Biome：格式 + lint（含 core 禁止 console） |
 | `npm run typecheck` | `src/**` + `scripts/**`（两个 tsconfig） |
 | `npm test` | `src/**/*.test.ts` + `scripts/**/*.test.ts`，全离线 |
 | `npm run e2e` | T0 + T1（约 30 s） |
 | `npm run e2e -- --tier 3 --only E2E-301` | 真启动，会开游戏窗口 |
 | `npm run smoke` | MCP 工具清单 + diag 结构化输出 |
+| `npm run smoke:entry` | 构建后按包名 import，校验 `exports` 与公共 API |
 | `npm run smoke:auth` | 认证请求形状探针（真实端点 + 无效令牌，需要网络） |
+| `npm run check` | lint + typecheck + test，提交前一条命令 |
 
 迭代时只跑改到的文件（`npx tsx --test src/core/xxx.test.ts`），提交前跑全量。
+
+
+## 上游接口（实测 2026-11-09）
+
+以下形状用 curl / 真实请求确认过；再遇到「接口是不是变了」先跑一条最小请求，不要凭记忆改解析。
+
+| 服务 | 端点 | 要点 |
+|---|---|---|
+| Modrinth | `GET https://api.modrinth.com/v2/project/<slug>/version` | slug 与 8 位 id 都接受；版本数组里 `version_type=release` 优先；CDN 地址形如 `cdn.modrinth.com/data/<projectId>/versions/<versionId>/<file>`，可反推 project/version |
+| Modrinth 镜像 | `https://mod.mcimirror.top/modrinth/v2` | `--china` 时用于元数据；路径与官方一致 |
+| Quilt Meta | `GET https://meta.quiltmc.org/v3/versions/loader/<mc>` | 列表**不保证顺序**，不能拿 `[0]` 当最新；按 semver 取最大。profile 路径 `.../<loader>/profile/json`，形状与 Fabric 相同 |
+| CurseForge 镜像 | `GET https://mod.mcimirror.top/curseforge/v1/mods/<id>/files?gameVersion=<mc>&modLoaderType=<n>&pageSize=1` | 免 key；批量 `POST /mods/files` 没有代理。`modLoaderType`：1=Forge、4=Fabric、5=Quilt、6=NeoForge |
+| CurseForge 官方 | `GET https://api.curseforge.com/v1/mods/<id>/files?...` | 需要 `x-api-key`；无 key 返回 403 |
+| NeoForge Maven | `GET https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml` | 版本前缀：1.20.2+ → `20.<patch>`，1.21+ → `21.<patch>`；取前缀下最大 semver |
+| Forge promotions | `GET https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json` | key 形如 `1.20.1-recommended` / `1.20.1-latest` |
+
+Quilt 的列表顺序、CF 镜像的批量限制、NeoForge 的前缀规则都曾让实现走弯路；改动这些解析前先看
+`src/core/sources/` 里对应文件的注释与测试。

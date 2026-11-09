@@ -1,6 +1,6 @@
 # 0021. CurseForge：能读的不装，装不了的不骗
 
-- **Status**: Accepted
+- **Status**: Accepted（CF 的安装边界已被 ADR-0032 / ADR-0036 部分取代）
 - **Date**: 2026-10-25
 - **Deciders**: @liming
 - **Depends on**: ADR-0002, ADR-0004

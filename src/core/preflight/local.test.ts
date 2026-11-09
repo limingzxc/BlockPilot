@@ -62,3 +62,65 @@ test('损坏的 jar 报 warning，并点出文件名；缺元数据的正常 jar
     },
   )
 })
+
+test('重复 modId：两份 jar 都算 blocker', () => {
+  withInstances(
+    {
+      'a.jar': zipSync({
+        'fabric.mod.json': strToU8(JSON.stringify({ id: 'dup', version: '1.0.0' })),
+      }),
+      'b.jar': zipSync({
+        'fabric.mod.json': strToU8(JSON.stringify({ id: 'dup', version: '1.0.1' })),
+      }),
+    },
+    (scan) => {
+      const findings = checkLocalInstance(scan, { gameVersion: '1.20.1', loaderVersion: '0.15.11' })
+      const dup = findings.find((f) => f.code === 'DUPLICATE_MOD')
+      assert.ok(dup, '要报 DUPLICATE_MOD')
+      assert.equal(dup.severity, 'blocker')
+      assert.match(dup.hint ?? '', /a\.jar/)
+      assert.match(dup.hint ?? '', /b\.jar/)
+    },
+  )
+})
+
+test('加载器不匹配：Fabric 实例里的 Forge 模组给 warning', () => {
+  withInstances(
+    {
+      'forgeonly.jar': zipSync({
+        'META-INF/mods.toml': strToU8(
+          'modLoader = "javafml"\n[[mods]]\nmodId = "forgeonly"\nversion = "1.0.0"',
+        ),
+      }),
+    },
+    (scan) => {
+      const findings = checkLocalInstance(scan, { gameVersion: '1.20.1', loaderVersion: '0.15.11' })
+      const mismatch = findings.find((f) => f.code === 'LOADER_MISMATCH')
+      assert.ok(mismatch, '要报 LOADER_MISMATCH')
+      assert.equal(mismatch.severity, 'warning')
+      assert.match(mismatch.message, /forge.*fabric/i)
+    },
+  )
+})
+
+test('breaks：声明互斥的两个模组都在实例里 → DECLARED_INCOMPATIBLE', () => {
+  withInstances(
+    {
+      'a.jar': zipSync({
+        'fabric.mod.json': strToU8(
+          JSON.stringify({ id: 'a', version: '1.0.0', breaks: { b: '*' } }),
+        ),
+      }),
+      'b.jar': zipSync({
+        'fabric.mod.json': strToU8(JSON.stringify({ id: 'b', version: '1.0.0' })),
+      }),
+    },
+    (scan) => {
+      const findings = checkLocalInstance(scan, { gameVersion: '1.20.1', loaderVersion: '0.15.11' })
+      const bad = findings.find((f) => f.code === 'DECLARED_INCOMPATIBLE')
+      assert.ok(bad, '要报 DECLARED_INCOMPATIBLE')
+      assert.equal(bad.severity, 'blocker')
+      assert.match(bad.message, /a.*b/)
+    },
+  )
+})

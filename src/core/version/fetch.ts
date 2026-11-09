@@ -1,3 +1,4 @@
+import { BlockPilotError } from '../errors.js'
 import { fetchJson } from '../http.js'
 import type { VersionJson, VersionManifest } from './types.js'
 
@@ -17,9 +18,9 @@ export interface VersionFetchOptions {
  * 单独一个类型只是为了给 CLI 一个稳定错误码：「你给的名字不存在」是最常见的
  * 失败之一（少跑一次 deploy、抄错版本号），不该显示成 `unexpected error: Error: ...`。
  */
-export class VersionNotFoundError extends Error {
+export class VersionNotFoundError extends BlockPilotError {
   constructor(readonly versionId: string) {
-    super(`版本不存在：${versionId}`)
+    super('VERSION_NOT_FOUND', `版本不存在：${versionId}`)
     this.name = 'VersionNotFoundError'
   }
 }

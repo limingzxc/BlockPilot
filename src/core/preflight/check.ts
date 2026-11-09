@@ -1,8 +1,8 @@
-import type { HostProfile, Instance, LoaderKind } from '../instance.js'
-import type { VersionInfo } from '../sources.js'
-import { compareVersions, satisfiesRange } from '../semver.js'
 import { javaInstallHint } from '../hints.js'
+import type { HostProfile, Instance, LoaderKind } from '../instance.js'
 import { requiredJavaMajor } from '../java/types.js'
+import { compareVersions, satisfiesRange } from '../semver.js'
+import type { VersionInfo } from '../sources.js'
 import type { Finding } from './types.js'
 
 export interface CheckInput {
@@ -96,6 +96,8 @@ export function checkJava(
   instance: Instance,
   host: HostProfile,
   requirements: readonly JavaRequirement[] = [],
+  /** 版本 JSON 的 `javaVersion.majorVersion`。给了就以它为准，表只是兜底 */
+  opts: { readonly javaMajor?: number } = {},
 ): readonly Finding[] {
   const findings: Finding[] = []
 
@@ -120,7 +122,7 @@ export function checkJava(
     return findings
   }
 
-  const need = requiredJavaMajor(instance.gameVersion)
+  const need = opts.javaMajor ?? requiredJavaMajor(instance.gameVersion)
   const exact = host.javaMajors.includes(need)
   const newer = host.javaMajors.filter((j) => j > need)
   const older = host.javaMajors.filter((j) => j < need)
@@ -165,6 +167,47 @@ export function checkJava(
 }
 
 /**
+ * 物理内存与模组规模的粗判。
+ *
+ * `HostProfile.totalMemoryMiB` 一直在采集，但从来没用过——于是 3 GB 内存的机器
+ * 装 300 个模组，预检会给一个干净的 OK，然后在启动时 OOM。
+ *
+ * 这里只报**有证据**的两件事：物理内存多少、模组多少个。堆大小给一个按
+ * 「1 GB 起步 + 每个模组 6 MB」估算的推荐值，不声称是精确解。
+ */
+export function checkMemory(instance: Instance, host: HostProfile): readonly Finding[] {
+  const total = host.totalMemoryMiB
+  if (!Number.isFinite(total) || total <= 0) return []
+  const mods = instance.mods.length
+  const recommended = Math.min(8192, Math.max(2048, Math.round((1024 + mods * 6) / 512) * 512))
+
+  if (total < 4096) {
+    return [
+      {
+        severity: 'warning',
+        code: 'LOW_MEMORY',
+        message: `本机物理内存 ${total} MB，实例有 ${mods} 个模组`,
+        data: { totalMemoryMiB: total, mods, recommendedHeapMiB: recommended },
+        hint:
+          `1.19+ 在 4 GB 以下很容易 OOM。建议 -Xmx${recommended}M，并关掉其他占内存的程序；` +
+          '内存不足时游戏表现为启动卡死或 Java heap space 崩溃',
+      },
+    ]
+  }
+  if (mods >= 250 && total <= 8192) {
+    return [
+      {
+        severity: 'warning',
+        code: 'LOW_MEMORY',
+        message: `${mods} 个模组的实例，本机只有 ${total} MB 物理内存`,
+        hint: `建议 -Xmx${recommended}M；大型整合包通常需要 6–8 GB 堆`,
+      },
+    ]
+  }
+  return []
+}
+
+/**
  * 确定性检查。同一输入永远得到同一输出，不依赖网络与时间。
  * 例外：`generatedAt` 在调用方生成，不进入本函数。
  *
@@ -183,7 +226,10 @@ export function checkInstance(input: CheckInput): readonly Finding[] {
         code: 'UNRESOLVED_MOD',
         message: `无法获取 ${mod.fileName} 的元数据，该模组未参与检查`,
         subject: mod.fileName,
-        hint: mod.source === 'local' ? '本地文件无法自动校验，需人工确认' : '内容源未返回该版本，可能已下架',
+        hint:
+          mod.source === 'local'
+            ? '本地文件无法自动校验，需人工确认'
+            : '内容源未返回该版本，可能已下架',
       })
       continue
     }
@@ -205,6 +251,11 @@ export function checkInstance(input: CheckInput): readonly Finding[] {
         code: 'VERSION_MISMATCH',
         message: `${info.name} 最低要求 Minecraft ${fit.bound}，不会在 ${instance.gameVersion} 上工作`,
         subject: info.projectId,
+        data: {
+          projectId: info.projectId,
+          target: instance.gameVersion,
+          declared: info.gameVersions,
+        },
         hint: `该模组支持的版本：${info.gameVersions.slice(0, 5).join(', ') || '未知'}`,
       })
     } else if (fit.fit === 'above') {
@@ -223,6 +274,11 @@ export function checkInstance(input: CheckInput): readonly Finding[] {
         code: 'VERSION_MISMATCH',
         message: `${info.name} 不支持 Minecraft ${instance.gameVersion}`,
         subject: info.projectId,
+        data: {
+          projectId: info.projectId,
+          target: instance.gameVersion,
+          declared: info.gameVersions,
+        },
         hint: `该模组支持的版本：${info.gameVersions.slice(0, 5).join(', ') || '未知'}`,
       })
     }
@@ -252,7 +308,7 @@ export function checkInstance(input: CheckInput): readonly Finding[] {
           code: 'DECLARED_INCOMPATIBLE',
           message: `${info.name} 声明与 ${dep.projectId} 不兼容，但两者都在实例中`,
           subject: info.projectId,
-          hint: '移除其中一个'
+          hint: '移除其中一个',
         })
       }
     }
