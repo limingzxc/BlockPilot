@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { assetsRequiredToBoot, checkAssets } from './assets.js'
+import { assetsRequiredToBoot, checkAssets, gameVersionOf } from './assets.js'
 
 const HASH = 'cc'.repeat(20)
 
@@ -98,6 +98,18 @@ test('assets 是否致命按版本分：1.19+ 必崩，1.12 及更早只是没�
   assert.equal(assetsRequiredToBoot('1.12.2'), false)
   assert.equal(assetsRequiredToBoot('1.6.4'), false)
   assert.equal(assetsRequiredToBoot('unknown'), false, '版本未知时不做断言')
+})
+
+test('加载器版本 id 也能剥出 MC 版本（issue #18）', () => {
+  assert.equal(gameVersionOf('fabric-loader-0.20.1-1.6.4'), '1.6.4')
+  assert.equal(gameVersionOf('quilt-loader-0.20.0-1.20.1'), '1.20.1')
+  assert.equal(gameVersionOf('1.20.1-forge-47.2.0'), '1.20.1')
+  assert.equal(gameVersionOf('1.6.4'), '1.6.4')
+  assert.equal(gameVersionOf('26.4-snapshot-1'), undefined)
+
+  // 关键：带前缀的 1.6.4 不能再被判成「会崩在标题画面」
+  assert.equal(assetsRequiredToBoot('fabric-loader-0.20.1-1.6.4'), false)
+  assert.equal(assetsRequiredToBoot('fabric-loader-0.19.3-1.21.1'), true)
 })
 
 test('1.6.4 零 assets：只报 warning，不给「会崩」的建议', () => {

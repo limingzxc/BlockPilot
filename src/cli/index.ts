@@ -51,7 +51,7 @@ import { createLauncher } from '../core/launch/run.js'
 import type { Layout } from '../core/layout.js'
 import { LayoutError } from '../core/layout.js'
 import type { Operation } from '../core/operation.js'
-import { assetsRequiredToBoot, probeAssets } from '../core/preflight/assets.js'
+import { assetsRequiredToBoot, gameVersionOf, probeAssets } from '../core/preflight/assets.js'
 import { createPreflight } from '../core/preflight/index.js'
 import { readPackFile } from '../core/preflight/read-pack.js'
 import type { Finding, PreflightReport } from '../core/preflight/types.js'
@@ -1330,7 +1330,7 @@ async function runSetup(ctx: CommandContext): Promise<number> {
         // setup 不装 assets（它 1–2 GB，且跨实例共享）。但必须提醒一句，
         // 否则用户会以为「setup 完成 = 能玩了」，然后崩在标题画面（issue #2）
         const warn = assetsIncompleteHint(
-          probeAssets(layout.assets, versionId)?.probe ?? null,
+          probeAssets(layout.assets, gameVersionOf(versionId) ?? versionId)?.probe ?? null,
           versionId,
         )
         if (warn !== undefined) process.stdout.write(`  ${C.yellow}!${C.reset} ${warn}\n`)
@@ -1422,11 +1422,14 @@ function assetsIncompleteHint(assets: AssetsProbe | null, versionId: string): st
   if (assets.present === assets.sampled) return undefined
   const missing = assets.sampled - assets.present
   const head = `assets 没装全（抽查 ${assets.sampled} 个对象，缺 ${missing} 个）`
+  // 命令行给的可能是加载器版本 id（fabric-loader-0.20.1-1.6.4）：
+  // 判版本和给命令都要用剥出来的 MC 版本，否则 1.6.4 会被说成「会崩在标题画面」
+  const mc = gameVersionOf(versionId) ?? versionId
   // 1.19+ 缺了会崩在标题画面；更早的版本只是没声音——同一句话会把老玩家吓一跳
-  const tail = assetsRequiredToBoot(versionId)
+  const tail = assetsRequiredToBoot(mc)
     ? '· 1.19+ 会崩在标题画面'
     : '· 这个版本只影响声音与语言，能进游戏'
-  return `${head}${tail}\n    ${C.dim}补：${assetsHint(versionId)}${C.reset}`
+  return `${head}${tail}\n    ${C.dim}补：${assetsHint(mc)}${C.reset}`
 }
 
 const cmdRun = defineCommand({
@@ -1680,7 +1683,7 @@ async function runFabric(ctx: CommandContext): Promise<number> {
         )
         process.stdout.write(`  ${C.dim}版本 JSON${C.reset}  ${r.versionJsonPath}\n`)
         process.stdout.write(
-          `\n  ${C.bold}启动${C.reset}  ${runHint(r.versionId, layout.root)}\n\n`,
+          `\n  ${C.bold}启动${C.reset}  ${runHint(r.versionId, layout.root, layout.instanceId)}\n\n`,
         )
         return r.failed.length > 0 ? 2 : 0
       },
@@ -1861,7 +1864,7 @@ async function runQuilt(ctx: CommandContext): Promise<number> {
         )
         process.stdout.write(`  ${C.dim}版本 JSON${C.reset}  ${r.versionJsonPath}\n`)
         process.stdout.write(
-          `\n  ${C.bold}启动${C.reset}  ${runHint(r.versionId, layout.root)}\n\n`,
+          `\n  ${C.bold}启动${C.reset}  ${runHint(r.versionId, layout.root, layout.instanceId)}\n\n`,
         )
         return r.failed.length > 0 ? 2 : 0
       },

@@ -25,6 +25,24 @@ export function findAssetsDir(instanceDir: string): string | null {
 }
 
 /**
+ * 从版本 id 里剥出 MC 版本。
+ *
+ * `run` / `setup` 拿到的是命令行原始 id，可能是加载器版本
+ * （`fabric-loader-0.20.1-1.6.4`、`1.20.1-forge-47.2.0`）。直接拿去判版本会落到
+ * 「匹配不上 → 按新版本处理」，于是对 1.6.4 说「会崩在标题画面」，
+ * 提示里的 `blockpilot assets fabric-loader-…` 也是错的（issue #18）。
+ *
+ * 只看形如 `1.<minor>[.<patch>]` 的整段：`fabric-loader-0.20.1-1.6.4` 里
+ * 加载器版本 `0.20.1` 不是 MC 版本，跳过它取 `1.6.4`。
+ */
+export function gameVersionOf(id: string): string | undefined {
+  for (const seg of id.split(/[-+]/)) {
+    if (/^1\.\d+(?:\.\d+)?$/.test(seg)) return seg
+  }
+  return undefined
+}
+
+/**
  * 缺 assets 会不会**开不了游戏**。
  *
  * 1.19+ 的原版资源包就是 assets 本身，零资源时标题画面渲染直接抛
@@ -32,8 +50,10 @@ export function findAssetsDir(instanceDir: string): string | null {
  * 把两者混为一谈会给老版本塞一条假的 blocker（issue #10 实测 1.6.4）。
  */
 export function assetsRequiredToBoot(gameVersion: string): boolean {
-  if (gameVersion === 'unknown') return false
-  const m = /^1\.(\d+)/.exec(gameVersion)
+  if (gameVersion === 'unknown' || gameVersion === '') return false
+  // 命令行给的可能是加载器版本 id，先剥出真正的 MC 版本
+  const mc = gameVersionOf(gameVersion) ?? gameVersion
+  const m = /^1\.(\d+)/.exec(mc)
   // 26.x 这类新命名没有「1.」前缀，一律按新版本处理
   if (m === null) return true
   return Number(m[1]) >= 19
