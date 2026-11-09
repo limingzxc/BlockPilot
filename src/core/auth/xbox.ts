@@ -35,8 +35,17 @@ export async function authenticateXbl(
   const res = await http.postJson(
     XBL_AUTH,
     {
-      // `d=` 前缀表示这是直接给 Xbox Live 的令牌，不是 Compact 票据
-      Properties: { RpsTicket: `d=${msaAccessToken}`, SiteName: 'user.auth.xboxlive.com' },
+      Properties: {
+        /**
+         * 少了这一项，Xbox 服务返回 **400 且响应体为空**——看起来像令牌失效，
+         * 实际是请求不合法。实测：同一份垃圾令牌，没有 AuthMethod 是 400，
+         * 加上就变成语义正确的 401。这个坑排查了很久，别再删。
+         */
+        AuthMethod: 'RPS',
+        // `d=` 前缀表示这是直接给 Xbox Live 的令牌，不是 Compact 票据
+        RpsTicket: `d=${msaAccessToken}`,
+        SiteName: 'user.auth.xboxlive.com',
+      },
       RelyingParty: 'http://auth.xboxlive.com',
       TokenType: 'JWT',
     },
@@ -44,8 +53,20 @@ export async function authenticateXbl(
   )
 
   if (res.status !== 200) {
-    const desc = str(res.body, 'Message') ?? `HTTP ${res.status}`
-    throw authError('XBL_FAILED', `Xbox Live 授权失败：${desc}`, '令牌可能已过期，重新登录')
+    const desc = str(res.body, 'Message')
+    const tail = desc === undefined ? '' : `（${desc}）`
+    if (res.status === 401) {
+      throw authError(
+        'XBL_FAILED',
+        `Xbox Live 拒绝了令牌（401）${tail}`,
+        'MSA 令牌可能已过期或已被撤销，重新 login',
+      )
+    }
+    throw authError(
+      'XBL_FAILED',
+      `Xbox Live 授权失败：${desc ?? `HTTP ${res.status}`}${tail}`,
+      '400 且响应体为空通常意味着请求形状不对（AuthMethod / RpsTicket 前缀），不是账号问题',
+    )
   }
 
   const parsed = parseXboxToken(res.body)
@@ -139,6 +160,22 @@ export async function loginWithXbox(
 
   if (res.status !== 200) {
     const desc = str(res.body, 'errorMessage') ?? str(res.body, 'error') ?? `HTTP ${res.status}`
+    /**
+     * 这一条不是「重试能解决」的错误，所以单独给一个码。
+     *
+     * 自 2023 年起，Mojang 对访问 Java 版游戏服务 API 的第三方应用**人工审核并加入白名单**，
+     * 新应用在通过之前一律拿到 `Invalid app registration`（微软的报错文案指向 aka.ms/AppRegInfo，
+     * 那是 Mojang 的审核说明页）。此时整条链的前四跳都是成功的，只有这一跳被拒——
+     * 告诉用户「重试」等于让他白等。
+     */
+    if (/invalid app registration/i.test(desc)) {
+      throw authError(
+        'MC_APP_NOT_ALLOWLISTED',
+        '这个 Azure 应用还没有被 Mojang 加入白名单，Minecraft 拒绝签发令牌',
+        '去 https://aka.ms/mce-reviewappid 提交申请（人工审核，按天计）；通过之前重试没有用，' +
+          '换自己的 client id 也一样，因为审核是按应用走的',
+      )
+    }
     throw authError('MC_LOGIN_FAILED', `Minecraft 登录失败：${desc}`, '重试一次；持续失败就重新 login')
   }
 

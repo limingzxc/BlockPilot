@@ -5,7 +5,7 @@ import { exchangeMsaForAccount, isExpired, refreshAccount } from './chain.js'
 import type { HttpClient } from './http.js'
 import { pollForToken, requestDeviceCode, type SleepFn } from './msa.js'
 import { loadStore, pickAccount, upsertAccount } from './store.js'
-import { authError, isAuthError, type AuthAccount } from './types.js'
+import { authError, isAuthError, type AuthAccount, type MsaToken } from './types.js'
 import type { DeviceCode } from './types.js'
 
 export interface LoginOptions {
@@ -15,6 +15,13 @@ export interface LoginOptions {
   readonly http?: HttpClient
   readonly sleepFn?: SleepFn
   readonly now?: () => number
+  /**
+   * 本地等待上限（毫秒）。到点即失败，不等设备码自己过期。
+   *
+   * 给「有人在等结果」的场合用（代理执行、脚本）：设备码活 15 分钟，
+   * 没人输码时让进程干等满 15 分钟，是最贵的空转。
+   */
+  readonly timeoutMs?: number
 }
 
 /**
@@ -31,6 +38,7 @@ export function createLogin(opts: LoginOptions): Operation<AuthAccount> {
       ...(opts.http === undefined ? {} : { http: opts.http }),
       ...(opts.now === undefined ? {} : { now: opts.now }),
     }
+    let timedOut = false
 
     try {
       if (opts.clientId === '') {
@@ -47,17 +55,15 @@ export function createLogin(opts: LoginOptions): Operation<AuthAccount> {
       yield Op.log('info', 'auth.device_code', {
         userCode: code.userCode,
         verificationUri: code.verificationUri,
+        /** 绝对时刻：调用方要能直接说「有效至 12:57」，而不是让人心算 15 分钟 */
+        expiresAt: code.expiresAt,
         expiresInSec: Math.max(0, Math.round((code.expiresAt - now()) / 1000)),
         intervalMs: code.intervalMs,
       })
 
       yield Op.log('info', 'auth.step', { step: 'waiting' })
-      const msa = await pollForToken({
-        clientId: opts.clientId,
-        code,
-        ...shared,
-        ...(opts.sleepFn === undefined ? {} : { sleepFn: opts.sleepFn }),
-        signal,
+      const msa = await waitForToken(opts, code, signal, () => {
+        timedOut = true
       })
 
       yield Op.log('info', 'auth.step', { step: 'xbox' })
@@ -68,9 +74,57 @@ export function createLogin(opts: LoginOptions): Operation<AuthAccount> {
       yield Op.result(full)
       yield Op.done()
     } catch (err) {
+      // 超时与「服务端说设备码过期」是两回事：前者换码就能重试，后者要重新申请
+      if (timedOut) {
+        const ms = opts.timeoutMs ?? 0
+        // 亚秒级只在测试里出现，但把 40ms 四舍五入成「0 秒」会让人以为没设超时
+        const shown = ms >= 1000 ? `${Math.round(ms / 1000)} 秒` : `${ms} 毫秒`
+        yield Op.failed(
+          'AUTH_TIMEOUT',
+          `等待授权超时（${shown}内没有完成）`,
+          '设备码本身仍然有效；重新运行 login 会拿到新码，去掉 --timeout 可以等满 15 分钟',
+        )
+        return
+      }
       yield* asFailed(err)
     }
   })
+}
+
+/**
+ * 轮询等待授权，可选地套一层本地超时。
+ *
+ * 超时用 AbortSignal 表达而不是 `Promise.race`：`pollForToken` 的睡眠与请求都认 signal，
+ * race 只能让外层先返回，底下的定时器和在途请求还会继续跑。被超时打断时通过
+ * `onTimeout` 告诉调用方「这次是本地放弃，不是服务端说码过期」——两者的补救动作不同。
+ */
+async function waitForToken(
+  opts: LoginOptions,
+  code: DeviceCode,
+  signal: AbortSignal,
+  onTimeout: () => void,
+): Promise<MsaToken> {
+  const budget = opts.timeoutMs === undefined ? undefined : new AbortController()
+  const timer =
+    budget === undefined
+      ? undefined
+      : setTimeout(() => {
+          onTimeout()
+          budget.abort()
+        }, opts.timeoutMs)
+
+  try {
+    return await pollForToken({
+      clientId: opts.clientId,
+      code,
+      ...(opts.http === undefined ? {} : { http: opts.http }),
+      ...(opts.now === undefined ? {} : { now: opts.now }),
+      ...(opts.sleepFn === undefined ? {} : { sleepFn: opts.sleepFn }),
+      signal: budget === undefined ? signal : AbortSignal.any([signal, budget.signal]),
+    })
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
 }
 
 export interface ResolveAccountOptions {
@@ -147,6 +201,8 @@ async function* asFailed(err: unknown): AsyncGenerator<ReturnType<typeof Op.fail
 }
 
 export type { DeviceCode }
+export { DEFAULT_CLIENT_ID, resolveClientId } from './app.js'
+export { DEVICE_AUTH_FALLBACK_URI } from './msa.js'
 export { loadStore, pickAccount, removeAccount, authStorePath, upsertAccount } from './store.js'
 export { isExpired } from './chain.js'
 export { AuthError, isAuthError } from './types.js'

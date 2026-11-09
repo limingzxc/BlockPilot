@@ -20,7 +20,16 @@ import type { DiagResult } from '../core/diagnostics/index.js'
 import type { LaunchPlan } from '../core/launch/plan.js'
 import { LayoutError } from '../core/layout.js'
 import type { Layout } from '../core/layout.js'
-import { authStorePath, createLogin, isAuthError, loadStore, removeAccount, resolveAccount } from '../core/auth/index.js'
+import {
+  authStorePath,
+  createLogin,
+  DEVICE_AUTH_FALLBACK_URI,
+  isAuthError,
+  loadStore,
+  removeAccount,
+  resolveAccount,
+  resolveClientId,
+} from '../core/auth/index.js'
 import type { AuthAccount } from '../core/auth/types.js'
 import { createVanillaSetup } from '../core/setup/vanilla.js'
 import { VersionNotFoundError } from '../core/version/fetch.js'
@@ -548,30 +557,75 @@ const cmdLogin = defineCommand({
   summary: '用微软账号登录（设备码：给一个网址和一个短码，在浏览器里输）',
   flags: {
     '--root': ROOT,
-    '--client-id': { takesValue: true, value: '<uuid>', help: 'Azure 应用 id，也可用 BLOCKPILOT_CLIENT_ID' },
+    '--client-id': {
+      takesValue: true,
+      value: '<uuid>',
+      help: '覆盖内置的 Azure 应用 id（一般不用传），也可用 BLOCKPILOT_CLIENT_ID',
+    },
+    '--timeout': {
+      takesValue: true,
+      value: '<秒>',
+      help: '最多等多久；缺省等满设备码的 15 分钟',
+    },
   },
-  notes: ['client id 注册一次就够（ADR-0024）；不能复用别人的应用 id'],
+  notes: ['内置 BlockPilot 自己的应用 id，直接跑就行；换自己的应用见 ADR-0039'],
   run: runLogin,
 })
 
+/**
+ * 解析 --timeout。
+ *
+ * 存在的理由不是给玩家用的：设备码活 15 分钟，没人输码时进程就该退出并说清楚，
+ * 而不是让调用方（脚本、代理）跟着干等 15 分钟。
+ */
+function parseTimeoutArg(arg: string | undefined): number | undefined {
+  if (arg === undefined) return undefined
+  if (!/^\d+$/.test(arg) || Number(arg) === 0) {
+    throw new UsageError(
+      'BAD_TIMEOUT',
+      `--timeout 要一个正整数（单位秒），收到：${arg}`,
+      '例：--timeout 60',
+    )
+  }
+  return Number(arg) * 1000
+}
+
 function runLogin(ctx: CommandContext): Promise<number> {
-  const clientId = ctx.value('--client-id') ?? process.env['BLOCKPILOT_CLIENT_ID'] ?? ''
+  const clientId = resolveClientId({
+    flag: ctx.value('--client-id'),
+    env: process.env['BLOCKPILOT_CLIENT_ID'],
+  })
+  const timeoutMs = parseTimeoutArg(ctx.value('--timeout'))
 
   process.stdout.write('\n')
   process.stdout.write(`  ${C.bold}BlockPilot login${C.reset}  ${C.dim}微软账号 · 设备码${C.reset}\n\n`)
 
   return consume(
-    createLogin({ clientId, storePath: authStorePath(ctx.layout.root) }),
+    createLogin({
+      clientId,
+      storePath: authStorePath(ctx.layout.root),
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    }),
     {
       log: (ev) => {
         if (ev.code === 'auth.device_code') {
-          const d = ev.data as { userCode: string; verificationUri: string; expiresInSec: number }
+          const d = ev.data as { userCode: string; verificationUri: string; expiresAt: number }
+          const until = new Date(d.expiresAt).toLocaleTimeString('zh-CN', {
+            hour12: false,
+            hour: '2-digit',
+            minute: '2-digit',
+          })
           process.stdout.write('\n')
           process.stdout.write(`  ${C.bold}1.${C.reset} 打开  ${C.cyan}${d.verificationUri}${C.reset}\n`)
-          process.stdout.write(`  ${C.bold}2.${C.reset} 输入  ${C.bold}${d.userCode}${C.reset}\n\n`)
           process.stdout.write(
-            `  ${C.dim}等待授权…（${Math.round(d.expiresInSec / 60)} 分钟内有效，Ctrl+C 取消）${C.reset}\n\n`,
+            `  ${C.dim}   打不开（国内常见）就用备用地址  ${DEVICE_AUTH_FALLBACK_URI}${C.reset}\n`,
           )
+          // 两张页面长得很像，标题是唯一一眼能分辨的差别；走错了只会得到「代码无法工作」
+          process.stdout.write(
+            `  ${C.dim}   它的标题应是 Microsoft account；写着 Sign in to your account 就是走错了${C.reset}\n`,
+          )
+          process.stdout.write(`  ${C.bold}2.${C.reset} 输入  ${C.bold}${d.userCode}${C.reset}\n\n`)
+          process.stdout.write(`  ${C.dim}等待授权…（有效至 ${until}，Ctrl+C 取消）${C.reset}\n\n`)
           return
         }
         if (ev.code === 'auth.step') {

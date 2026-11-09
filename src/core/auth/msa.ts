@@ -25,6 +25,20 @@ const SCOPE = 'XboxLive.signin offline_access'
 /** 设备码默认存活 15 分钟；轮询期间要贴着服务端给的 interval 走。 */
 const DEFAULT_INTERVAL_MS = 5_000
 
+/**
+ * 设备码输入页的备用地址。
+ *
+ * 微软返回的 `verification_uri` 恒为 `https://www.microsoft.com/link`，它 301 到
+ * `login.live.com`——那个域名在国内经常连不上，用户看到的是一张打不开的白页，
+ * 而设备码只有 15 分钟。这里直接给跳转的终点，省掉一次跨域。
+ *
+ * 别换成 `login.microsoftonline.com/common/oauth2/deviceauth`（`microsoft.com/devicelogin`
+ * 的落地页）：那是**工作/学校账户**的 AAD 表单，页面标题是 “Sign in to your account”，
+ * 输消费者设备码会被判成「该代码无法工作」。消费者账户的入口是标题为
+ * “Microsoft account” 的 `login.live.com`，也就是本常量。实测踩过两次。
+ */
+export const DEVICE_AUTH_FALLBACK_URI = 'https://login.live.com/oauth20_remoteconnect.srf'
+
 export type SleepFn = (ms: number, signal?: AbortSignal) => Promise<void>
 
 export const sleep: SleepFn = (ms, signal) =>

@@ -95,21 +95,24 @@ blockpilot diag --root D:/mc
 
 ## 正版登录
 
-单人与离线整合包无需登录。进入正版服务器需要 Microsoft 账号，并要求自建 Azure 应用（免费，一次即可）：
-
-1. [portal.azure.com](https://portal.azure.com) → 应用注册 → 账户类型「仅个人 Microsoft 账户」
-2. 身份验证 → 允许公共客户端流
-3. API 权限 → 委托权限 `XboxLive.signin`
-4. 记录应用程序(客户端) ID
+单人与离线整合包无需登录。进入正版服务器需要 Microsoft 账号：
 
 ```bash
-export BLOCKPILOT_CLIENT_ID=<客户端 ID>
 blockpilot login --root D:/mc
 ```
 
-浏览器输入设备码完成登录，之后 `run` 默认使用该账号，令牌过期自动续。第三方启动器不能复用官方应用 ID；密码只提交给微软。
+终端给一个网址和一个短码，在浏览器里输入即可。密码只提交给微软的页面，不经过启动器。之后 `run` 默认使用该账号，令牌过期自动续；只有 refresh_token 失效（改密码、被撤销、90 天未用）才需要重登。
 
-> 尚无真实登录的实测记录。
+内置 BlockPilot 自己的 Azure 应用 id（公共客户端，无密钥），不需要自己注册应用。
+
+第三方应用访问 Java 版游戏服务 API 需要 Mojang 人工审核并加入白名单。本应用**审核通过前**，`login` 会停在最后一跳，报 `MC_APP_NOT_ALLOWLISTED` 并给出申请入口——那不是账号问题，重试无用。想用自己的应用：
+
+1. [portal.azure.com](https://portal.azure.com) → 应用注册 → 账户类型「所有 Microsoft 账户」
+2. 身份验证 → 允许公共客户端流
+3. API 权限 → 委托权限 `XboxLive.signin`
+4. `blockpilot login --client-id <id>`，或 `export BLOCKPILOT_CLIENT_ID=<id>`
+
+不要复用官方启动器或其他启动器的应用 id——那是冒充。见 ADR-0039。
 
 ## 程序接口
 

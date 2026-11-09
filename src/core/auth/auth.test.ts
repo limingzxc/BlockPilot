@@ -240,20 +240,68 @@ test('完整链：uuid 去掉连字符，xuid 从 XSTS 的 xid 取出', async ()
   assert.equal(urls.filter((u) => u.includes('login_with_xbox')).length, 1)
   assert.equal(urls.filter((u) => u.includes('/minecraft/profile')).length, 1)
 
-  // RpsTicket 必须带 d= 前缀，否则 Xbox Live 会把令牌当 Compact 票据拒绝
+  /**
+   * 三个上游请求**整份**比对，不是挑字段。
+   *
+   * 挑字段的代价真实发生过：`Properties.AuthMethod` 缺失时 XBL 返回 400 空体，
+   * 看起来像令牌失效，23 个测试全绿。整份 deepEqual 让「少一个字段」直接变成红用例——
+   * 加字段时 diff 也会指出改了哪一处契约。
+   */
   const xbl = http.calls.find((c) => c.url.includes('user.auth.xboxlive.com'))
-  const props = (xbl?.payload as { Properties?: { RpsTicket?: string } } | undefined)?.Properties
-  assert.equal(props?.RpsTicket, 'd=msa-at')
+  assert.deepEqual(xbl?.payload, {
+    Properties: { AuthMethod: 'RPS', RpsTicket: 'd=msa-at', SiteName: 'user.auth.xboxlive.com' },
+    RelyingParty: 'http://auth.xboxlive.com',
+    TokenType: 'JWT',
+  })
 
-  // XSTS 的 RelyingParty 写错会被 400
   const xsts = http.calls.find((c) => c.url.includes('xsts.auth'))
-  assert.equal((xsts?.payload as { RelyingParty?: string } | undefined)?.RelyingParty, 'rp://api.minecraftservices.com/')
+  assert.deepEqual(xsts?.payload, {
+    Properties: { SandboxId: 'RETAIL', UserTokens: ['xbl-token'] },
+    RelyingParty: 'rp://api.minecraftservices.com/',
+    TokenType: 'JWT',
+  })
 
-  // identityToken 的形状是 `XBL3.0 x=<uhs>;<token>`
   const mc = http.calls.find((c) => c.url.includes('login_with_xbox'))
-  assert.equal(
-    (mc?.payload as { identityToken?: string } | undefined)?.identityToken,
-    'XBL3.0 x=uhs-1;xsts-token',
+  assert.deepEqual(mc?.payload, { identityToken: 'XBL3.0 x=uhs-1;xsts-token' })
+})
+
+test('XBL 401 → 说「令牌被拒」，而不是让用户去查请求形状', async () => {
+  const http = httpRecorder(
+    happyPath({ 'user.auth.xboxlive.com': () => ({ status: 401, body: null }) }),
+  )
+  await assert.rejects(
+    () => exchangeMsaForAccount({ accessToken: 'a', refreshToken: 'r', expiresAt: 0 }, { http }),
+    (err: unknown) => {
+      assert.ok(err instanceof AuthError)
+      assert.equal(err.code, 'XBL_FAILED')
+      assert.match(err.message, /401/)
+      assert.match(err.hint ?? '', /重新 login/)
+      return true
+    },
+  )
+})
+
+test('MC 登录说「Invalid app registration」→ 白名单问题，别让用户重试', async () => {
+  const http = httpRecorder(
+    happyPath({
+      'login_with_xbox': () => ({
+        status: 401,
+        body: {
+          path: '/authentication/login_with_xbox',
+          errorMessage: 'Invalid app registration, see https://aka.ms/AppRegInfo for more information',
+        },
+      }),
+    }),
+  )
+  await assert.rejects(
+    () => exchangeMsaForAccount({ accessToken: 'a', refreshToken: 'r', expiresAt: 0 }, { http }),
+    (err: unknown) => {
+      assert.ok(err instanceof AuthError)
+      assert.equal(err.code, 'MC_APP_NOT_ALLOWLISTED')
+      assert.match(err.hint ?? '', /mce-reviewappid/)
+      assert.doesNotMatch(err.hint ?? '', /重试一次/)
+      return true
+    },
   )
 })
 
@@ -372,10 +420,17 @@ test('createLogin：设备码先成为事件，再出结果并写档', async () 
       now: () => 1000,
     }).run(new AbortController().signal)) {
       if (ev.type === 'log' && ev.code === 'auth.device_code') {
-        const data = ev.data as { userCode: string; verificationUri: string; expiresInSec: number }
+        const data = ev.data as {
+          userCode: string
+          verificationUri: string
+          expiresInSec: number
+          expiresAt: number
+        }
         assert.equal(data.userCode, 'AB12-CD34')
         assert.equal(data.verificationUri, 'https://microsoft.com/link')
         assert.equal(data.expiresInSec, 900)
+        // 绝对时刻，调用方据此说「有效至 12:57」，不用自己加 15 分钟
+        assert.equal(data.expiresAt, 1000 + 900_000)
         events.push('device_code')
       }
       if (ev.type === 'result') {
@@ -390,6 +445,36 @@ test('createLogin：设备码先成为事件，再出结果并写档', async () 
     const stored = loadStore(storePath)
     assert.equal(stored.accounts.length, 1)
     assert.equal(stored.active, account?.uuid)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('createLogin：--timeout 到点报 AUTH_TIMEOUT，与「设备码过期」分开', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bp-auth-timeout-'))
+  try {
+    // 永远 pending：不设超时的话，这个用例会一直轮询下去
+    const http = httpRecorder(
+      happyPath({ '/token': () => ({ status: 400, body: { error: 'authorization_pending' } }) }),
+    )
+    const failures: Array<{ code: string; message: string }> = []
+
+    for await (const ev of createLogin({
+      clientId: 'client-1',
+      storePath: authStorePath(dir),
+      http,
+      timeoutMs: 40,
+      // 轮询间隔是 1 秒，压到 10ms，让用例秒级结束
+      sleepFn: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 10))),
+      now: () => 1000,
+    }).run(new AbortController().signal)) {
+      if (ev.type === 'failed') failures.push({ code: ev.code, message: ev.message })
+    }
+
+    assert.equal(failures.length, 1)
+    assert.equal(failures[0]?.code, 'AUTH_TIMEOUT')
+    // 说清「多久没等到」，而不是把设备码的 15 分钟当成本地超时
+    assert.match(failures[0]?.message ?? '', /40 毫秒/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
