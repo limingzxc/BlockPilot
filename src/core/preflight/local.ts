@@ -1,8 +1,18 @@
 import { checkLocalDeps } from '../deps/localDeps.js'
-import type { ScanResult } from '../instance/scan.js'
+import type { ScannedMod, ScanResult } from '../instance/scan.js'
+import type { LoaderKind } from '../instance.js'
+import type { ModLoaderKind } from '../modmeta/types.js'
 import { depKey } from '../modmeta/types.js'
 import { satisfiesRange } from '../semver.js'
 import type { Finding } from './types.js'
+
+/** 这个模组会不会被实例的加载器真正加载。 */
+function loadsOn(declared: ModLoaderKind, instance: LoaderKind): boolean {
+  // 读不出加载器的 jar 不能断定它不会被加载，照旧参与检查
+  if (declared === 'unknown') return true
+  // Quilt 兼容 Fabric 模组；其余只认同名加载器
+  return declared === instance || (instance === 'quilt' && declared === 'fabric')
+}
 
 /**
  * 离线检查一个实例目录。
@@ -18,8 +28,23 @@ export function checkLocalInstance(
 ): readonly Finding[] {
   const findings: Finding[] = []
 
+  const instanceLoader = scan.instance.loader.kind
+  /**
+   * 加载器不匹配的 jar 单独归类。
+   *
+   * Forge 遇到没有 `mods.toml` 的 jar 直接忽略，不会崩（304 个 mod 的包实测
+   * 跑满 211 秒正常退出）。把这类 jar 声明的依赖算成「缺失」会给出
+   * 「satisfying_buttons 需要 fabric-api」这种用户根本无从修的建议（issue #17）。
+   */
+  const ignored: ScannedMod[] = []
+  const active: ScannedMod[] = []
+  for (const m of scan.mods) {
+    if (instanceLoader !== 'vanilla' && !loadsOn(m.meta.loader, instanceLoader)) ignored.push(m)
+    else active.push(m)
+  }
+
   const issues = checkLocalDeps(
-    scan.mods.map((m) => ({
+    active.map((m) => ({
       modId: m.meta.modId,
       version: m.meta.version,
       dependencies: m.meta.dependencies,
@@ -60,7 +85,7 @@ export function checkLocalInstance(
 
   // 同一 modId 多份 jar：Fabric/Forge 都会在启动时拒绝，属于确定性失败
   const byId = new Map<string, string[]>()
-  for (const m of scan.mods) {
+  for (const m of active) {
     const key = depKey(m.meta.modId)
     const list = byId.get(key) ?? []
     list.push(m.fileName)
@@ -78,38 +103,40 @@ export function checkLocalInstance(
     })
   }
 
-  // 加载器装错：Fabric 模组放进 Forge 实例不会「部分工作」，而是加载阶段就失败
-  const instanceLoader = scan.instance.loader.kind
-  if (instanceLoader !== 'vanilla') {
-    for (const m of scan.mods) {
-      const declared = m.meta.loader
-      if (declared === 'unknown') continue
-      // Quilt 兼容 Fabric 模组；其余只认同名加载器
-      const compatible =
-        declared === instanceLoader || (instanceLoader === 'quilt' && declared === 'fabric')
-      if (compatible) continue
-      findings.push({
-        severity: 'warning',
-        code: 'LOADER_MISMATCH',
-        message: `${m.meta.modId} 是 ${declared} 模组，当前实例是 ${instanceLoader}`,
-        subject: m.meta.modId,
-        data: { modId: m.meta.modId, declared, instance: instanceLoader },
-        hint:
-          instanceLoader === 'quilt'
-            ? 'Quilt 只能直接加载 Fabric / Quilt 模组；Forge 模组需要 Sinytra Connector 之类的兼容层'
-            : `这个模组不会在 ${instanceLoader} 上加载；换对应加载器的版本，或换实例`,
-      })
-    }
+  /**
+   * 加载器装错：这类 jar 会被加载器跳过，不会崩。
+   *
+   * 以前一个 jar 一条 finding、而且在线链路判 blocker，于是「包里有几个装错的 jar」
+   * 直接把整个包判死。现在聚合成一条 warning：用户知道有这回事，
+   * 也知道它们不影响启动（issue #17）。
+   */
+  if (ignored.length > 0) {
+    const loaders = [...new Set(ignored.map((m) => m.meta.loader))]
+    const names = ignored.map((m) => m.meta.modId)
+    const files = ignored.map((m) => m.fileName)
+    const list = names.slice(0, 5).join('、') + (names.length > 5 ? ' 等' : '')
+    findings.push({
+      severity: 'warning',
+      code: 'LOADER_MISMATCH',
+      message: `${loaders.join('/')} 模组在 ${instanceLoader} 实例里不会加载（${names.length} 个）：${list}`,
+      ...(names[0] === undefined ? {} : { subject: names[0] }),
+      data: { instance: instanceLoader, loaders, mods: names, files },
+      hint:
+        instanceLoader === 'quilt'
+          ? 'Quilt 只能直接加载 Fabric / Quilt 模组；Forge 模组需要 Sinytra Connector 之类的兼容层'
+          : `这些 jar 会被 ${instanceLoader} 直接跳过，它们声明的依赖也不参与检查；` +
+            `换对应加载器的版本，或换实例`,
+    })
   }
 
   // breaks / incompatible：双方都在实例里就是确定性冲突
   const present = new Map<string, string | undefined>()
-  for (const m of scan.mods) {
+  for (const m of active) {
     present.set(depKey(m.meta.modId), m.meta.version)
     for (const p of m.meta.provides) present.set(depKey(p), undefined)
     for (const n of m.meta.nested) present.set(depKey(n.modId), n.version)
   }
-  for (const m of scan.mods) {
+  for (const m of active) {
     for (const dep of m.meta.dependencies) {
       if (dep.kind !== 'breaks') continue
       if (!present.has(depKey(dep.modId))) continue
@@ -151,6 +178,30 @@ export function checkLocalInstance(
       code: 'UNREADABLE_JAR',
       message: `${noMeta.length} 个 jar 里没有可识别的模组元数据，未参与检查`,
       hint: `${noMeta.slice(0, 5).join('、')}${noMeta.length > 5 ? ' 等' : ''}。资源包/非模组 jar 属于正常情况`,
+    })
+  }
+
+  /**
+   * 只有 jar-in-jar 子模组的 jar（Forge 的 `-all` 打包）。
+   *
+   * 这不是问题：顶层没有 mods.toml 是作者的打包方式，子模组已经计入索引。
+   * 但不说一句的话，用户会疑惑「这个 jar 是不是没被检查」。
+   */
+  const nestedOnly = active.filter((m) => m.meta.nestedOnly === true)
+  if (nestedOnly.length > 0) {
+    const names = nestedOnly.map((m) => m.fileName)
+    findings.push({
+      severity: 'info',
+      code: 'NESTED_ONLY_JAR',
+      message: `${nestedOnly.length} 个 jar 没有顶层元数据，按 jar-in-jar 子模组计入索引`,
+      ...(nestedOnly[0] === undefined ? {} : { subject: nestedOnly[0].fileName }),
+      data: {
+        files: names,
+        mods: nestedOnly.map((m) => m.meta.modId),
+      },
+      hint:
+        `${names.slice(0, 5).join('、')}${names.length > 5 ? ' 等' : ''}。` +
+        'Forge 的 -all 打包就是这样：真正的模组在 META-INF/jarjar/ 下，依赖它可以正常解析',
     })
   }
 

@@ -1,6 +1,7 @@
 import { strFromU8, unzipSync } from 'fflate'
 import { parse as parseToml } from 'smol-toml'
 
+import type { LoaderKind } from '../instance.js'
 import type { ModDependency, ModLoaderKind, ModMetadata } from './types.js'
 
 const FABRIC = 'fabric.mod.json'
@@ -22,6 +23,36 @@ function isNestedJar(name: string): boolean {
 
 /** 按加载器优先级排列。多加载器 jar 里 fabric 声明通常最准确。 */
 const CANDIDATES = [FABRIC, QUILT, NEOFORGE, FORGE, MCMOD] as const
+
+/**
+ * 候选元数据的读取顺序。
+ *
+ * `CANDIDATES` 是「不知道实例是什么加载器」时的缺省值。知道加载器时要按它挑：
+ * `Towns-and-Towers-1.12-Fabric+Forge.jar` 同时有 `fabric.mod.json` 和
+ * `META-INF/mods.toml`，在 Forge 实例里读 fabric 那一侧，会凭空多出
+ * `fabric-api` 依赖（issue #17）。
+ */
+function candidateOrder(opts: ReadModMetadataOptions): readonly string[] {
+  // 1.12.2 及更早：mcmod.info 才是这一代的元数据，mods.toml 常是构建模板残留
+  if (opts.legacy === true) return [FABRIC, QUILT, MCMOD, NEOFORGE, FORGE]
+  switch (opts.loader) {
+    case 'forge':
+      return [FORGE, NEOFORGE, FABRIC, QUILT, MCMOD]
+    case 'neoforge':
+      return [NEOFORGE, FORGE, FABRIC, QUILT, MCMOD]
+    case 'quilt':
+      return [QUILT, FABRIC, NEOFORGE, FORGE, MCMOD]
+    default:
+      return CANDIDATES
+  }
+}
+
+function parseCandidate(name: string, text: string): ModMetadata | null {
+  if (name === FABRIC) return fromFabric(text)
+  if (name === QUILT) return fromQuilt(text)
+  if (name === MCMOD) return fromMcmodInfo(text)
+  return fromForgeToml(text, name === NEOFORGE ? 'neoforge' : 'forge')
+}
 
 type TomlShape = {
   modLoader?: string
@@ -384,39 +415,33 @@ function fromForgeToml(text: string, loader: ModLoaderKind): ModMetadata | null 
   }
 }
 
+/** jar-in-jar 里读出来的一个子模组。`loader` 供「只有 JiJ」的 jar 定身份用。 */
+interface NestedJarMod {
+  readonly modId: string
+  readonly version: string
+  readonly loader: ModLoaderKind
+}
+
 /** 读 `META-INF/jars/*.jar` 里的嵌套模组。Fabric API 的 57 个子模块都在这里。 */
-function readNestedJars(entries: Record<string, Uint8Array>): { modId: string; version: string }[] {
-  const out: { modId: string; version: string }[] = []
+function readNestedJars(
+  entries: Record<string, Uint8Array>,
+  order: readonly string[],
+): NestedJarMod[] {
+  const out: NestedJarMod[] = []
   for (const [name, data] of Object.entries(entries)) {
     if (!isNestedJar(name)) continue
     try {
       // 嵌套 jar 可能是 Fabric 风格（fabric.mod.json）或 Forge 风格（mods.toml）
       const inner = unzipSync(data, {
-        filter: (f) => f.name === FABRIC || f.name === FORGE,
+        filter: (f) => order.includes(f.name),
       })
-
-      const fabricBuf = inner[FABRIC]
-      if (fabricBuf !== undefined) {
-        const parsed = parseModJson(strFromU8(fabricBuf))
-        if (parsed !== null && typeof parsed.id === 'string' && parsed.id !== '') {
-          out.push({
-            modId: parsed.id,
-            version: typeof parsed.version === 'string' ? parsed.version : 'unknown',
-          })
-        }
-        continue
-      }
-
-      const forgeBuf = inner[FORGE]
-      if (forgeBuf !== undefined) {
-        const parsed = parseToml(strFromU8(forgeBuf)) as TomlShape
-        const first = parsed.mods?.[0]
-        if (first?.modId !== undefined && first.modId !== '') {
-          out.push({
-            modId: first.modId,
-            version: typeof first.version === 'string' ? first.version : 'unknown',
-          })
-        }
+      for (const candidate of order) {
+        const buf = inner[candidate]
+        if (buf === undefined) continue
+        const meta = parseCandidate(candidate, strFromU8(buf))
+        if (meta === null) continue
+        out.push({ modId: meta.modId, version: meta.version, loader: meta.loader })
+        break
       }
     } catch {
       // 嵌套 jar 坏了不影响主 jar 的元数据
@@ -441,6 +466,11 @@ export interface ReadModMetadataOptions {
    * `minecraft [1.13.2]`（1.13 模板残留），mcmod.info 写的才是 `1.12.2`。
    */
   readonly legacy?: boolean
+  /**
+   * 实例的加载器。多加载器 jar（同时带 fabric.mod.json 与 mods.toml）要按它挑元数据，
+   * 否则在 Forge 实例里会读出 Fabric 那一侧的依赖，凭空报缺 fabric-api（issue #17）。
+   */
+  readonly loader?: LoaderKind
 }
 
 /**
@@ -465,38 +495,51 @@ export function readModMetadata(
   jar: Uint8Array,
   opts: ReadModMetadataOptions = {},
 ): ModMetadata | null {
+  const order = candidateOrder(opts)
   let entries: Record<string, Uint8Array>
   try {
     entries = unzipSync(jar, {
-      filter: (f) => (CANDIDATES as readonly string[]).includes(f.name) || isNestedJar(f.name),
+      filter: (f) => order.includes(f.name) || isNestedJar(f.name),
     })
   } catch {
     return null
   }
 
-  const nested = readNestedJars(entries)
-  const withNested = (meta: ModMetadata | null): ModMetadata | null =>
-    meta === null ? null : { ...meta, nested }
-
-  const order =
-    opts.legacy === true
-      ? ([FABRIC, QUILT, MCMOD, NEOFORGE, FORGE] as const)
-      : ([FABRIC, QUILT, NEOFORGE, FORGE, MCMOD] as const)
+  const nested = readNestedJars(entries, order)
+  const withNested = (meta: ModMetadata): ModMetadata => ({
+    ...meta,
+    nested: nested.map((n) => ({ modId: n.modId, version: n.version })),
+  })
 
   for (const name of order) {
     const buf = entries[name]
     if (buf === undefined) continue
-    const text = strFromU8(buf)
-    const meta =
-      name === FABRIC
-        ? fromFabric(text)
-        : name === QUILT
-          ? fromQuilt(text)
-          : name === MCMOD
-            ? fromMcmodInfo(text)
-            : fromForgeToml(text, name === NEOFORGE ? 'neoforge' : 'forge')
     // 这一份读不出来就试下一份：坏掉的 mods.toml 不该让可用的 mcmod.info 一起消失
+    const meta = parseCandidate(name, strFromU8(buf))
     if (meta !== null) return withNested(meta)
   }
-  return null
+
+  /**
+   * 顶层没有任何元数据，但 jar-in-jar 里有子模组。
+   *
+   * Forge 的 `-all` 打包方式就是这样：`kotlinforforge-4.12.0-all.jar` 自己不带
+   * `mods.toml`，真正的模组在 `META-INF/jarjar/kffmod-4.12.0.jar` 里。
+   * 以前这里直接返回 null，于是 kotlinforforge 永远进不了索引，依赖它的模组
+   * 全被误报缺前置（issue #16）。
+   *
+   * 用第一个子模组当这个 jar 的身份（它的 modId/版本就是依赖方要找的），
+   * 其余留在 nested 里。`nestedOnly` 让上层知道「顶层元数据缺失是正常的」，
+   * 不再报 UNREADABLE_JAR。
+   */
+  const primary = nested[0]
+  if (primary === undefined) return null
+  return {
+    modId: primary.modId,
+    version: primary.version,
+    loader: primary.loader,
+    dependencies: [],
+    provides: [],
+    nested: nested.slice(1).map((n) => ({ modId: n.modId, version: n.version })),
+    nestedOnly: true,
+  }
 }

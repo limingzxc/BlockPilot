@@ -21,9 +21,10 @@
 | `JAVA_NEWER_ONLY` | warning | 没有精确版本，但有更高的 Java；多数能跑 |
 | `JAVA_OLDER_PRESENT` | info | 同时存在更低版本 Java，启动时要显式指定路径 |
 | `JAVA_TOO_NEW` | blocker | 1.12 及更早只能用 Java 8，更高版本会在启动阶段死 |
-| `LOADER_MISMATCH` | blocker | 模组不支持当前加载器 |
+| `LOADER_MISMATCH` | warning | 模组不支持当前加载器；这类 jar 会被加载器直接跳过，不影响启动 |
 | `LOW_MEMORY` | warning | 物理内存与模组规模不匹配，启动时容易 OOM |
 | `MISSING_DEPENDENCY` | blocker | 缺必需前置模组（已确认缺失，不是「可能内置」） |
+| `NESTED_ONLY_JAR` | info | jar 没有顶层元数据，只有 jar-in-jar 子模组；子模组已计入索引 |
 | `PACK_BUILTIN_MODS` | info | overrides/mods 里还有 jar，装完会一起参与校验 |
 | `SERVER_ONLY_MOD` | warning | 声明为仅服务端的模组装在客户端，通常无意义 |
 | `UNKNOWN_GAME_VERSION` | warning | 读不出实例的 MC 版本，版本相关结论不可靠 |

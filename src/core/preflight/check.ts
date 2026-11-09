@@ -286,12 +286,17 @@ export function checkInstance(input: CheckInput): readonly Finding[] {
     // 同理：加载器清单为空 = 来源没提供，不等于「不支持这个加载器」
     const token = loaderToken(instance.loader.kind)
     if (token !== null && info.loaders.length > 0 && !info.loaders.includes(token)) {
+      /**
+       * warning 而不是 blocker：加载器遇到不认识的 jar 是**跳过**，不是崩溃。
+       * 304 个 mod 的 Forge 包里有几个 Fabric 专用 jar，实测 306 个模组全部加载、
+       * 跑满 211 秒正常退出——被这条判死会让整个包白装一次（issue #17）。
+       */
       findings.push({
-        severity: 'blocker',
+        severity: 'warning',
         code: 'LOADER_MISMATCH',
         message: `${info.name} 不支持 ${instance.loader.kind} 加载器`,
         subject: info.projectId,
-        hint: `该模组支持的加载器：${info.loaders.join(', ') || '未知'}`,
+        hint: `该模组支持的加载器：${info.loaders.join(', ') || '未知'}。装上去也会被加载器跳过，不影响启动`,
       })
     }
   }

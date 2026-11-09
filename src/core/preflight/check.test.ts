@@ -104,7 +104,7 @@ test('目标版本落在声明区间中间但没勾 → 仍按 blocker', () => {
   assert.ok(findings.some((f) => f.code === 'VERSION_MISMATCH' && f.severity === 'blocker'))
 })
 
-test('加载器不匹配 → LOADER_MISMATCH', () => {
+test('加载器不匹配 → LOADER_MISMATCH（warning，不拦整包）', () => {
   const versions = new Map<string, VersionInfo>([
     ['a1', v({ projectId: 'x', versionId: 'a1', loaders: ['forge'] })],
   ])
@@ -114,7 +114,10 @@ test('加载器不匹配 → LOADER_MISMATCH', () => {
     }),
     versions,
   })
-  assert.ok(findings.some((f) => f.code === 'LOADER_MISMATCH'))
+  const mismatch = findings.find((f) => f.code === 'LOADER_MISMATCH')
+  assert.ok(mismatch, '要报 LOADER_MISMATCH')
+  // 加载器遇到不认识的 jar 是跳过，不是崩溃：304 个 mod 的包实测照常跑完
+  assert.equal(mismatch.severity, 'warning')
 })
 
 test('声明不兼容且两者都在 → DECLARED_INCOMPATIBLE', () => {

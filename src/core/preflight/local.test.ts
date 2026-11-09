@@ -5,13 +5,14 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { strToU8, zipSync } from 'fflate'
-
 import { scanInstanceDir } from '../instance/scan.js'
+import type { LoaderKind } from '../instance.js'
 import { checkLocalInstance } from './local.js'
 
 function withInstances(
   jars: Record<string, Uint8Array | string>,
   fn: (scan: ReturnType<typeof scanInstanceDir>) => void,
+  loader: LoaderKind = 'fabric',
 ): void {
   const dir = mkdtempSync(join(tmpdir(), 'bp-preflight-'))
   try {
@@ -22,7 +23,7 @@ function withInstances(
     fn(
       scanInstanceDir(dir, {
         fallbackGameVersion: '1.20.1',
-        fallbackLoader: { kind: 'fabric', version: '0.15.11' },
+        fallbackLoader: { kind: loader, version: loader === 'forge' ? '47.2.0' : '0.15.11' },
       }),
     )
   } finally {
@@ -122,5 +123,79 @@ test('breaks：声明互斥的两个模组都在实例里 → DECLARED_INCOMPATI
       assert.equal(bad.severity, 'blocker')
       assert.match(bad.message, /a.*b/)
     },
+  )
+})
+
+test('Forge 实例里的 Fabric 专用 jar：只报「会被忽略」，不算它缺 fabric-api（issue #17）', () => {
+  withInstances(
+    {
+      // 纯 Fabric 模组，声明依赖 fabric-api
+      'visuality.jar': zipSync({
+        'fabric.mod.json': strToU8(
+          JSON.stringify({ id: 'visuality', version: '0.7.1', depends: { 'fabric-api': '*' } }),
+        ),
+      }),
+      // 正常的 Forge 模组
+      'jei.jar': zipSync({
+        'META-INF/mods.toml': strToU8(
+          'modLoader = "javafml"\n[[mods]]\nmodId = "jei"\nversion = "15.0.0"',
+        ),
+      }),
+    },
+    (scan) => {
+      const findings = checkLocalInstance(scan, { gameVersion: '1.20.1', loaderVersion: '47.2.0' })
+      assert.equal(
+        findings.some((f) => f.code === 'MISSING_DEPENDENCY'),
+        false,
+        '被加载器跳过的 jar，它声明的依赖不该算成缺失',
+      )
+      const mismatch = findings.find((f) => f.code === 'LOADER_MISMATCH')
+      assert.ok(mismatch, '要提示这些 jar 会被忽略')
+      assert.equal(mismatch.severity, 'warning')
+      assert.match(mismatch.message, /fabric/)
+      assert.deepEqual(mismatch.data?.mods, ['visuality'])
+    },
+    'forge',
+  )
+})
+
+test('只有 jar-in-jar 的 -all jar 能提供前置（issue #16）', () => {
+  const kff = zipSync({
+    'META-INF/mods.toml': strToU8(
+      ['modLoader="javafml"', '[[mods]]', 'modId="kotlinforforge"', 'version="4.12.0"'].join('\n'),
+    ),
+  })
+  withInstances(
+    {
+      'kotlinforforge-4.12.0-all.jar': zipSync({
+        'META-INF/jarjar/kffmod-4.12.0.jar': kff,
+      }),
+      'fzzy_config.jar': zipSync({
+        'META-INF/mods.toml': strToU8(
+          [
+            'modLoader = "javafml"',
+            '[[mods]]',
+            'modId = "fzzy_config"',
+            'version = "0.5.0"',
+            '[[dependencies.fzzy_config]]',
+            'modId = "kotlinforforge"',
+            'mandatory = true',
+          ].join('\n'),
+        ),
+      }),
+    },
+    (scan) => {
+      const findings = checkLocalInstance(scan, { gameVersion: '1.20.1', loaderVersion: '47.2.0' })
+      assert.equal(
+        findings.some((f) => f.code === 'MISSING_DEPENDENCY'),
+        false,
+        'kotlinforforge 藏在 jar-in-jar 里，不该报缺前置',
+      )
+      const info = findings.find((f) => f.code === 'NESTED_ONLY_JAR')
+      assert.ok(info, '要标注「只有 jar-in-jar 子模组」')
+      assert.equal(info.severity, 'info')
+      assert.match(info.hint ?? '', /kotlinforforge-4\.12\.0-all\.jar/)
+    },
+    'forge',
   )
 })

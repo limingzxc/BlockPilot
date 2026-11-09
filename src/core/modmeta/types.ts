@@ -40,6 +40,14 @@ export interface ModMetadata {
    * 并不声明 provides。不读这一层，sodium 这类依赖子模块的模组会被误报缺前置。
    */
   readonly nested: readonly { readonly modId: string; readonly version: string }[]
+  /**
+   * 顶层没有元数据，只有 jar-in-jar 子模组。
+   *
+   * Forge 的 `-all` 打包（kotlinforforge-4.12.0-all）就是这样：jar 里没有
+   * `mods.toml`，真正的模组在 `META-INF/jarjar/` 下。此时 `modId` / `version`
+   * 取的是第一个子模组——它就是依赖方要找的那个 id。
+   */
+  readonly nestedOnly?: boolean
 }
 
 /**

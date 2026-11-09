@@ -98,7 +98,8 @@ export function scanInstanceDir(dir: string, opts: ScanOptions): ScanResult {
       }
       let meta: ModMetadata | null = null
       try {
-        meta = readModMetadata(bytes, { legacy })
+        // 把实例加载器传进去：多加载器 jar 要读对应那一侧的元数据（issue #17）
+        meta = readModMetadata(bytes, { legacy, loader: loader.kind })
       } catch {
         meta = null
       }

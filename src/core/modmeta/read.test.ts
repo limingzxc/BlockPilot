@@ -453,6 +453,83 @@ test('Fabric breaks 解析为 kind=breaks，且不是 mandatory', () => {
   assert.equal(dep?.versionRange, '<1.0')
 })
 
+test('顶层没有 mods.toml、只有 jarjar 子模组时按子模组建立索引（issue #16）', () => {
+  // kotlinforforge-4.12.0-all.jar 的真实形状：外层没有元数据，真 mod 在 jarjar 里
+  const inner = zipSync({
+    'META-INF/mods.toml': strToU8(
+      ['modLoader="javafml"', '[[mods]]', 'modId="kotlinforforge"', 'version="4.12.0"'].join('\n'),
+    ),
+  })
+  const buf = zipSync({
+    'META-INF/jarjar/kffmod-4.12.0.jar': inner,
+    'net/minecraftforge/fml/KotlinForForge.class': strToU8('class'),
+  })
+
+  const meta = readModMetadata(buf)
+  assert.ok(meta, '只有 jar-in-jar 也要读得出身份，否则依赖方永远报缺前置')
+  assert.equal(meta.modId, 'kotlinforforge')
+  assert.equal(meta.version, '4.12.0')
+  assert.equal(meta.loader, 'forge')
+  assert.equal(meta.nestedOnly, true)
+})
+
+test('只有 JiJ 的 jar 用第一个子模组当身份，其余留在 nested', () => {
+  const sub = (id: string, version: string) =>
+    zipSync({
+      'META-INF/mods.toml': strToU8(
+        ['modLoader="javafml"', '[[mods]]', `modId="${id}"`, `version="${version}"`].join('\n'),
+      ),
+    })
+  const buf = zipSync({
+    'META-INF/jarjar/a.jar': sub('first', '1.0.0'),
+    'META-INF/jarjar/b.jar': sub('second', '2.0.0'),
+  })
+  const meta = readModMetadata(buf)
+  assert.equal(meta?.modId, 'first')
+  assert.deepEqual(
+    meta?.nested.map((n) => n.modId),
+    ['second'],
+  )
+})
+
+test('多加载器 jar 按实例加载器挑元数据（issue #17）', () => {
+  // Towns-and-Towers-1.12-Fabric+Forge.jar 的形状
+  const buf = jar({
+    'fabric.mod.json': JSON.stringify({
+      id: 'towns',
+      version: '1.12',
+      depends: { minecraft: '1.20.1', 'fabric-api': '*' },
+    }),
+    'META-INF/mods.toml': [
+      'modLoader="javafml"',
+      'loaderVersion="[47,)"',
+      '[[mods]]',
+      'modId="towns"',
+      'version="1.12"',
+      '[[dependencies.towns]]',
+      'modId="minecraft"',
+      'mandatory=true',
+      'versionRange="[1.20.1,1.21)"',
+    ].join('\n'),
+  })
+
+  // Forge 实例读 mods.toml：不该凭空多出 fabric-api 依赖
+  const forge = readModMetadata(buf, { loader: 'forge' })
+  assert.equal(forge?.loader, 'forge')
+  assert.equal(
+    forge?.dependencies.some((d) => d.modId === 'fabric-api'),
+    false,
+  )
+
+  // Fabric 实例仍然读 fabric.mod.json
+  const fabric = readModMetadata(buf, { loader: 'fabric' })
+  assert.equal(fabric?.loader, 'fabric')
+  assert.equal(
+    fabric?.dependencies.some((d) => d.modId === 'fabric-api'),
+    true,
+  )
+})
+
 test('NeoForge type=incompatible 解析为 kind=breaks', () => {
   const buf = jar({
     'META-INF/neoforge.mods.toml': `
