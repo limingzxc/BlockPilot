@@ -46,6 +46,26 @@ gh issue close 10 -R limingzxc/BlockPilot -c "修复说明"
 凭据已写入 `%APPDATA%\GitHub CLI\hosts.yml`（token 来自 git 凭据，权限 600）；
 `gh auth status` 会提示缺 `read:org`——只影响 org 相关查询，repo 的 issue/PR 正常。
 
+**gh 不一定在机器上**（2026-11-09 这次就没有：`Program Files` 与 winget 的 Links 里都没有）。
+两条替代路径，按可用性选：
+
+1. **GitHub MCP connector**（`mcp__github__*`）：能读 issue / PR，**写会被拒**——
+   评论与改状态返回 `403 Resource not accessible by integration`。
+2. **git 凭据 + curl**：推送用的那个 token 权限足够写 issue。
+   `git credential fill` 取 token，别 echo 出来：
+
+```bash
+TOKEN=$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill | sed -n 's/^password=//p')
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+  -H "Content-Type: application/json" --data-binary @body.json \
+  https://api.github.com/repos/limingzxc/BlockPilot/issues/14/comments
+curl -s -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"state":"closed","state_reason":"completed"}' \
+  https://api.github.com/repos/limingzxc/BlockPilot/issues/14
+```
+
+body 里带中文与反引号时先写成文件再 `--data-binary @file`，别拼在 `-d` 里。
+
 ## 检查与测试
 
 新克隆上先 `npm install`（约 35 s）：依赖没装时 `npm run typecheck` 报
