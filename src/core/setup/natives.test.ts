@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -10,7 +10,7 @@ import type { Library, VersionJson } from '../version/types.js'
 import {
   extractNativeJars,
   extractNatives,
-  legacyNativeName,
+  legacyNativeNames,
   nativeArtifact,
   nativeSubdir,
   usesSplitNatives,
@@ -136,23 +136,39 @@ test('1.19+ 的 natives 仍然读 artifact', () => {
   assert.equal(art?.path, 'lwjgl-natives.jar')
 })
 
-test('Legacy Fabric 的扁平 DLL 名要改成 LWJGL 2 的加载名（issue #15）', () => {
-  // Sys.loadLibrary("lwjgl") → System.loadLibrary("lwjgl") → lwjgl64.dll
-  assert.equal(legacyNativeName('lwjgl-windows-amd64.dll', 'x86_64'), 'lwjgl64.dll')
-  assert.equal(legacyNativeName('lwjgl-windows-i386.dll', 'x86'), 'lwjgl.dll')
-  assert.equal(legacyNativeName('OpenAL-amd64.dll', 'x86_64'), 'OpenAL64.dll')
-  assert.equal(legacyNativeName('OpenAL-i386.dll', 'x86'), 'OpenAL.dll')
-  assert.equal(legacyNativeName('jinput-dx8-amd64.dll', 'x86_64'), 'jinput-dx8_64.dll')
-  assert.equal(legacyNativeName('jinput-raw-i386.dll', 'x86'), 'jinput-raw.dll')
-  // 不是当前架构的那一份不写
-  assert.equal(legacyNativeName('lwjgl-windows-i386.dll', 'x86_64'), null)
-  assert.equal(legacyNativeName('lwjgl-windows-amd64.dll', 'x86'), null)
-  // 其它文件原样保留
-  assert.equal(legacyNativeName('lwjgl64.dll', 'x86_64'), 'lwjgl64.dll')
-  assert.equal(legacyNativeName('windows/x64/lwjgl.dll', 'x86_64'), 'windows/x64/lwjgl.dll')
+test('Legacy Fabric 的扁平 DLL 名要改成 LWJGL 2 的加载名（issue #15 / #19）', () => {
+  // System.loadLibrary("lwjgl") 找的是 lwjgl.dll，只给 lwjgl64.dll 会报 no lwjgl
+  assert.deepEqual(legacyNativeNames('lwjgl-windows-amd64.dll', 'x86_64'), [
+    'lwjgl.dll',
+    'lwjgl64.dll',
+  ])
+  assert.deepEqual(legacyNativeNames('lwjgl-windows-i386.dll', 'x86'), ['lwjgl.dll'])
+  assert.deepEqual(legacyNativeNames('OpenAL-amd64.dll', 'x86_64'), ['OpenAL.dll', 'OpenAL64.dll'])
+  assert.deepEqual(legacyNativeNames('OpenAL-i386.dll', 'x86'), ['OpenAL.dll'])
+  assert.deepEqual(legacyNativeNames('jinput-dx8-amd64.dll', 'x86_64'), [
+    'jinput-dx8.dll',
+    'jinput-dx8_64.dll',
+  ])
+  assert.deepEqual(legacyNativeNames('jinput-raw-i386.dll', 'x86'), ['jinput-raw.dll'])
 })
 
-test('解压原生 jar 时按架构改名，只留一份', () => {
+test('架构必须精确匹配，不能只分 32 / 64 位（issue #19）', () => {
+  // 这台机器是 x86-64：aarch64 的那一份必须跳过，否则 JVM 报
+  // Can't load ARM 64-bit .dll on a AMD 64-bit platform
+  assert.equal(legacyNativeNames('lwjgl-windows-aarch64.dll', 'x86_64'), null)
+  assert.equal(legacyNativeNames('lwjgl-windows-amd64.dll', 'arm64'), null)
+  assert.equal(legacyNativeNames('lwjgl-windows-amd64.dll', 'x86'), null)
+  assert.equal(legacyNativeNames('lwjgl-windows-i386.dll', 'x86_64'), null)
+  assert.deepEqual(legacyNativeNames('lwjgl-windows-aarch64.dll', 'arm64'), [
+    'lwjgl.dll',
+    'lwjgl64.dll',
+  ])
+  // 其它文件原样保留
+  assert.deepEqual(legacyNativeNames('lwjgl64.dll', 'x86_64'), ['lwjgl64.dll'])
+  assert.deepEqual(legacyNativeNames('windows/x64/lwjgl.dll', 'x86_64'), ['windows/x64/lwjgl.dll'])
+})
+
+test('解压原生 jar 时按架构挑那一份，amd64 内容不会写成 ARM 的库', () => {
   const root = mkdtempSync(join(tmpdir(), 'blockpilot-natives2-'))
   try {
     const layout = resolveLayout(root, 'inst')
@@ -161,6 +177,7 @@ test('解压原生 jar 时按架构改名，只留一份', () => {
       jarPath,
       zipSync({
         'lwjgl-windows-amd64.dll': strToU8('amd64'),
+        'lwjgl-windows-aarch64.dll': strToU8('aarch64'),
         'lwjgl-windows-i386.dll': strToU8('i386'),
         'OpenAL-amd64.dll': strToU8('openal'),
         'META-INF/MANIFEST.MF': strToU8('x'),
@@ -168,12 +185,16 @@ test('解压原生 jar 时按架构改名，只留一份', () => {
     )
     const dest = layout.nativesDir('1.6.4')
     const count = extractNativeJars([jarPath], dest, { arch: 'x86_64' })
-    assert.equal(count, 2)
-    assert.equal(existsSync(join(dest, 'lwjgl64.dll')), true)
-    assert.equal(existsSync(join(dest, 'OpenAL64.dll')), true)
-    // 32 位的那份不该出现，否则 lwjgl.dll 会被错认成当前架构的库
-    assert.equal(existsSync(join(dest, 'lwjgl-windows-i386.dll')), false)
-    assert.equal(existsSync(join(dest, 'lwjgl.dll')), false)
+    // lwjgl 写两个名字 + OpenAL 写两个名字
+    assert.equal(count, 4)
+    assert.equal(readFileSync(join(dest, 'lwjgl.dll'), 'utf8'), 'amd64')
+    assert.equal(readFileSync(join(dest, 'lwjgl64.dll'), 'utf8'), 'amd64')
+    assert.equal(readFileSync(join(dest, 'OpenAL.dll'), 'utf8'), 'openal')
+    assert.equal(readFileSync(join(dest, 'OpenAL64.dll'), 'utf8'), 'openal')
+    // 32 位与 ARM 的那两份都不该出现
+    for (const name of ['lwjgl-windows-i386.dll', 'lwjgl-windows-aarch64.dll']) {
+      assert.equal(existsSync(join(dest, name)), false, name)
+    }
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

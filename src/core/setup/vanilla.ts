@@ -185,39 +185,49 @@ export function extractNatives(version: VersionJson, env: LaunchEnv, layout: Lay
  * LWJGL 2 原生库的「扁平文件名 → Windows 加载名」对照。
  *
  * Legacy Fabric 的 `lwjgl-platform` natives jar 里是 `lwjgl-windows-amd64.dll` /
- * `lwjgl-windows-i386.dll` / `OpenAL-amd64.dll` 这种带平台后缀的名字——那是它自己
- * 的 SharedLibraryLoader 用的命名。而 LWJGL 2 的 `Sys.loadLibrary("lwjgl")` 走
- * `System.loadLibrary`，在 Windows 上找的是 `lwjgl64.dll` / `lwjgl.dll`。
- * 名字对不上，`java.library.path` 里放再多 DLL 也没用（issue #15）。
+ * `lwjgl-windows-aarch64.dll` / `OpenAL-amd64.dll` 这种带平台后缀的名字——那是它
+ * 自己的 SharedLibraryLoader 用的命名。而 `System.loadLibrary("lwjgl")` 在 Windows
+ * 上找的是 `lwjgl.dll`：只放 `lwjgl64.dll` 会报 `no lwjgl`（issue #15、#19 实测）。
  */
 const LWJGL2_FLAT =
   /^(lwjgl|openal|jinput-dx8|jinput-raw)(?:-[a-z0-9]+)?-(amd64|i386|aarch64)\.dll$/i
 
-/** 同一个库在不同架构下的加载名。键是 {@link LWJGL2_FLAT} 的第一组（小写）。 */
-const LWJGL2_ALIAS: Readonly<Record<string, { readonly x64: string; readonly x86: string }>> = {
-  lwjgl: { x64: 'lwjgl64.dll', x86: 'lwjgl.dll' },
-  openal: { x64: 'OpenAL64.dll', x86: 'OpenAL.dll' },
-  'jinput-dx8': { x64: 'jinput-dx8_64.dll', x86: 'jinput-dx8.dll' },
-  'jinput-raw': { x64: 'jinput-raw_64.dll', x86: 'jinput-raw.dll' },
+/** 文件名里的架构段 ↔ {@link OsArch}。必须精确对上，不能只分 32/64 位。 */
+const ARCH_TOKEN: Readonly<Record<OsArch, string>> = {
+  x86: 'i386',
+  x86_64: 'amd64',
+  arm64: 'aarch64',
 }
 
 /**
- * 解压时这个原生库该落成什么名字。`null` 表示不是当前架构的那一份，不要写。
+ * 同一个库的加载名。`plain` 是 `System.loadLibrary` 直接找的名字，
+ * `wide` 是 64 位约定名（部分代码按 `name + "64"` 拼），两个都写最保险。
+ */
+const LWJGL2_ALIAS: Readonly<Record<string, { readonly plain: string; readonly wide: string }>> = {
+  lwjgl: { plain: 'lwjgl.dll', wide: 'lwjgl64.dll' },
+  openal: { plain: 'OpenAL.dll', wide: 'OpenAL64.dll' },
+  'jinput-dx8': { plain: 'jinput-dx8.dll', wide: 'jinput-dx8_64.dll' },
+  'jinput-raw': { plain: 'jinput-raw.dll', wide: 'jinput-raw_64.dll' },
+}
+
+/**
+ * 解压时这个原生库该落成哪些名字。`null` 表示不是当前架构的那一份，不要写。
+ *
+ * 架构必须**精确**匹配：x64 机器上拿到 aarch64 的 DLL 时，改名只会把
+ * `no lwjgl` 换成 `Can't load ARM 64-bit .dll on a AMD 64-bit platform`（issue #19）。
  *
  * 只认 Windows 的 `.dll`：其他平台的原生库本来就叫 `liblwjgl.so` 之类，
  * 按这套规则改名只会帮倒忙。
  */
-export function legacyNativeName(name: string, arch: OsArch): string | null {
+export function legacyNativeNames(name: string, arch: OsArch): string[] | null {
   const m = LWJGL2_FLAT.exec(name)
-  if (m === null) return name
+  if (m === null) return [name]
   const base = m[1]?.toLowerCase() ?? ''
-  const target = LWJGL2_ALIAS[base]
-  if (target === undefined) return name
-  // amd64 / aarch64 用 64 位名字，i386 用 32 位名字
-  const want64 = arch !== 'x86'
-  const own64 = m[2] !== 'i386'
-  if (want64 !== own64) return null
-  return want64 ? target.x64 : target.x86
+  const alias = LWJGL2_ALIAS[base]
+  if (alias === undefined) return [name]
+  if (m[2]?.toLowerCase() !== ARCH_TOKEN[arch]) return null
+  // 32 位只写 plain：`lwjgl64.dll` 里放 32 位二进制只会让排查更乱
+  return arch === 'x86' ? [alias.plain] : [alias.plain, alias.wide]
 }
 
 /**
@@ -227,7 +237,7 @@ export function legacyNativeName(name: string, arch: OsArch): string | null {
  * 那种库没有 downloads 元数据，`extractNatives` 按 downloads 找不到 jar 路径，
  * 只能由下载侧告诉我们落盘在哪。
  *
- * `arch` 给了就顺手把 LWJGL 2 的扁平文件名改成加载名（见 {@link legacyNativeName}）。
+ * `arch` 给了就顺手把 LWJGL 2 的扁平文件名改成加载名（见 {@link legacyNativeNames}）。
  */
 export function extractNativeJars(
   jars: readonly string[],
@@ -249,13 +259,15 @@ export function extractNativeJars(
       if (name.endsWith('/')) continue
       if (exclude.some((e) => name.startsWith(e))) continue
       // 只保留当前架构那一份，避免同目录里堆着三个架构的 lwjgl
-      const target = opts.arch === undefined ? name : legacyNativeName(name, opts.arch)
-      if (target === null) continue
-      const out = safeJoin(destDir, target)
-      if (out === null) continue
-      mkdirSync(dirname(out), { recursive: true })
-      writeFileSync(out, data)
-      count += 1
+      const targets = opts.arch === undefined ? [name] : legacyNativeNames(name, opts.arch)
+      if (targets === null) continue
+      for (const target of targets) {
+        const out = safeJoin(destDir, target)
+        if (out === null) continue
+        mkdirSync(dirname(out), { recursive: true })
+        writeFileSync(out, data)
+        count += 1
+      }
     }
   }
   return count
