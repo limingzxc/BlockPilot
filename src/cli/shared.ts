@@ -156,19 +156,3 @@ export async function resolveAuth(
     return { ok: false }
   }
 }
-
-/**
- * 全局用法。
- *
- * 文本要 `COMMANDS`，而 `COMMANDS` 在 index.ts 组装；命令文件又不能 import
- * index.ts（会形成循环）。所以由 index.ts 在加载时把真正的 `usage` 注入进来。
- */
-let printUsage: (() => void) | undefined
-
-export function setUsagePrinter(fn: () => void): void {
-  printUsage = fn
-}
-
-export function usage(): void {
-  printUsage?.()
-}

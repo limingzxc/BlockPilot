@@ -30,6 +30,9 @@
   新增码必须进 `FINDING_CODES` 与文档。
 - **lock 是磁盘事实**：`<实例>/.blockpilot/lock.json`；`verify` 只信 lock 与磁盘，不联网。
 - **重跑安全**：deploy 默认不覆盖已有 overrides；update 先下载校验再删旧文件。
+- **串联命令用 `consumeValue`**：run / install 这类多 Operation 命令，中间步骤走
+  `consumeValue(..., { exitEvent: false })` 拿 result；不要直接 `consume` 再手写
+  `result`/`capture`——事件模式下忘记捕获会静默返回 1。
 
 ## 常用检查
 

@@ -15,7 +15,7 @@ import type { CommandContext } from '../commands.js'
 import { defineCommand } from '../commands.js'
 import { CHINA, INSTANCE, ROOT } from '../common-flags.js'
 import { SEVERITY_MARK, VERDICT_TEXT } from '../render/preflight.js'
-import { pickJavaOrReport, positional, usage } from '../shared.js'
+import { pickJavaOrReport, positional } from '../shared.js'
 import { C, consume, say } from '../ui.js'
 
 export const cmdDeploy = defineCommand({
@@ -112,7 +112,7 @@ async function resolvePackArg(
 export async function runDeploy(ctx: CommandContext): Promise<number> {
   let packPath = positional(ctx)
   if (packPath === undefined) {
-    usage()
+    ctx.usage()
     return 1
   }
   const layout = ctx.layout

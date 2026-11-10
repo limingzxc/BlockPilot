@@ -26,7 +26,7 @@ import { cmdVerify } from './commands/verify.js'
 import type { Command } from './commands.js'
 import { createContext, usageText } from './commands.js'
 import { validateFlags } from './flags.js'
-import { setUsagePrinter, UsageError } from './shared.js'
+import { UsageError } from './shared.js'
 import {
   C,
   createInterrupt,
@@ -63,9 +63,6 @@ export const COMMANDS: readonly Command[] = [
   cmdLogs,
   cmdDiag,
 ]
-
-// 命令文件不能 import index.ts（会形成循环）：把 usage 注入 shared，handler 缺位置参数时用它
-setUsagePrinter(usage)
 
 /**
  * 全局的 `--proxy <url>`。放在子命令前后都行。
@@ -150,6 +147,7 @@ async function main(): Promise<number> {
     createContext({
       argv: args,
       signal: createInterrupt().signal,
+      usage,
       ...(proxy === undefined ? {} : { proxy }),
     }),
   )

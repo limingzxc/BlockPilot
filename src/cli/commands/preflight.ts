@@ -6,7 +6,7 @@ import type { CommandContext } from '../commands.js'
 import { defineCommand } from '../commands.js'
 import { CHINA } from '../common-flags.js'
 import { renderHuman, verdictExit } from '../render/preflight.js'
-import { positional, usage } from '../shared.js'
+import { positional } from '../shared.js'
 import { consume, say } from '../ui.js'
 
 export const cmdPreflight = defineCommand({
@@ -26,7 +26,7 @@ export const cmdPreflight = defineCommand({
 export async function runPreflight(ctx: CommandContext): Promise<number> {
   const target = positional(ctx)
   if (target === undefined) {
-    usage()
+    ctx.usage()
     return 1
   }
   const asJson = ctx.has('--json')

@@ -5,7 +5,7 @@ import type { CommandContext } from '../commands.js'
 import { defineCommand } from '../commands.js'
 import { CHINA, INSTANCE, ROOT } from '../common-flags.js'
 import { assetsIncompleteHint } from '../render/assets.js'
-import { positional, usage } from '../shared.js'
+import { positional } from '../shared.js'
 import { C, consume, humanBytes, say } from '../ui.js'
 
 export const cmdSetup = defineCommand({
@@ -24,7 +24,7 @@ export const cmdSetup = defineCommand({
 export async function runSetup(ctx: CommandContext): Promise<number> {
   const versionId = positional(ctx)
   if (versionId === undefined) {
-    usage()
+    ctx.usage()
     return 1
   }
   const layout = ctx.layout

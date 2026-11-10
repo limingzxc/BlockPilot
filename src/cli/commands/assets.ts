@@ -2,7 +2,7 @@ import { createAssetsSetup } from '../../core/setup/assets.js'
 import type { CommandContext } from '../commands.js'
 import { defineCommand } from '../commands.js'
 import { CHINA, ROOT } from '../common-flags.js'
-import { parseConcurrencyArg, positional, usage } from '../shared.js'
+import { parseConcurrencyArg, positional } from '../shared.js'
 import { C, consume, humanBytes, say } from '../ui.js'
 
 export const cmdAssets = defineCommand({
@@ -22,7 +22,7 @@ export const cmdAssets = defineCommand({
 export async function runAssets(ctx: CommandContext): Promise<number> {
   const versionId = positional(ctx)
   if (versionId === undefined) {
-    usage()
+    ctx.usage()
     return 1
   }
   const layout = ctx.layout

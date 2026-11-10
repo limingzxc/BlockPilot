@@ -142,6 +142,42 @@ export interface OpUi<T> {
   readonly exitEvent?: boolean
 }
 
+/** `consumeValue` 的结果：退出码 + 中间 Operation 的 result。 */
+export interface ConsumedValue<T> {
+  readonly code: number
+  readonly value: T | undefined
+}
+
+/**
+ * 串联命令专用：跑完中间 Operation，拿到 result 继续编排。
+ *
+ * 不要直接 `consume` 再手写 `result`/`capture`——事件模式下 `consume` 只发事件、
+ * 不调用 `result`，忘记 `capture` 就会静默拿不到值并提前返回 1（install/run
+ * 都踩过一次）。这里把两种模式的捕获收在一处，调用方只关心返回值。
+ */
+export async function consumeValue<T>(
+  op: Operation<T>,
+  ui: Omit<OpUi<T>, 'result' | 'capture'>,
+  signal: AbortSignal,
+): Promise<ConsumedValue<T>> {
+  let value: T | undefined
+  const code = await consume(
+    op,
+    {
+      ...ui,
+      result: (v) => {
+        value = v
+        return ui.exitCode?.(v) ?? 0
+      },
+      capture: (v) => {
+        value = v
+      },
+    },
+    signal,
+  )
+  return { code, value }
+}
+
 /**
  * 跑完一个 Operation 并渲染。返回退出码。
  *

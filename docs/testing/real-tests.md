@@ -50,6 +50,30 @@ Java 选择用例、CLI 消费循环）并新增了 auth。242 个单测全绿�
 最后两行是环境事实，不是产品缺陷——但它决定了 T2 里 Fabric 加载器安装的耗时预期，
 以及为什么 `--china` 必须单独测。
 
+### 重建真实夹具
+
+`fixtures/` 被 gitignore，换机器或清缓存后要按下面顺序重建。小件可以自动拉：
+
+```bash
+npm run fixtures
+```
+
+它只下载 FO 6.5.0 `.mrpack` 和 E2E-303 用的 sodium 1.20.1 jar，并校验 sha1。
+`fixtures/mcroot` 的其余内容是真实下载，必须手动执行：
+
+```bash
+npm run build
+node dist/cli/index.js deploy fixtures/fo-6.5.0.mrpack --root fixtures/mcroot --instance fo
+node dist/cli/index.js assets 1.21.1 --root fixtures/mcroot
+node dist/cli/index.js java install 21 --root fixtures/mcroot
+```
+
+注意：
+
+- `assets` 约 788 MB，脚本刻意不默认拉；
+- `deploy` 后如果自检报 `ASSETS_MISSING`，先跑 `assets` 再 `run`；
+- T2+ 会写盘、联网，E2E-301 会打开游戏窗口；CI 环境会拒绝执行。
+
 ## 3. 用例表
 
 ### T0 离线（约 40 s，零网络）

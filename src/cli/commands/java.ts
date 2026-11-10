@@ -5,7 +5,7 @@ import type { JavaScanResult } from '../../core/java/types.js'
 import type { CommandContext } from '../commands.js'
 import { defineCommand } from '../commands.js'
 import { CHINA, ROOT } from '../common-flags.js'
-import { positional, usage } from '../shared.js'
+import { positional } from '../shared.js'
 import { C, consume, humanBytes, say } from '../ui.js'
 
 export const cmdJava = defineCommand({
@@ -38,7 +38,7 @@ export async function runJavaInstall(ctx: CommandContext): Promise<number> {
   // 第一个位置参数是 `install`，大版本在它后面
   const majorArg = ctx.argv[1]
   if (majorArg === undefined || majorArg.startsWith('--')) {
-    usage()
+    ctx.usage()
     return 1
   }
   const major = Number(majorArg)

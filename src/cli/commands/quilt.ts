@@ -3,7 +3,7 @@ import { createQuiltSetup } from '../../core/setup/quilt.js'
 import type { CommandContext } from '../commands.js'
 import { defineCommand } from '../commands.js'
 import { CHINA, INSTANCE, ROOT } from '../common-flags.js'
-import { positional, usage } from '../shared.js'
+import { positional } from '../shared.js'
 import { C, consume, say } from '../ui.js'
 
 export const cmdQuilt = defineCommand({
@@ -23,7 +23,7 @@ export const cmdQuilt = defineCommand({
 export async function runQuilt(ctx: CommandContext): Promise<number> {
   const gameVersion = positional(ctx)
   if (gameVersion === undefined) {
-    usage()
+    ctx.usage()
     return 1
   }
   const layout = ctx.layout

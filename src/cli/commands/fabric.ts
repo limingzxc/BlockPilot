@@ -3,7 +3,7 @@ import { createFabricSetup } from '../../core/setup/fabric.js'
 import type { CommandContext } from '../commands.js'
 import { defineCommand } from '../commands.js'
 import { CHINA, INSTANCE, ROOT } from '../common-flags.js'
-import { positional, usage } from '../shared.js'
+import { positional } from '../shared.js'
 import { C, consume, say } from '../ui.js'
 
 export const cmdFabric = defineCommand({
@@ -24,7 +24,7 @@ export const cmdFabric = defineCommand({
 export async function runFabric(ctx: CommandContext): Promise<number> {
   const gameVersion = positional(ctx)
   if (gameVersion === undefined) {
-    usage()
+    ctx.usage()
     return 1
   }
   const layout = ctx.layout

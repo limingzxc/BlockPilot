@@ -2,7 +2,6 @@ import { join } from 'node:path'
 import { diagHint, preflightHint, setupHint } from '../../core/hints.js'
 import { readConfig } from '../../core/instance/config.js'
 import { createLaunchPlan } from '../../core/launch/index.js'
-import type { LaunchPlan } from '../../core/launch/plan.js'
 import { createLauncher } from '../../core/launch/run.js'
 import type { CommandContext } from '../commands.js'
 import { defineCommand } from '../commands.js'
@@ -14,10 +13,9 @@ import {
   pickJavaOrReport,
   positional,
   resolveAuth,
-  usage,
   warnOfflineUsername,
 } from '../shared.js'
-import { C, consume, say } from '../ui.js'
+import { C, consume, consumeValue, say } from '../ui.js'
 
 export const cmdRun = defineCommand({
   name: 'run',
@@ -45,7 +43,7 @@ export const cmdRun = defineCommand({
 export async function runGame(ctx: CommandContext): Promise<number> {
   const versionId = positional(ctx)
   if (versionId === undefined) {
-    usage()
+    ctx.usage()
     return 1
   }
   const layout = ctx.layout
@@ -83,22 +81,10 @@ export async function runGame(ctx: CommandContext): Promise<number> {
     mirror: ctx.china,
   })
 
-  let plan: LaunchPlan | undefined
-  const planCode = await consume(
+  // 真正启动是下一个 Operation；exit 留给它
+  const { code: planCode, value: plan } = await consumeValue(
     planOp,
-    {
-      progress: () => {},
-      log: () => {},
-      result: (value) => {
-        plan = value
-        return 0
-      },
-      capture: (value) => {
-        plan = value
-      },
-      // 真正启动是下一个 Operation；exit 留给它
-      exitEvent: false,
-    },
+    { progress: () => {}, log: () => {}, exitEvent: false },
     ctx.signal,
   )
   if (planCode !== 0 || plan === undefined) return 1

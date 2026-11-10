@@ -5,7 +5,7 @@ import { createVanillaSetup } from '../../core/setup/vanilla.js'
 import type { CommandContext } from '../commands.js'
 import { defineCommand } from '../commands.js'
 import { CHINA, INSTANCE, ROOT } from '../common-flags.js'
-import { pickJavaOrReport, positional, usage } from '../shared.js'
+import { pickJavaOrReport, positional } from '../shared.js'
 import { C, consume, say } from '../ui.js'
 
 export const cmdForge = defineCommand({
@@ -48,7 +48,7 @@ export const cmdNeoforge = defineCommand({
 export async function runForge(ctx: CommandContext, kind: 'forge' | 'neoforge'): Promise<number> {
   const gameVersion = positional(ctx)
   if (gameVersion === undefined) {
-    usage()
+    ctx.usage()
     return 1
   }
   const layout = ctx.layout

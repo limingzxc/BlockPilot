@@ -58,6 +58,8 @@ export interface CommandContext {
   has(flag: string): boolean
   /** flag 后面那个值 */
   value(flag: string): string | undefined
+  /** 缺位置参数时打印全局用法。由 index.ts 注入，命令模块不依赖模块级可变状态 */
+  usage(): void
 }
 
 function argOf(argv: readonly string[], name: string): string | undefined {
@@ -71,13 +73,20 @@ class Ctx implements CommandContext {
   readonly proxy: string | undefined
   readonly root: string
   readonly instance: string
+  readonly usage: () => void
   private cachedLayout: Layout | undefined
   private cachedSources: readonly Mirror[] | undefined
 
-  constructor(argv: readonly string[], signal: AbortSignal, proxy: string | undefined) {
+  constructor(
+    argv: readonly string[],
+    signal: AbortSignal,
+    proxy: string | undefined,
+    usage: () => void,
+  ) {
     this.argv = argv
     this.signal = signal
     this.proxy = proxy
+    this.usage = usage
     this.root = argOf(argv, '--root') ?? defaultRoot()
     this.instance = argOf(argv, '--instance') ?? 'default'
   }
@@ -109,8 +118,9 @@ export function createContext(input: {
   readonly argv: readonly string[]
   readonly signal: AbortSignal
   readonly proxy?: string
+  readonly usage: () => void
 }): CommandContext {
-  return new Ctx(input.argv, input.signal, input.proxy)
+  return new Ctx(input.argv, input.signal, input.proxy, input.usage)
 }
 
 /**

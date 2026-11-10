@@ -2,15 +2,14 @@ import { resolve } from 'node:path'
 import { createInstaller } from '../../core/download/index.js'
 import { detectHost } from '../../core/host.js'
 import { createPreflight } from '../../core/preflight/index.js'
-import type { PreflightReport } from '../../core/preflight/types.js'
 import { resolveCurseforge } from '../../sources/curseforge.js'
 import { MODRINTH_API_MCIM, ModrinthSource } from '../../sources/modrinth.js'
 import type { CommandContext } from '../commands.js'
 import { defineCommand } from '../commands.js'
 import { CHINA } from '../common-flags.js'
 import { renderHuman } from '../render/preflight.js'
-import { positional, usage } from '../shared.js'
-import { C, consume, humanBytes, say } from '../ui.js'
+import { positional } from '../shared.js'
+import { C, consume, consumeValue, humanBytes, say } from '../ui.js'
 
 export const cmdInstall = defineCommand({
   name: 'install',
@@ -32,7 +31,7 @@ export async function runInstall(ctx: CommandContext): Promise<number> {
   const modsDirArg = ctx.value('--mods-dir')
   // validateFlags 已经拦过缺 --mods-dir；这里只是给类型收窄
   if (target === undefined || modsDirArg === undefined) {
-    usage()
+    ctx.usage()
     return 1
   }
   const dryRun = ctx.has('--dry-run')
@@ -46,22 +45,10 @@ export async function runInstall(ctx: CommandContext): Promise<number> {
     ...(host === undefined ? {} : { host }),
     curseforge: resolveCurseforge(),
   })
-  let report: PreflightReport | undefined
-  const preflightCode = await consume(
+  // 还有安装步骤要跑；exit 留给整条命令结束时写
+  const { code: preflightCode, value: report } = await consumeValue(
     preflight,
-    {
-      progress: () => {},
-      log: () => {},
-      result: (value) => {
-        report = value
-        return 0
-      },
-      capture: (value) => {
-        report = value
-      },
-      // 还有安装步骤要跑；exit 留给整条命令结束时写
-      exitEvent: false,
-    },
+    { progress: () => {}, log: () => {}, exitEvent: false },
     ctx.signal,
   )
   if (preflightCode !== 0 || report === undefined) return 1
