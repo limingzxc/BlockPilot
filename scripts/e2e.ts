@@ -23,9 +23,11 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs'
 import { createServer } from 'node:http'
@@ -49,6 +51,8 @@ const TESTDATA = join(REPO, 'testdata', 'instances')
 const FO_CRASH_LOG = join(TESTDATA, 'crash', 'logs', 'controlify-mixin.log')
 const AUTH_FAIL_LOG = join(TESTDATA, 'auth', 'logs', 'auth-failed.log')
 const CLEAN_LOG = join(TESTDATA, 'clean', 'logs', 'clean.log')
+/** 贴吧真实帖子的 Fabric tinyremapper 堆空间崩溃，见 docs/testing/real-tests.md §3.1。 */
+const OOM_LOG = join(TESTDATA, 'oom', 'logs', 'fabric-heap-space.log')
 
 // ---------------------------------------------------------------------------
 // 基础设施
@@ -173,6 +177,21 @@ function parseJson(r: RunResult, label: string): Record<string, unknown> {
   }
 }
 
+/** `--events` 的 stdout 必须是纯 ndjson：任何一行解析失败都说明混进了人类文本。 */
+function parseNdjson(r: RunResult, label: string): Record<string, unknown>[] {
+  const lines = strip(r.stdout)
+    .trim()
+    .split('\n')
+    .filter((l) => l !== '')
+  return lines.map((line, i) => {
+    try {
+      return JSON.parse(line) as Record<string, unknown>
+    } catch {
+      throw new AssertError(`${label}：第 ${String(i + 1)} 行不是 JSON：${line.slice(0, 80)}`)
+    }
+  })
+}
+
 function asNumber(v: unknown, label: string): number {
   if (typeof v !== 'number') fail(`${label}：期望 number，实际 ${typeof v}`)
   return v
@@ -203,6 +222,48 @@ function offlineEnv(): NodeJS.ProcessEnv {
   }
 }
 
+/**
+ * 造一个最小 Fabric 模组 jar。
+ *
+ * T0 不依赖 `fixtures/`：真实用户 mods/ 里的 jar 也是这个结构，zipSync 现造
+ * 足够让本地扫描读到 modId、版本与依赖。CI 上没有 1.7 GB 夹具也能跑。
+ */
+function fakeFabricMod(
+  modId: string,
+  opts: { version?: string; depends?: Record<string, string> } = {},
+): Uint8Array {
+  const meta: Record<string, unknown> = {
+    schemaVersion: 1,
+    id: modId,
+    version: opts.version ?? '1.0.0',
+    name: modId,
+  }
+  if (opts.depends !== undefined) meta.depends = opts.depends
+  return zipSync({ 'fabric.mod.json': strToU8(JSON.stringify(meta)) })
+}
+
+/** 写一个 Prism/MultiMC 实例标记，让本地预检能拿到 MC 版本与加载器。 */
+function writeInstanceMarker(
+  dir: string,
+  gameVersion: string,
+  loader: 'fabric' | 'forge',
+  loaderVersion: string,
+): void {
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    join(dir, 'mmc-pack.json'),
+    JSON.stringify({
+      components: [
+        { uid: 'net.minecraft', version: gameVersion },
+        {
+          uid: loader === 'fabric' ? 'net.fabricmc.fabric-loader' : 'net.minecraftforge',
+          version: loaderVersion,
+        },
+      ],
+    }),
+  )
+}
+
 interface MmcMarker {
   readonly components?: readonly { readonly uid?: string; readonly version?: string }[]
 }
@@ -230,14 +291,21 @@ const REQUIRES: Readonly<Record<string, readonly string[]>> = {
   'E2E-010B': [MCROOT],
   'E2E-011': [MCROOT],
   'E2E-012': [MCROOT],
+  'E2E-028': [FO_CRASH_LOG],
+  'E2E-029': [FO_CRASH_LOG],
+  'E2E-035': [OOM_LOG],
   'E2E-101': [join(FIX, 'fo-6.5.0.mrpack')],
   'E2E-102': [join(FIX, 'fo-6.5.0.mrpack')],
   'E2E-103': [join(FIX, 'real-pack.mrpack')],
   'E2E-104': [join(FIX, 'cf-pack.zip')],
   'E2E-106': [join(FIX, 'fo-6.5.0.mrpack')],
   'E2E-107': [join(FIX, 'demo.mrpack')],
+  'E2E-108': [MCROOT],
+  'E2E-110': [MCROOT],
   'E2E-201': [MCROOT],
   'E2E-202': [MCROOT],
+  'E2E-204': [join(FIX, 'closure.mrpack')],
+  'E2E-205': [MCROOT],
   'E2E-301': [MCROOT],
   'E2E-302': [MCROOT],
   'E2E-303': [MCROOT],
@@ -776,6 +844,63 @@ const CASES: readonly CaseDef[] = [
   },
 
   {
+    id: 'E2E-018',
+    title: 'accounts：过滤坏条目、当前账号、按名字移除',
+    tier: 0,
+    async run(ctx) {
+      const root = join(ctx.tmp, 'accounts-root')
+      const store = join(root, 'auth', 'accounts.json')
+      const uuid = 'a'.repeat(32)
+
+      const empty = await ctx.cli(['accounts', '--root', root], { offline: true })
+      assertCode(empty, 0, '空存档')
+      assertText(empty, '还没有账号', '空存档提示')
+
+      // 一条形状完整、一条 uuid 不合法：坏条目必须在读存档时就被过滤，
+      // 而不是留到 run 启动时才炸（store 的 isValidAccount 契约）
+      mkdirSync(join(root, 'auth'), { recursive: true })
+      writeFileSync(
+        store,
+        JSON.stringify({
+          version: 1,
+          active: uuid,
+          accounts: [
+            {
+              uuid,
+              name: 'Alex',
+              accessToken: 'tok',
+              expiresAt: Date.now() + 3_600_000,
+              obtainedAt: Date.now(),
+            },
+            { uuid: 'broken', name: 'Broken', accessToken: 'x', expiresAt: 0, obtainedAt: 0 },
+          ],
+        }),
+      )
+
+      const listed = await ctx.cli(['accounts', '--root', root], { offline: true })
+      assertCode(listed, 0, '列出账号')
+      assertText(listed, 'Alex', '有效账号应显示')
+      assertText(listed, uuid, 'uuid 应显示')
+      assertText(listed, /[*]\s+Alex/, '当前账号应有标记')
+      assertNoText(listed, 'Broken', '形状不完整的条目应被过滤')
+
+      // 名字大小写不敏感：玩家记得的是「Alex」，不会照着 uuid 敲
+      const removed = await ctx.cli(['accounts', '--root', root, '--remove', 'alex'], {
+        offline: true,
+      })
+      assertCode(removed, 0, '按名字删除')
+      const after = await ctx.cli(['accounts', '--root', root], { offline: true })
+      assertText(after, '还没有账号', '删完后应为空')
+
+      const ghost = await ctx.cli(['accounts', '--root', root, '--remove', 'Ghost'], {
+        offline: true,
+      })
+      assertCode(ghost, 1, '删除不存在的账号')
+      assertText(ghost, '没有这个账号', '应说明没找到')
+    },
+  },
+
+  {
     id: 'E2E-020',
     title: 'config --jvm-args 真正进入启动命令',
     tier: 0,
@@ -964,6 +1089,448 @@ const CASES: readonly CaseDef[] = [
       assert(at >= 0, 'args 里应保留 --accessToken 占位')
       assert(args[at + 1] === '***', `--accessToken 的值应脱敏，实际 ${String(args[at + 1])}`)
       assert(events[events.length - 1]?.type === 'exit', '最后一行应是 exit')
+    },
+  },
+
+  {
+    id: 'E2E-024',
+    title: 'java：install 参数校验与托管目录发现',
+    tier: 0,
+    async run(ctx) {
+      // 三个都在任何网络请求之前失败：缺大版本、非数字、低于 8
+      for (const args of [
+        ['java', 'install'],
+        ['java', 'install', 'abc'],
+        ['java', 'install', '7'],
+      ]) {
+        const r = await ctx.cli(args, { offline: true, timeoutMs: 30_000 })
+        assertCode(r, 1, args.join(' '))
+      }
+
+      // 托管 JRE 的发现是真实文件系统行为（<root>/java/<name>/bin/java），
+      // 单测只能造假目录；有夹具时用真 JRE 稳一下
+      if (!existsSync(join(MCROOT, 'java'))) return
+      const scan = await ctx.cli(['java', '--root', MCROOT], { offline: true, timeoutMs: 90_000 })
+      assertCode(scan, 0, 'java 扫描')
+      assertText(scan, 'Java 21', '应识别托管 JRE 21')
+      assertText(scan, join(MCROOT, 'java'), '应列出 <root>/java 下的路径')
+    },
+  },
+
+  {
+    id: 'E2E-025',
+    title: '空格与中文路径：config → launch → verify 全链路',
+    tier: 0,
+    async run(ctx) {
+      const root = join(ctx.tmp, '我的 世界', '根 目录')
+      const instance = '实例 a'
+      const gameDir = join(root, 'instances', instance)
+      const version = '1.20.1'
+      mkdirSync(join(root, 'versions', version), { recursive: true })
+      writeFileSync(
+        join(root, 'versions', version, `${version}.json`),
+        JSON.stringify({
+          id: version,
+          type: 'release',
+          mainClass: 'net.minecraft.client.main.Main',
+          assets: '5',
+          libraries: [],
+          arguments: {
+            // biome-ignore lint/suspicious/noTemplateCurlyInString: 版本 JSON 的占位符
+            jvm: ['-cp', '${classpath}'],
+            // biome-ignore lint/suspicious/noTemplateCurlyInString: 版本 JSON 的占位符
+            game: ['--username', '${auth_player_name}'],
+          },
+        }),
+      )
+
+      const set = await ctx.cli(
+        [
+          'config',
+          '--root',
+          root,
+          '--instance',
+          instance,
+          '--java',
+          process.execPath,
+          '--memory',
+          '3072',
+          '--jvm-args',
+          '-XX:+UseG1GC',
+        ],
+        { offline: true },
+      )
+      assertCode(set, 0, 'config 写入')
+
+      const read = await ctx.cli(['config', '--root', root, '--instance', instance, '--json'], {
+        offline: true,
+      })
+      const config = asRecord(parseJson(read, 'config --json').config, 'config')
+      assert(config.javaPath === process.execPath, 'javaPath 应原样保留含空格的路径')
+
+      const launch = await ctx.cli(
+        ['launch', version, '--root', root, '--instance', instance, '--raw', '--offline'],
+        { offline: true },
+      )
+      assertCode(launch, 0, 'launch')
+      assertText(launch, process.execPath, '配置里的 java 应进入启动命令')
+      assertText(launch, '-Xmx3072M', '内存参数')
+      assertText(launch, '-XX:+UseG1GC', 'jvmArgs')
+
+      const body = Buffer.from('中文路径 mod')
+      const settings = Buffer.from('{"lang":"zh_cn"}')
+      mkdirSync(join(gameDir, 'mods'), { recursive: true })
+      mkdirSync(join(gameDir, 'config'), { recursive: true })
+      mkdirSync(join(gameDir, '.blockpilot'), { recursive: true })
+      writeFileSync(join(gameDir, 'mods', '中 文.jar'), body)
+      writeFileSync(join(gameDir, 'config', '设置 文件.json'), settings)
+      writeFileSync(
+        join(gameDir, '.blockpilot', 'lock.json'),
+        JSON.stringify({
+          version: 1,
+          pack: { name: '中文包', kind: 'mrpack', file: 'p.mrpack' },
+          target: { gameVersion: version, loader: { kind: 'vanilla', version } },
+          complete: true,
+          updatedAt: '2026-01-01T00:00:00.000Z',
+          files: [
+            {
+              path: 'mods/中 文.jar',
+              sha1: createHash('sha1').update(body).digest('hex'),
+              size: body.length,
+            },
+            {
+              path: 'config/设置 文件.json',
+              sha512: createHash('sha512').update(settings).digest('hex'),
+              size: settings.length,
+            },
+          ],
+        }),
+      )
+
+      const verify = await ctx.cli(['verify', '--root', root, '--instance', instance, '--json'], {
+        offline: true,
+      })
+      assertCode(verify, 0, 'verify 中文路径')
+      const report = parseJson(verify, 'verify --json')
+      assert(report.okAll === true, '所有文件与清单应一致')
+      assert(asNumber(report.checked, 'checked') === 2, 'checked 期望 2')
+    },
+  },
+
+  {
+    id: 'E2E-026',
+    title: '坏 lock / 坏配置：稳定错误码，不崩成 unexpected error',
+    tier: 0,
+    async run(ctx) {
+      const root = join(ctx.tmp, 'broken-root')
+      const instance = 'b1'
+      const gameDir = join(root, 'instances', instance)
+      mkdirSync(join(gameDir, '.blockpilot'), { recursive: true })
+      const lockFile = join(gameDir, '.blockpilot', 'lock.json')
+
+      const noLock = await ctx.cli(['verify', '--root', root, '--instance', instance], {
+        offline: true,
+      })
+      assertCode(noLock, 1, '没有 lock 的 verify')
+      assertText(noLock, 'LOCK_NOT_FOUND', '稳定错误码')
+
+      const noLockUpdate = await ctx.cli(['update', '--root', root, '--instance', instance], {
+        offline: true,
+      })
+      assertCode(noLockUpdate, 1, '没有 lock 的 update')
+      assertText(noLockUpdate, 'LOCK_NOT_FOUND', '稳定错误码')
+
+      const noLockLoader = await ctx.cli(
+        ['update', '--root', root, '--instance', instance, '--loader'],
+        { offline: true },
+      )
+      assertCode(noLockLoader, 1, '没有 lock 的 --loader')
+      assertText(noLockLoader, 'lock.json', '应说明缺的是 lock.json')
+
+      writeFileSync(lockFile, '{')
+      const corrupt = await ctx.cli(['verify', '--root', root, '--instance', instance], {
+        offline: true,
+      })
+      assertCode(corrupt, 1, '坏 JSON 的 verify')
+      assertText(corrupt, 'LOCK_CORRUPT', '稳定错误码')
+      assertNoText(corrupt, 'unexpected error', '不该是未处理异常')
+
+      writeFileSync(lockFile, JSON.stringify({ version: 2, files: [], pack: {}, target: {} }))
+      const version2 = await ctx.cli(['update', '--root', root, '--instance', instance], {
+        offline: true,
+      })
+      assertCode(version2, 1, '版本不认识的 lock')
+      assertText(version2, 'LOCK_CORRUPT', '稳定错误码')
+
+      writeFileSync(
+        lockFile,
+        JSON.stringify({
+          version: 1,
+          pack: { name: '半成品', kind: 'mrpack', file: 'p.mrpack' },
+          target: { gameVersion: '1.21.1', loader: { kind: 'fabric', version: '0.19.3' } },
+          complete: false,
+          updatedAt: '2026-01-01T00:00:00.000Z',
+          files: [],
+        }),
+      )
+      const incomplete = await ctx.cli(
+        ['verify', '--root', root, '--instance', instance, '--json'],
+        { offline: true },
+      )
+      assertCode(incomplete, 2, '未完成的部署')
+      const report = parseJson(incomplete, 'incomplete verify')
+      assert(report.okAll === false, 'okAll 应为 false')
+      assert(asArray(report.issues, 'issues').length === 0, '文件都在时 issues 应为空')
+
+      writeFileSync(join(gameDir, '.blockpilot', 'config.json'), '{"version":99}')
+      const badConfig = await ctx.cli(
+        ['config', '--root', root, '--instance', instance, '--json'],
+        { offline: true },
+      )
+      assertCode(badConfig, 1, '坏配置')
+      assertText(badConfig, 'CONFIG_CORRUPT', '稳定错误码')
+    },
+  },
+
+  {
+    id: 'E2E-027',
+    title: '--events 失败路径：stdout 仍只有 ndjson，且只有一个 exit',
+    tier: 0,
+    async run(ctx) {
+      const missing = await ctx.cli(['preflight', join(ctx.tmp, 'nope'), '--no-host', '--events'], {
+        offline: true,
+      })
+      assertCode(missing, 1, '不存在的 target')
+      assertNoText(missing, '\u001b[', '事件流不应有 ANSI')
+      const events = parseNdjson(missing, 'preflight --events')
+      assert(events.length >= 2, `事件太少：${String(events.length)}`)
+      assert(
+        events.some((e) => e.type === 'failed' && e.code === 'TARGET_NOT_FOUND'),
+        '应有 TARGET_NOT_FOUND',
+      )
+      const exits = events.filter((e) => e.type === 'exit')
+      assert(exits.length === 1 && exits[0]?.code === 1, '应有且只有一个 exit=1')
+      assert(events[events.length - 1]?.type === 'exit', '最后一行应是 exit')
+
+      // 未知命令走 main 的入口分支，不经过 Operation；漏了 emitExit 时消费者
+      // 只能等到管道关闭才知道结束
+      const unknown = await ctx.cli(['nosuchcommand', '--events'], { offline: true })
+      assertCode(unknown, 1, '未知命令')
+      const unknownEvents = parseNdjson(unknown, '未知命令 --events')
+      assert(
+        unknownEvents.some((e) => e.type === 'failed' && e.code === 'UNKNOWN_COMMAND'),
+        '应有 UNKNOWN_COMMAND',
+      )
+      assert(unknownEvents.filter((e) => e.type === 'exit').length === 1, 'exit 不应重复')
+
+      // 代理在命令分发前解析；失败时同样要以 exit 收尾
+      const badProxy = await ctx.cli(
+        ['preflight', join(FIX, 'instance-ok'), '--proxy', 'socks5://127.0.0.1:1080', '--events'],
+        { offline: true },
+      )
+      assertCode(badProxy, 1, '不支持的代理协议')
+      const proxyEvents = parseNdjson(badProxy, '坏代理 --events')
+      assert(
+        proxyEvents.length === 1 && proxyEvents[0]?.type === 'exit' && proxyEvents[0]?.code === 1,
+        'stdout 只应有 exit=1',
+      )
+    },
+  },
+
+  {
+    id: 'E2E-028',
+    title: 'diag 自动选证据：logs 混放时按 mtime 挑最新',
+    tier: 0,
+    async run(ctx) {
+      const root = join(ctx.tmp, 'diag-root')
+      const instance = 'd1'
+      const gameDir = join(root, 'instances', instance)
+      mkdirSync(join(gameDir, 'logs'), { recursive: true })
+      const old = join(gameDir, 'logs', '2026-01-01-1.log')
+      writeFileSync(old, 'clean log\n')
+      const latest = join(gameDir, 'logs', 'latest.log')
+      cpSync(FO_CRASH_LOG, latest)
+      // Windows 的 CopyFile 会保留源文件时间戳；这里显式设成「一小时前 vs 现在」，
+      // 否则结果取决于样本自己有多旧
+      const past = new Date(Date.now() - 3_600_000)
+      utimesSync(old, past, past)
+      const now = new Date()
+      utimesSync(latest, now, now)
+
+      const r = await ctx.cli(['diag', '--root', root, '--instance', instance, '--json'], {
+        offline: true,
+        timeoutMs: 60_000,
+      })
+      assertCode(r, 2, '自动发现的崩溃日志')
+      const j = parseJson(r, 'diag --json')
+      assert(j.verdict === 'crash', `verdict 期望 crash，实际 ${String(j.verdict)}`)
+      assert(
+        String(j.logPath).endsWith('latest.log'),
+        `应挑最新的 latest.log，实际 ${String(j.logPath)}`,
+      )
+      const primary = asRecord(j.primary, 'primary')
+      assert(primary.kind === 'mixin', `kind 期望 mixin，实际 ${String(primary.kind)}`)
+    },
+  },
+
+  {
+    id: 'E2E-029',
+    title: 'MCP 错误输入：返回 isError，服务仍继续响应',
+    tier: 0,
+    async run(ctx) {
+      await withMcp(async (call) => {
+        const notLog = await call('diagnose_crash', { logPath: join(FIX, 'fo-6.5.0.mrpack') })
+        assert(notLog.isError === true, '非 .log/.txt 应 isError')
+
+        const missingLog = await call('diagnose_crash', { logPath: join(ctx.tmp, 'nope.log') })
+        assert(missingLog.isError === true, '不存在的日志应 isError')
+
+        const missingPack = await call('preflight_modpack', {
+          path: join(ctx.tmp, 'nope.mrpack'),
+        })
+        assert(missingPack.isError === true, '不存在的包应 isError')
+
+        // 连续三次坏输入后仍能正常返回：stdio server 不能因为一次坏参数就死掉
+        const ok = await call('diagnose_crash', { logPath: FO_CRASH_LOG })
+        assert(ok.isError !== true, '真实日志应成功')
+        const structured = asRecord(ok.structuredContent, 'structuredContent')
+        assert(
+          structured.verdict === 'crash',
+          `verdict 期望 crash，实际 ${String(structured.verdict)}`,
+        )
+      })
+    },
+  },
+
+  {
+    id: 'E2E-030',
+    title: '同一个模组下了两份：必须判 BLOCKED',
+    tier: 0,
+    async run(ctx) {
+      const dir = join(ctx.tmp, 'dup', 'instances', 'dup')
+      writeInstanceMarker(dir, '1.21.1', 'fabric', '0.19.3')
+      mkdirSync(join(dir, 'mods'), { recursive: true })
+      writeFileSync(
+        join(dir, 'mods', 'sodium-0.5.13.jar'),
+        fakeFabricMod('sodium', { version: '0.5.13' }),
+      )
+      writeFileSync(
+        join(dir, 'mods', 'sodium-0.6.13.jar'),
+        fakeFabricMod('sodium', { version: '0.6.13' }),
+      )
+
+      const r = await ctx.cli(['preflight', dir, '--no-host'], { offline: true })
+      assertCode(r, 2, '重复模组')
+      assertText(r, 'BLOCKED', 'verdict')
+      assertText(r, 'DUPLICATE_MOD', 'finding code')
+      assertText(r, 'sodium-0.5.13.jar', '应列出第一份')
+      assertText(r, 'sodium-0.6.13.jar', '应列出第二份')
+    },
+  },
+
+  {
+    id: 'E2E-031',
+    title: '下载中断留下半个 jar：报损坏，不误报缺前置',
+    tier: 0,
+    async run(ctx) {
+      const dir = join(ctx.tmp, 'half', 'instances', 'half')
+      writeInstanceMarker(dir, '1.21.1', 'fabric', '0.19.3')
+      mkdirSync(join(dir, 'mods'), { recursive: true })
+      // 合法 zip 被截断，模拟下载中断/杀软拦截后留下的文件
+      writeFileSync(join(dir, 'mods', 'lithium-0.1.jar'), fakeFabricMod('lithium').slice(0, 40))
+
+      const r = await ctx.cli(['preflight', dir, '--no-host'], { offline: true })
+      assertCode(r, 0, '损坏 jar 只是 warning')
+      assertText(r, 'CORRUPT_JAR', 'finding code')
+      assertText(r, /删掉重下|损坏/, '应给出可执行建议')
+      assertNoText(r, 'MISSING_DEPENDENCY', '坏 jar 不该被说成缺前置')
+      assertNoText(r, 'BLOCKED', '单个坏 jar 不该判 blocked')
+    },
+  },
+
+  {
+    id: 'E2E-032',
+    title: 'Fabric 模组误装进 Forge 实例：只提示跳过，不判缺依赖',
+    tier: 0,
+    async run(ctx) {
+      const dir = join(ctx.tmp, 'wrong-loader', 'instances', 'forge')
+      writeInstanceMarker(dir, '1.20.1', 'forge', '47.2.0')
+      mkdirSync(join(dir, 'mods'), { recursive: true })
+      writeFileSync(
+        join(dir, 'mods', 'iris-1.7.6.jar'),
+        fakeFabricMod('iris', { depends: { 'fabric-api': '*' } }),
+      )
+
+      const r = await ctx.cli(['preflight', dir, '--no-host'], { offline: true })
+      assertCode(r, 0, '加载器不匹配只是 warning')
+      assertText(r, 'LOADER_MISMATCH', 'finding code')
+      assertText(r, /跳过|不会加载/, '应说明 jar 会被跳过')
+      assertNoText(r, 'MISSING_DEPENDENCY', '被跳过的 jar 的依赖不该参与检查')
+      assertNoText(r, 'BLOCKED', '加载器不匹配不该判 blocked')
+    },
+  },
+
+  {
+    id: 'E2E-033',
+    title: '1.19+ 缺 assets：预检拦住，别等崩在标题画面',
+    tier: 0,
+    async run(ctx) {
+      const root = join(ctx.tmp, 'no-assets')
+      const dir = join(root, 'instances', 'a')
+      writeInstanceMarker(dir, '1.20.1', 'fabric', '0.15.11')
+      mkdirSync(join(dir, 'mods'), { recursive: true })
+      writeFileSync(join(dir, 'mods', 'sodium.jar'), fakeFabricMod('sodium'))
+      mkdirSync(join(root, 'assets', 'indexes'), { recursive: true })
+      writeFileSync(
+        join(root, 'assets', 'indexes', '5.json'),
+        JSON.stringify({
+          objects: { 'minecraft/lang/zh_cn.json': { hash: 'a'.repeat(40), size: 1 } },
+        }),
+      )
+
+      const r = await ctx.cli(['preflight', dir, '--no-host'], { offline: true })
+      assertCode(r, 2, '缺 assets')
+      assertText(r, 'BLOCKED', 'verdict')
+      assertText(r, 'ASSETS_MISSING', 'finding code')
+      assertText(r, 'blockpilot assets 1.20.1', '提示里应给对版本')
+      assertNoText(r, 'blockpilot assets 5', '不能把 index id 当 MC 版本')
+    },
+  },
+
+  {
+    id: 'E2E-034',
+    title: '版本隔离：diag 只看当前实例，不读别的实例日志',
+    tier: 0,
+    async run(ctx) {
+      const root = join(ctx.tmp, 'diag-isolation')
+      const a = join(root, 'instances', 'a')
+      const b = join(root, 'instances', 'b')
+      mkdirSync(a, { recursive: true })
+      mkdirSync(join(b, 'logs'), { recursive: true })
+      writeFileSync(
+        join(b, 'logs', 'latest.log'),
+        'InvalidMixinException: Mixin apply failed controlify\n',
+      )
+
+      const r = await ctx.cli(['diag', '--root', root, '--instance', 'a'], { offline: true })
+      assertCode(r, 1, '当前实例没有日志')
+      assertText(r, '没有可分析的日志', '应直说找不到')
+      assertText(r, join(root, 'instances', 'a'), '应指向当前实例目录')
+      assertNoText(r, 'controlify', '不能读别的实例的日志')
+      assertNoText(r, 'mixin', '不能读别的实例的日志')
+    },
+  },
+
+  {
+    id: 'E2E-035',
+    title: '真实堆空间崩溃：归因为内存，不甩锅给模组',
+    tier: 0,
+    async run(ctx) {
+      const r = await ctx.cli(['diag', '--file', OOM_LOG], { offline: true })
+      assertCode(r, 2, 'OutOfMemoryError')
+      assertText(r, 'out-of-memory', '根因类型')
+      assertText(r, '--memory', '建议应指向内存参数')
+      assertNoText(r, '指向的模组', '没有证据时不能点名模组')
     },
   },
 
@@ -1176,6 +1743,71 @@ const CASES: readonly CaseDef[] = [
       })
     },
   },
+  {
+    id: 'E2E-108',
+    title: 'update 只读检查：真实 lock 能反查，且不改文件',
+    tier: 1,
+    async run(ctx) {
+      const lockFile = join(MCROOT, 'instances', 'fo', '.blockpilot', 'lock.json')
+      const before = readFileSync(lockFile, 'utf8')
+      const r = await ctx.cli(['update', '--root', MCROOT, '--instance', 'fo', '--json'], {
+        timeoutMs: 300_000,
+      })
+      // 有更新时 exit 2（只检查不改），全部最新时 0；两者都是正常结论
+      assert(
+        r.code === 0 || r.code === 2,
+        `update 退出码期望 0/2，实际 ${String(r.code)}${snippet(r)}`,
+      )
+      const j = parseJson(r, 'update --json')
+      assert(asNumber(j.checked, 'checked') >= 40, 'checked 期望 ≥ 40')
+      asArray(j.updates, 'updates')
+      asArray(j.failed, 'failed')
+      assert(asArray(j.applied, 'applied').length === 0, '未加 --apply 时 applied 必须为空')
+      assert(asArray(j.applyFailed, 'applyFailed').length === 0, '未加 --apply 时不该有替换失败')
+      // 默认只读是 update 最重要的承诺：检查一次不该动实例里的任何字节
+      assert(readFileSync(lockFile, 'utf8') === before, '只读检查不该改写 lock.json')
+    },
+  },
+  {
+    id: 'E2E-109',
+    title: 'deploy slug 不存在：说清楚，且不创建实例目录',
+    tier: 1,
+    async run(ctx) {
+      const root = join(ctx.tmp, 'slug-root')
+      const r = await ctx.cli(['deploy', 'blockpilot-no-such-pack-xyz', '--root', root], {
+        timeoutMs: 120_000,
+      })
+      assertCode(r, 1, '不存在的 slug')
+      assertText(r, /Modrinth 上找不到|查询 Modrinth 失败/, '应说明是 slug 查询失败')
+      assert(!existsSync(join(root, 'instances')), '失败时不该创建实例目录')
+    },
+  },
+  {
+    id: 'E2E-110',
+    title: 'assets --dry-run：首次安装的第二步只算不装',
+    tier: 1,
+    async run(ctx) {
+      // setup 会把 asset index 落到 <root>/assets/indexes；assets 只读它展开任务。
+      // 复制真实 index（不是编造的对象列表）来验证 1.21.1 的规模与「不创建 objects/」
+      const root = join(ctx.tmp, 'assets-root')
+      mkdirSync(join(root, 'assets', 'indexes'), { recursive: true })
+      cpSync(
+        join(MCROOT, 'assets', 'indexes', '17.json'),
+        join(root, 'assets', 'indexes', '17.json'),
+      )
+
+      const r = await ctx.cli(['assets', '1.21.1', '--root', root, '--dry-run', '--china'], {
+        timeoutMs: 180_000,
+      })
+      assertCode(r, 0, 'assets --dry-run')
+      assertText(r, '--dry-run', '应说明只算不装')
+      const m = /(\d+)\s*个对象需要下载/.exec(strip(r.stdout))
+      assert(m !== null, `没找到对象数${snippet(r)}`)
+      const objects = Number(m[1])
+      assert(objects > 1000, `1.21.1 的 assets 对象数应 > 1000，实际 ${objects}`)
+      assert(!existsSync(join(root, 'assets', 'objects')), 'dry-run 不该创建 assets/objects/')
+    },
+  },
   // ---------------- T2 真实下载 ----------------
   {
     id: 'E2E-201',
@@ -1226,6 +1858,184 @@ const CASES: readonly CaseDef[] = [
         markerComponent(marker, 'net.fabricmc.fabric-loader') === '0.19.3',
         '标记里没有加载器版本',
       )
+    },
+  },
+  {
+    id: 'E2E-203',
+    title: 'java install：真实下载、sha256 校验、二次复用',
+    tier: 2,
+    async run(ctx) {
+      const root = join(ctx.tmp, 'java-root')
+      // --china：Adoptium 的二进制在 GitHub Releases 上，直连实测 6–16 KB/s
+      const first = await ctx.cli(['java', 'install', '21', '--root', root, '--china'], {
+        timeoutMs: 900_000,
+      })
+      assertCode(first, 0, 'java install 21')
+      assertText(first, /装好了|已存在/, '应报告安装结果')
+
+      const javaDir = join(root, 'java')
+      const exe = process.platform === 'win32' ? 'java.exe' : 'java'
+      const candidates = [join(javaDir, 'bin', exe)]
+      for (const name of readdirSync(javaDir)) candidates.push(join(javaDir, name, 'bin', exe))
+      assert(
+        candidates.some((p) => existsSync(p)),
+        `托管目录里没有 ${exe}：${javaDir}`,
+      )
+
+      const scan = await ctx.cli(['java', '--root', root], { offline: true })
+      assertCode(scan, 0, 'java 扫描新装的运行时')
+      assertText(scan, 'Java 21', '应识别 Java 21')
+      assertText(scan, javaDir, '应列出 <root>/java 下的路径')
+
+      // 同大版本必须跳过下载：probe 会启动一次 JVM 确认版本，但不再请求 Adoptium
+      const again = await ctx.cli(['java', 'install', '21', '--root', root, '--china'], {
+        timeoutMs: 120_000,
+      })
+      assertCode(again, 0, '第二次 install')
+      assertText(again, '已存在', '同大版本应跳过下载')
+      assert(again.ms < 60_000, `复用不该重新下载，实际 ${String(again.ms)}ms`)
+    },
+  },
+  {
+    id: 'E2E-204',
+    title: 'install 补装真实缺失依赖：下载、哈希校验、二次命中缓存',
+    tier: 2,
+    async run(ctx) {
+      const modsDir = join(ctx.tmp, 'mods')
+      // closure.mrpack 里只有 Iris；Sodium 是它在 Modrinth 上声明的真实前置。
+      // 这种依赖默认按 unverified 处理（可能被 JiJ 打包），用户确认缺了才加 --include-unverified
+      const args = [
+        'install',
+        join(FIX, 'closure.mrpack'),
+        '--mods-dir',
+        modsDir,
+        '--include-unverified',
+        '--no-host',
+      ]
+      const first = await ctx.cli(args, { timeoutMs: 300_000 })
+      assertCode(first, 0, 'install')
+      assertText(first, '开始安装', '应进入安装')
+
+      const sodium = join(modsDir, 'sodium-fabric-0.5.13+mc1.20.1.jar')
+      assert(existsSync(sodium), '补装的 sodium 没落盘')
+      const sha1 = createHash('sha1').update(readFileSync(sodium)).digest('hex')
+      assert(
+        sha1 === 'bcdbf37d9494e405cba210d7a80ed58e756297b5',
+        `文件哈希与 Modrinth 清单不符：${sha1}`,
+      )
+
+      const second = await ctx.cli(args, { timeoutMs: 300_000 })
+      assertCode(second, 0, 'install 第二次')
+      assertText(second, '已存在且校验通过', '第二次应命中缓存，不重复下载')
+    },
+  },
+  {
+    id: 'E2E-205',
+    title: '同一 root 再装实例：复用原版/加载器，重跑不覆盖用户改动',
+    tier: 2,
+    async run(ctx) {
+      const body = Buffer.from('e2e local mod bytes, verified by sha1/sha512')
+      const sha1 = createHash('sha1').update(body).digest('hex')
+      const sha512 = createHash('sha512').update(body).digest('hex')
+
+      // 模拟「用户在自己熟悉的 root 里再建一个实例」：原版、加载器、assets 都已共享，
+      // deploy 只该下载包内新增文件。下载源用本地服务，避免依赖某个真实 mod 的线上字节。
+      const server = createServer((_req, res) => {
+        res.writeHead(200, {
+          'content-type': 'application/octet-stream',
+          'content-length': String(body.length),
+        })
+        res.end(body)
+      })
+      await new Promise<void>((done) => server.listen(0, '127.0.0.1', () => done()))
+      const port = (server.address() as AddressInfo).port
+      const packPath = join(ctx.tmp, 'local-pack.mrpack')
+      writeFileSync(
+        packPath,
+        zipSync({
+          'modrinth.index.json': strToU8(
+            JSON.stringify({
+              formatVersion: 1,
+              game: 'minecraft',
+              versionId: '1.0.0',
+              name: 'E2E local pack',
+              dependencies: { minecraft: '1.21.1', 'fabric-loader': '0.19.3' },
+              files: [
+                {
+                  path: 'mods/e2e-local.jar',
+                  hashes: { sha1, sha512 },
+                  env: { client: 'required', server: 'required' },
+                  downloads: [`http://127.0.0.1:${String(port)}/e2e-local.jar`],
+                  fileSize: body.length,
+                },
+              ],
+            }),
+          ),
+          'overrides/config/e2e-local.toml': strToU8('from-pack = true\n'),
+        }),
+      )
+
+      const instance = 'deploy-e2e'
+      const gameDir = join(MCROOT, 'instances', instance)
+      const args = [
+        'deploy',
+        packPath,
+        '--root',
+        MCROOT,
+        '--instance',
+        instance,
+        '--allow-host',
+        '127.0.0.1',
+        '--china',
+      ]
+      try {
+        rmSync(gameDir, { recursive: true, force: true })
+        const first = await ctx.cli(args, { timeoutMs: 300_000 })
+        assertCode(first, 0, 'deploy 首次')
+        assertText(first, '装好了', '应完成部署')
+
+        const mod = join(gameDir, 'mods', 'e2e-local.jar')
+        assert(existsSync(mod), '包内模组没落盘')
+        assert(readFileSync(mod).equals(body), '下载内容与哈希源不一致')
+
+        const lock = JSON.parse(
+          readFileSync(join(gameDir, '.blockpilot', 'lock.json'), 'utf8'),
+        ) as { complete?: boolean; files?: { path?: string; sha1?: string }[] }
+        assert(lock.complete === true, 'lock.complete 应为 true')
+        assert(lock.files?.length === 1, `lock 条目数期望 1，实际 ${String(lock.files?.length)}`)
+        assert(lock.files?.[0]?.path === 'mods/e2e-local.jar', 'lock 路径不对')
+        assert(lock.files?.[0]?.sha1 === sha1, 'lock 哈希不对')
+
+        const override = join(gameDir, 'config', 'e2e-local.toml')
+        assert(existsSync(override), 'overrides 没落地')
+
+        // 真实用户会改 config；重跑 deploy 必须保留，只有 --overwrite-overrides 才覆盖
+        writeFileSync(override, 'from-pack = false\n')
+        const second = await ctx.cli(args, { timeoutMs: 300_000 })
+        assertCode(second, 0, 'deploy 重跑')
+        assert(
+          readFileSync(override, 'utf8') === 'from-pack = false\n',
+          '重跑不该覆盖用户改过的 overrides',
+        )
+
+        const third = await ctx.cli([...args, '--overwrite-overrides'], { timeoutMs: 300_000 })
+        assertCode(third, 0, 'deploy --overwrite-overrides')
+        assert(
+          readFileSync(override, 'utf8') === 'from-pack = true\n',
+          '--overwrite-overrides 应恢复包内版本',
+        )
+
+        const verify = await ctx.cli(
+          ['verify', '--root', MCROOT, '--instance', instance, '--json'],
+          { offline: true },
+        )
+        assertCode(verify, 0, '部署后 verify')
+        const report = parseJson(verify, 'verify --json')
+        assert(report.okAll === true, '部署后所有文件应与 lock 一致')
+      } finally {
+        server.close()
+        rmSync(gameDir, { recursive: true, force: true })
+      }
     },
   },
 

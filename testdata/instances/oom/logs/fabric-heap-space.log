@@ -1,0 +1,18 @@
+[13:42:07] [main/INFO]: Loading Minecraft 1.16.5 with Fabric Loader 0.15.11
+[13:42:07] [main/INFO]: Loading 187 mods:
+	- fabric-api 0.42.0+1.16
+	- iris 1.1.2
+	- sodium 0.2.0
+[13:42:19] [main/INFO]: Loading 187 mods
+Exception in thread "main" java.lang.RuntimeException: java.util.concurrent.ExecutionException: java.lang.OutOfMemoryError: Java heap space
+	at net.fabricmc.tinyremapper.TinyRemapper.waitForAll(TinyRemapper.java:541)
+	at net.fabricmc.tinyremapper.TinyRemapper.apply(TinyRemapper.java:510)
+	at net.fabricmc.loader.launch.common.FabricLauncherBase.deobfuscate(FabricLauncherBase.java:152)
+	at net.fabricmc.loader.launch.knot.Knot.init(Knot.java:107)
+	at net.fabricmc.loader.launch.knot.KnotClient.main(KnotClient.java:26)
+Caused by: java.util.concurrent.ExecutionException: java.lang.OutOfMemoryError: Java heap space
+	at java.base/java.util.concurrent.FutureTask.report(FutureTask.java:122)
+	at java.base/java.util.concurrent.FutureTask.get(FutureTask.java:191)
+	at net.fabricmc.tinyremapper.TinyRemapper.waitForAll(TinyRemapper.java:538)
+	... 4 more
+Caused by: java.lang.OutOfMemoryError: Java heap space

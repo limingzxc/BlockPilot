@@ -34,6 +34,7 @@ Java 选择用例、CLI 消费循环）并新增了 auth。242 个单测全绿�
 | 单测基线 | 242 / 242，5.4 s（全离线） |
 | 真实资产 | `fixtures/mcroot` 1.7 GB：8 个实例、11 个版本、FO 6.5.0 全量 48 mod |
 | 真崩溃样本 | `testdata/instances/crash/`（controlify mixin 注入失败，含极小 mods/ 供归因） |
+| 真内存崩溃样本 | `testdata/instances/oom/logs/fabric-heap-space.log`（Fabric tinyremapper 堆空间不足，来自贴吧） |
 | 真登录失败样本 | `testdata/instances/auth/logs/auth-failed.log`（authlib 401） |
 
 网络（同一台机器，逐条 curl 实测）：
@@ -76,7 +77,35 @@ node dist/cli/index.js java install 21 --root fixtures/mcroot
 
 ## 3. 用例表
 
-### T0 离线（约 40 s，零网络）
+用例优先级按**真实用户使用频率**排，而不是按模块排：
+
+| 频率 | 用户场景 | 覆盖用例 |
+|---|---|---|
+| 每次游戏（最高） | 启动 / 只出启动命令 | E2E-301、E2E-010 / 010B、E2E-014、E2E-020、E2E-023 |
+| 每个整合包一次 | 首次安装：deploy → assets → Java | E2E-205、E2E-110、E2E-203、E2E-201 / 202、E2E-003 / 004 / 101、E2E-033 |
+| 偶发 | 预检说缺依赖 → 补装 | E2E-106、E2E-204、E2E-103 |
+| 出问题时 | 崩溃归因 / 查日志 / 完整性 | E2E-006 / 007 / 008 / 016 / 028、E2E-009、E2E-012、E2E-015、E2E-302 / 303、E2E-030 / 031 / 032 / 034 / 035 |
+| 维护 | 更新 / 配置 / 账号 / Java | E2E-108、E2E-017、E2E-018、E2E-024、E2E-019 / 021 |
+| 边界与故障 | 坏参数 / 断网 / 坏包 | E2E-022、E2E-026、E2E-027、E2E-401~404、E2E-104、E2E-109 |
+
+### 3.1 真实用户行为来源（2026-11-10）
+
+这一轮用例不是按模块补的，是从贴吧与 B 站的玩家原帖/教程里抽取**行为**，
+再折成可机器判定的契约。帖子链接只用于溯源，断言不依赖帖子内容。
+
+| 玩家行为 | 来源 | 对应用例 |
+|---|---|---|
+| 同一个模组下了两次，mods/ 里两份 jar，启动器直接拒绝启动 | [B站《怎么看崩溃日志（二）》](https://www.bilibili.com/opus/755850554255605799) 第 1 类 | E2E-030 |
+| 下载中断/杀软拦截，留下半个 jar，启动时报 `ZipException` | 同上第 11 类「安装不当」 | E2E-031 |
+| 把 Fabric 模组装进 Forge 实例；Forge 里再塞 OptiFine | 同上第 1 类；[贴吧 RLCraft 帖](https://tieba.baidu.com/p/7650059312) | E2E-032 |
+| 只装了版本没装 assets：能启动但没声音，1.19+ 崩在标题画面 | [B站《国际版正版和盗版重要吗?》](https://www.bilibili.com/opus/777782667316822085)；README「1.19 及以后必须安装 assets」 | E2E-033 |
+| 开了版本隔离，却在通用目录找日志；把别的实例的日志发来求助 | [B站《怎么看崩溃日志（二）》](https://www.bilibili.com/opus/755850554255605799)「版本隔离」段 | E2E-034 |
+| Fabric 大包内存不够，堆栈里全是 tinyremapper，误以为是模组冲突 | [贴吧 HMCL 帖](https://tieba.baidu.com/p/6498328050)；[B站《怎么看崩溃日志（入门）》](https://www.bilibili.com/opus/485246375773182129)「内存不足」段 | E2E-035 |
+| 整合包装在中文/含空格目录，或把 mods 改成中文名 | [B站《怎么看崩溃日志（二）》](https://www.bilibili.com/opus/755850554255605799) 第 5 类 | 路径部分已有 E2E-025；改文件名不新增用例——那是加载器/启动器的行为，不是内核能修的 |
+| 旧 Forge 配了过高的 Java，报 `InaccessibleObjectException` / `Unknown module` | [贴吧 PCL2 帖](https://tieba.baidu.com/p/8766954619) | 不重复建用例：`checkJava` 的 `JAVA_TOO_NEW` 单测 + E2E-303 已覆盖版本方向；E2E 需要控制本机 Java 列表，暂不引入 |
+| 1.12.2 整合包「结束代码 0」但游戏没起来 | [贴吧 RLCraft 帖](https://tieba.baidu.com/p/7650059312) | 不重复建用例：退出码语义由 E2E-301 的「到点结束不算崩溃」钉住，真实窗口不适合放进 T0 |
+
+### T0 离线（约 1 min，零网络）
 
 | ID | 场景 | 判定 |
 |---|---|---|
@@ -98,11 +127,24 @@ node dist/cli/index.js java install 21 --root fixtures/mcroot
 | E2E-015 | `verify` | 正常→0「全部文件与清单一致」；篡改后→2 且 `reason=mismatch` |
 | E2E-016 | hs_err | 只有 `hs_err_pid*.log` 时→2；`format=hs-err`；`primary.kind=graphics` |
 | E2E-017 | 实例配置 | `config` 写入→读取一致；`--unset memory` 只删内存；非法值→1 `BAD_MEMORY` |
+| E2E-018 | 账号存档 | 空存档→0；形状不完整的条目被过滤；`--remove` 按名字（大小写不敏感）；不存在→1 |
 | E2E-019 | `--events` | stdout 全是 JSON 行；含 `schemaVersion=1`；最后 `type=exit, code=2`；无 ANSI |
 | E2E-020 | `config --jvm-args` 进启动命令 | 写入后 `launch` 输出含 `--add-opens` 与完整值，同时保留 `-Xmx2048M` |
 | E2E-021 | `install --events` | stdout 全是 JSON；只有一个 `exit` 且在最后；无 ANSI |
 | E2E-022 | `--stop` 非法值 | 退出码 1；稳定码 `BAD_STOP`，不把 NaN 交给 `setTimeout` |
 | E2E-023 | `--events` 令牌 | 在线账号启动时 stdout 不含真实 token；`result.value.args` 里 `--accessToken` 为 `***` |
+| E2E-024 | `java` 命令 | `java install` 缺参/非数字/低于 8 →1 且不联网；托管 JRE 能被扫描到（有夹具时） |
+| E2E-025 | 空格与中文路径 | `config`→`launch`→`verify` 全链路；CJK 文件名、含空格路径、sha512 条目 |
+| E2E-026 | 坏 lock / 坏配置 | 无 lock→1 `LOCK_NOT_FOUND`；坏 JSON / 版本不认识→1 `LOCK_CORRUPT`；`complete:false`→2 且 issues 为空；`CONFIG_CORRUPT` |
+| E2E-027 | `--events` 失败路径 | 缺 target、未知命令、坏代理：stdout 仍只有 ndjson，有且仅有一个 `exit` |
+| E2E-028 | diag 自动选证据 | `logs/` 混放时按 mtime 选最新；`primary.kind=mixin`，嫌疑人 controlify |
+| E2E-029 | MCP 错误输入 | 非日志扩展名 / 不存在的日志与包 → `isError`；连续错误后服务仍能正常响应 |
+| E2E-030 | 重复模组 | 两份同 modId 的 jar →2；`BLOCKED`；`DUPLICATE_MOD`；两份文件名都列出 |
+| E2E-031 | 下载中断的半个 jar | →0；`CORRUPT_JAR`；不报 `MISSING_DEPENDENCY`、不判 BLOCKED |
+| E2E-032 | Fabric 模组进 Forge 实例 | →0；`LOADER_MISMATCH`；说明会被跳过；不报缺依赖 |
+| E2E-033 | 1.19+ 缺 assets | →2；`BLOCKED`；`ASSETS_MISSING`；提示 `blockpilot assets 1.20.1` |
+| E2E-034 | 版本隔离下的日志归属 | 当前实例无日志→1；不读另一实例的日志，不点名其模组 |
+| E2E-035 | 真实堆空间崩溃 | `OutOfMemoryError`→2；`out-of-memory`；建议含 `--memory`；不点名模组 |
 
 E2E-011 / 012 是本轮新发现，先按 knownIssue 记录（见 §5）。
 
@@ -117,6 +159,9 @@ E2E-011 / 012 是本轮新发现，先按 knownIssue 记录（见 §5）。
 | E2E-105 | setup 只算不装 | `setup 1.21.1 --dry-run`→0；任务数 > 20；root 下无 `libraries/` |
 | E2E-106 | 未验证依赖默认不装 | FO `--dry-run`→0；默认「没有需要自动补装」；加 `--include-unverified` 才出计划；目标目录未创建 |
 | E2E-107 | MCP 预检 | `preflight_modpack(demo.mrpack)` 有 `structuredContent.verdict` |
+| E2E-108 | `update` 只读检查 | 真实 lock 反查 Modrinth：`checked ≥ 40`，`applied` 为空，`lock.json` 字节不变 |
+| E2E-109 | `deploy` slug 不存在 | →1；说清是 slug 查询失败；不创建 `instances/` |
+| E2E-110 | `assets --dry-run` | 首次安装第二步：对象数 > 1000；不创建 `assets/objects/` |
 
 ### T2 真实下载（约 10 min，约 150 MB）
 
@@ -124,6 +169,9 @@ E2E-011 / 012 是本轮新发现，先按 knownIssue 记录（见 §5）。
 |---|---|---|
 | E2E-201 | 原版安装幂等 | 连续两次 `setup 1.21.1`：第二次「下载 0 · 失败 0」；版本 JSON、client jar、实例标记都在 |
 | E2E-202 | Fabric 加载器 | `fabric --loader --china`→0、失败 0；加载器版本 JSON 与实例标记落地 |
+| E2E-203 | `java install` | `java install 21 --china`→0；托管目录出现 `bin/java`；扫描能识别；第二次「已存在」且不重新下载 |
+| E2E-204 | 真实补装依赖 | `install closure.mrpack --include-unverified` 下载 Sodium：哈希与 Modrinth 一致；第二次命中缓存 |
+| E2E-205 | 同 root 再装实例 | deploy 复用原版/加载器；lock 与 overrides 落地；重跑不覆盖用户改动；`--overwrite-overrides` 才恢复；verify 通过 |
 
 ### T3 真实启动（约 5 min，需要 GPU 与窗口）
 
@@ -155,7 +203,7 @@ npm run e2e -- --only E2E-101
 npm run e2e -- --list
 ```
 
-T0–T4 已实现（39 条）。`--tier 2,3` 会真的下载、并打开一个游戏窗口
+T0–T4 已实现（58 条）。`--tier 2,3` 会真的下载、并打开一个游戏窗口
 （E2E-301，默认 60 s，可用 `BP_E2E_STOP` 调短）；T4 只写 `/tmp` 与一个本地 HTTP 端口。
 
 T2 之后会写盘、占用带宽、开游戏窗口，**不作为默认**。CI 跑 T0：夹具用
