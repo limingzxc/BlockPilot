@@ -7,7 +7,8 @@
 
 | 要改什么 | 必须一起改的地方 |
 |---|---|
-| 新增/修改 CLI 命令 | `src/cli/index.ts`（`defineCommand` + `COMMANDS`）、`src/cli/commands.ts`（flag/usage）、`README.md` 命令表（`src/cli/readme.test.ts` 会校验） |
+| 新增/修改 CLI 命令 | `src/cli/commands/<name>.ts`（`defineCommand` + handler）、`src/cli/common-flags.ts`（共享 flag）、`src/cli/index.ts` 的 `COMMANDS` 汇总、`src/cli/commands.ts`（flag/usage 类型）、`README.md` 命令表（`src/cli/readme.test.ts` 会校验） |
+| 新增 CLI 渲染/共享辅助 | 多命令共用的渲染放 `src/cli/render/`；参数解析、Java/账号选择放 `src/cli/shared.ts`；不要反向 import `src/cli/index.ts` |
 | 新增事件码 | `src/core/events.ts` 的 `LogCode` 与 `LogPayloads`；消费者按 `ev.code` 收窄。新增码后 typecheck 会指出所有需要处理的 switch |
 | 新增 Finding | `src/core/preflight/types.ts` 的 `FINDING_CODES`、`docs/finding-codes.md`（`codes.test.ts` 双向校验）、产生它的 checker |
 | 新增加载器 | `src/core/sources/<loader>.ts`、`src/core/setup/<loader>.ts`、`src/core/deploy.ts` 的 `SUPPORTED_LOADERS` 与 loader 分派、CLI 命令、`src/index.ts` 公共导出 |
