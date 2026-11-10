@@ -104,6 +104,14 @@ test('--allow-host 可以显式放行本地服务', () => {
   assert.equal(built.rejected.length, 0)
 })
 
+test('清单里没有下载地址的条目进 rejected，不静默少装', () => {
+  const noUrl = { ...clientFile, path: 'mods/nodl.jar', downloads: [] }
+  const built = buildPackTasks(index([noUrl]), resolveLayout(dir, 'wl4'))
+  assert.equal(built.tasks.length, 0)
+  assert.equal(built.rejected.length, 1)
+  assert.match(built.rejected[0]?.error ?? '', /没有下载地址/)
+})
+
 test('清单路径穿越被拒绝，并作为失败项报出来', () => {
   const evil = { ...clientFile, path: '../../evil.jar' }
   const built = buildPackTasks(index([evil]), resolveLayout(dir, 'wl3'))
@@ -206,6 +214,35 @@ test('CF 包：作者关了第三方下载 → unresolved，不静默丢弃', ()
   assert.equal(tasks.length, 0)
   assert.equal(unresolved.length, 1)
   assert.match(unresolved[0]?.error ?? '', /关闭了第三方下载/)
+})
+
+test('CF 包：下载地址不在 forgecdn 域 → unresolved，不向任意地址发请求', () => {
+  const layout = resolveLayout(join(dir, 'cf-host'), 'inst')
+  const manifest = cfManifest([{ projectID: 1, fileID: 100, required: true }])
+  const files = new Map([
+    [
+      100,
+      cfInfo({
+        fileId: 100,
+        fileName: 'a.jar',
+        downloadUrl: 'https://evil.example.com/a.jar',
+      }),
+    ],
+  ])
+  const { tasks, unresolved } = buildCurseforgeTasks(manifest, files, layout)
+  assert.equal(tasks.length, 0)
+  assert.equal(unresolved.length, 1)
+  assert.match(unresolved[0]?.error ?? '', /Forge CDN/)
+})
+
+test('CF 包：接口返回的文件名只取 basename，不能写出 mods/', () => {
+  const layout = resolveLayout(join(dir, 'cf-name'), 'inst')
+  const manifest = cfManifest([{ projectID: 1, fileID: 100, required: true }])
+  const files = new Map([[100, cfInfo({ fileId: 100, fileName: '../../evil.jar' })]])
+  const { tasks, unresolved } = buildCurseforgeTasks(manifest, files, layout)
+  assert.equal(unresolved.length, 0)
+  assert.equal(tasks[0]?.fileName, 'evil.jar')
+  assert.equal(tasks[0]?.destPath, join(layout.mods, 'evil.jar'))
 })
 
 test('CF 包：API 没返回的 fileID 也报出来，required=false 跳过', () => {

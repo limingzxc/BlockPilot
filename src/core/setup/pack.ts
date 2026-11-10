@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname } from 'node:path'
 import { unzipSync } from 'fflate'
 import type { CfFileInfo } from '../curseforge.js'
 import type { DownloadTask } from '../download/types.js'
@@ -51,8 +51,12 @@ export function buildPackTasks(
   for (const file of index.files) {
     if (!isClientRelevant(file)) continue
     const url = file.downloads[0]
-    if (url === undefined) continue
     const fileName = basename(file.path)
+    // 没有下载地址不能静默跳过：deploy 会以为全部装好，用户进游戏才发现少模组
+    if (url === undefined) {
+      rejected.push({ fileName, error: '清单里这一项没有下载地址' })
+      continue
+    }
 
     // 路径穿越在这里挡住：清单是外部输入，`../../evil.jar` 能把文件甩到实例外
     const destPath = safeJoin(layout.gameDir, file.path)
@@ -142,6 +146,24 @@ export interface CurseforgeTaskResult {
   readonly unresolved: readonly { readonly fileName: string; readonly error: string }[]
 }
 
+/**
+ * CurseForge 官方下载域。
+ *
+ * 免 key 时 URL 与哈希都来自同一个第三方（MCIM 镜像），哈希不再独立于来源；
+ * 这里至少限制「下载请求只能发到 Forge CDN」，不让镜像把用户机器指向任意地址。
+ * 信任根写在 ADR-0036。
+ */
+const CF_DOWNLOAD_HOST = 'forgecdn.net'
+
+export function isForgeCdnUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase()
+    return host === CF_DOWNLOAD_HOST || host.endsWith(`.${CF_DOWNLOAD_HOST}`)
+  } catch {
+    return false
+  }
+}
+
 export function buildCurseforgeTasks(
   manifest: CurseforgeManifest,
   files: ReadonlyMap<number, CfFileInfo>,
@@ -179,17 +201,33 @@ export function buildCurseforgeTasks(
       unresolved.push({ fileName: info.fileName, error: 'CurseForge 没有给 sha1，无法校验来源' })
       continue
     }
+    if (!isForgeCdnUrl(info.downloadUrl)) {
+      unresolved.push({
+        fileName: info.fileName,
+        error: `下载地址不在 Forge CDN 域：${info.downloadUrl}`,
+      })
+      continue
+    }
 
+    // 文件名来自接口：只取最后一段，路径分隔符不能带进实例
+    const rawName = basename(info.fileName)
+    if (rawName === '' || rawName === '.' || rawName === '..') {
+      unresolved.push({ fileName: info.fileName, error: 'CurseForge 返回的文件名不安全' })
+      continue
+    }
     // CF 包的文件名理论上唯一；撞名时加 fileID 前缀，宁可难看也不要互相覆盖
-    const name = used.has(info.fileName.toLowerCase())
-      ? `${entry.fileID}-${info.fileName}`
-      : info.fileName
+    const name = used.has(rawName.toLowerCase()) ? `${entry.fileID}-${rawName}` : rawName
+    const destPath = safeJoin(layout.mods, name)
+    if (destPath === null) {
+      unresolved.push({ fileName: info.fileName, error: '文件名会写出 mods/ 目录' })
+      continue
+    }
     used.add(name.toLowerCase())
 
     tasks.push({
       url: info.downloadUrl,
       fileName: name,
-      destPath: join(layout.mods, name),
+      destPath,
       expectedSize: info.size,
       hashes: info.hashes,
       meta: {
@@ -275,10 +313,10 @@ export function extractOverrides(
  * 不需要 API key 就能校验，但以前完全不计入统计，于是「preflight 说 271 个模组」
  * 和日志里的 `Loading 304 mods` 对不上（issue #13）。
  */
-export function countOverridesMods(zipPath: string): number {
+export function countOverridesMods(zipPath: string, data?: Uint8Array): number {
   let mods = 0
   try {
-    unzipSync(new Uint8Array(readFileSync(zipPath)), {
+    unzipSync(data ?? new Uint8Array(readFileSync(zipPath)), {
       filter: (f) => {
         if (f.name.endsWith('/')) return false
         if (!f.name.startsWith('overrides/') && !f.name.startsWith('client-overrides/'))

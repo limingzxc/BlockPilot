@@ -60,6 +60,11 @@ type Probe<T> =
 
 消费者不再各自擦一遍；`diag` 与 MCP 拿到的文本天然是干净的。
 
+`--events` 是给自动化消费者的，`result` 里可能带 `LaunchPlan.args`（执行必需）
+与登录账号的 `accessToken` / `refreshToken`。emit 层（`cli/ui.ts`）再做一次兜底：
+字段名命中令牌的替换成 `***`，`args` 数组按 `--accessToken` 成对脱敏，
+所有字符串再过一遍 `redactSecrets`。人类文本统一走 `say()`，事件模式下改道 stderr。
+
 ### 3. 路径拼接只有一个入口
 
 新增 `core/safe-path.ts` 的 `safeJoin(base, rel)`：按路径段拒绝 `..`、绝对路径、  
@@ -173,5 +178,5 @@ CurseForge 的 429 / 5xx 现在退避重试两次（`fetchRetrying`）。免 key
   `import { createPreflight, Op } from 'blockpilot'`；拆包仍留作后续。
 - **`update` 仍不做**：`lock.json` 与 `verify` 已由 ADR-0041 落地；按 lock 找新版本  
   牵涉 Modrinth / CurseForge 的版本解析与加载器升级，是下一个独立特性。
-- **不做 `--events ndjson`**：`consume` 的 result 渲染与退出码映射耦合，需要先重构  
-  渲染层，不是「几乎免费」。
+- **`--events ndjson` 已落地**：本次补齐了 emit 层脱敏、人类文本改道 stderr、
+  串联多个 Operation 时只写一次 `exit`；异常路径也会补 `failed` + `exit`。

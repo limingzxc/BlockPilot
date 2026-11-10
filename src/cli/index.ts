@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { existsSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createCredentialStore } from '../core/auth/credentials.js'
 import {
@@ -53,6 +53,7 @@ import { LayoutError } from '../core/layout.js'
 import type { Operation } from '../core/operation.js'
 import { assetsRequiredToBoot, gameVersionOf, probeAssets } from '../core/preflight/assets.js'
 import { createPreflight } from '../core/preflight/index.js'
+import type { PackFileRead } from '../core/preflight/read-pack.js'
 import { readPackFile } from '../core/preflight/read-pack.js'
 import type { Finding, PreflightReport } from '../core/preflight/types.js'
 import { applyProxy } from '../core/proxy.js'
@@ -66,13 +67,24 @@ import { createVanillaSetup } from '../core/setup/vanilla.js'
 import { recommendedNeoForge } from '../core/sources/forge.js'
 import type { VersionInfo } from '../core/sources.js'
 import { VersionNotFoundError } from '../core/version/fetch.js'
+import { readAssetIndexId } from '../core/version/java-major.js'
 import { resolveCurseforge } from '../sources/curseforge.js'
 import { MODRINTH_API_MCIM, ModrinthSource } from '../sources/modrinth.js'
 import type { Command, CommandContext } from './commands.js'
 import { createContext, defineCommand, usageText } from './commands.js'
 import type { FlagSpec } from './flags.js'
 import { validateFlags } from './flags.js'
-import { C, consume, createInterrupt, humanBytes, setEventStream } from './ui.js'
+import {
+  C,
+  consume,
+  createInterrupt,
+  emitExit,
+  emitFailed,
+  humanBytes,
+  isEventStream,
+  say,
+  setEventStream,
+} from './ui.js'
 
 const SEVERITY_MARK: Record<Finding['severity'], string> = {
   blocker: `${C.red}✗${C.reset}`,
@@ -205,7 +217,7 @@ function renderHuman(r: PreflightReport): string {
 }
 
 function usage(): void {
-  process.stdout.write(`${usageText(COMMANDS)}\n`)
+  say(`${usageText(COMMANDS)}\n`)
 }
 
 /** 第一个位置参数。缺了、或第一个参数是 flag，都算用法错误。 */
@@ -248,6 +260,28 @@ function parseMemoryArg(arg: string | undefined): number | undefined {
   return mib
 }
 
+/** `--stop` 要一个正数秒。`abc` 会变成 `setTimeout(NaN)`，游戏被立刻杀掉。 */
+function parseStopArg(arg: string | undefined): number | undefined {
+  if (arg === undefined) return undefined
+  if (!/^\d+(?:\.\d+)?$/.test(arg) || Number(arg) <= 0) {
+    throw new UsageError('BAD_STOP', `--stop 要一个正数秒，收到：${arg}`, '例：--stop 60')
+  }
+  return Number(arg)
+}
+
+/** `--concurrency` 要一个正整数。`abc` 会让下载池宽度变成 NaN，一个文件都不下。 */
+function parseConcurrencyArg(arg: string | undefined): number | undefined {
+  if (arg === undefined) return undefined
+  if (!/^\d+$/.test(arg) || Number(arg) < 1 || Number(arg) > 64) {
+    throw new UsageError(
+      'BAD_CONCURRENCY',
+      `--concurrency 要 1–64 的整数，收到：${arg}`,
+      '例：--concurrency 8',
+    )
+  }
+  return Number(arg)
+}
+
 /**
  * 离线用户名的合法性提示（不阻断）。
  *
@@ -288,6 +322,7 @@ const cmdPreflight = defineCommand({
     '--json': '输出结构化报告',
     '--no-host': '跳过本机 Java / 内存检测（省 1–3 秒）',
     '--no-cf-mirror': '禁用镜像回落，CF 包只做 Java/加载器这一层',
+    '--china': CHINA,
   },
   notes: ['CurseForge 包免 key：没 key 时自动走 MCIM 镜像解析文件元数据'],
   run: runPreflight,
@@ -300,10 +335,10 @@ async function runPreflight(ctx: CommandContext): Promise<number> {
     return 1
   }
   const asJson = ctx.has('--json')
-  const host = ctx.has('--no-host') ? undefined : await detectHost()
+  const host = ctx.has('--no-host') ? undefined : await detectHost({ root: ctx.root })
   const op = createPreflight({
     target,
-    source: new ModrinthSource(),
+    source: new ModrinthSource(ctx.china ? { apiBase: MODRINTH_API_MCIM } : {}),
     ...(host === undefined ? {} : { host }),
     // core 只认契约，具体走官方还是镜像由消费者注入（ADR-0001 / ADR-0040）
     curseforge: resolveCurseforge(ctx.has('--no-cf-mirror') ? { allowMirror: false } : {}),
@@ -315,8 +350,8 @@ async function runPreflight(ctx: CommandContext): Promise<number> {
       ...(asJson ? { progress: () => {}, log: () => {} } : {}),
       exitCode: (report) => verdictExit(report.verdict),
       result: (report) => {
-        if (asJson) process.stdout.write(`${JSON.stringify(report, null, 2)}\n`)
-        else process.stdout.write(renderHuman(report))
+        if (asJson) say(`${JSON.stringify(report, null, 2)}\n`)
+        else say(renderHuman(report))
         return verdictExit(report.verdict)
       },
     },
@@ -351,10 +386,10 @@ async function runInstall(ctx: CommandContext): Promise<number> {
   const includeUnverified = ctx.has('--include-unverified')
 
   process.stderr.write(`${C.dim}· preflight${C.reset}\n`)
-  const host = ctx.has('--no-host') ? undefined : await detectHost()
+  const host = ctx.has('--no-host') ? undefined : await detectHost({ root: ctx.root })
   const preflight = createPreflight({
     target,
-    source: new ModrinthSource(),
+    source: new ModrinthSource(ctx.china ? { apiBase: MODRINTH_API_MCIM } : {}),
     ...(host === undefined ? {} : { host }),
     curseforge: resolveCurseforge(),
   })
@@ -368,45 +403,48 @@ async function runInstall(ctx: CommandContext): Promise<number> {
         report = value
         return 0
       },
+      // 还有安装步骤要跑；exit 留给整条命令结束时写
+      exitEvent: false,
     },
     ctx.signal,
   )
   if (preflightCode !== 0 || report === undefined) return 1
 
-  process.stdout.write(renderHuman(report))
+  say(renderHuman(report))
 
   const installs = report.plan.installs.filter(
     (i) => includeUnverified || i.confidence === 'verified',
   )
   const heldBack = report.plan.installs.length - installs.length
   if (installs.length === 0) {
-    process.stdout.write(`${C.green}没有需要自动补装的东西。${C.reset}\n`)
+    say(`${C.green}没有需要自动补装的东西。${C.reset}\n`)
     if (heldBack > 0) {
-      process.stdout.write(
+      say(
         `${C.dim}有 ${heldBack} 个依赖未验证（整合包可能用 jar-in-jar 内置了它们）。` +
           `确认缺再装：加 --include-unverified${C.reset}\n`,
       )
     }
-    process.stdout.write('\n')
+    say('\n')
     // 本命令只对「装」负责：没有要补的依赖就是成功，哪怕预检因为宿主机没 Java 判了
     // BLOCKED（那是「能不能跑」的问题，归 preflight / run 管）。预检结论照旧打印在上面；
     // 脚本要按它判定，用 `preflight --json`。
     if (report.verdict === 'blocked' || report.verdict === 'unknown') {
-      process.stdout.write(
+      say(
         `${C.dim}预检结论 ${report.verdict} 说的是「这包能不能跑」，不影响本命令的退出码。${C.reset}\n\n`,
       )
     }
     return 0
   }
 
-  const modsDir = join(process.cwd(), modsDirArg)
+  // resolve 而不是 join：README 的示例是绝对路径，join 会拼成 <cwd>/D:/mc/...
+  const modsDir = resolve(modsDirArg)
   const totalBytes = installs.reduce((s, i) => s + i.size, 0)
-  process.stdout.write(
+  say(
     `${C.bold}开始安装${C.reset}  ${installs.length} 个文件 · ${humanBytes(totalBytes)} → ${modsDir}\n\n`,
   )
 
   if (dryRun) {
-    process.stdout.write(`${C.yellow}--dry-run${C.reset}：只打印计划，不下载\n\n`)
+    say(`${C.yellow}--dry-run${C.reset}：只打印计划，不下载\n\n`)
     return 0
   }
 
@@ -439,16 +477,14 @@ async function runInstall(ctx: CommandContext): Promise<number> {
         }
       },
       result: (result) => {
-        process.stdout.write('\n')
-        process.stdout.write(
+        say('\n')
+        say(
           `  ${C.green}完成${C.reset} ${result.downloaded.length} 个，` +
             `${result.failed.length > 0 ? C.red : C.dim}失败 ${result.failed.length} 个${C.reset}，` +
             `共 ${humanBytes(result.totalBytes)}\n`,
         )
         for (const f of result.failed) {
-          process.stdout.write(
-            `  ${C.red}✗${C.reset} ${f.fileName}  ${C.dim}${f.error}${C.reset}\n`,
-          )
+          say(`  ${C.red}✗${C.reset} ${f.fileName}  ${C.dim}${f.error}${C.reset}\n`)
         }
 
         // BMCLAPI 的协议要求在可视部分标明来源，所以这一行不是可选装饰。
@@ -456,21 +492,19 @@ async function runInstall(ctx: CommandContext): Promise<number> {
           ...new Set(result.downloaded.map((d) => d.credit).filter((c) => c !== undefined)),
         ]
         if (credits.length > 0) {
-          process.stdout.write(`  ${C.dim}资源来源：${credits.join('、')}${C.reset}\n`)
+          say(`  ${C.dim}资源来源：${credits.join('、')}${C.reset}\n`)
         }
         const drifted = result.downloaded.filter((d) => d.sizeMismatch === true).length
         if (drifted > 0) {
-          process.stdout.write(
-            `  ${C.dim}${drifted} 个文件的索引体积与实际不符，已按哈希接受${C.reset}\n`,
-          )
+          say(`  ${C.dim}${drifted} 个文件的索引体积与实际不符，已按哈希接受${C.reset}\n`)
         }
-        process.stdout.write('\n')
+        say('\n')
         return result.failed.length > 0 ? 2 : 0
       },
     },
     ctx.signal,
   )
-  return installCode === 1 ? 1 : installCode
+  return installCode
 }
 
 const cmdJava = defineCommand({
@@ -486,12 +520,12 @@ async function runJava(ctx: CommandContext): Promise<number> {
   if (positional(ctx) === 'install') return runJavaInstall(ctx)
 
   return consume(
-    createJavaScan(),
+    createJavaScan({ root: ctx.root }),
     {
       log: () => {},
       exitCode: () => 0,
       result: (r) => {
-        process.stdout.write(renderJava(r))
+        say(renderJava(r))
         return 0
       },
     },
@@ -514,8 +548,8 @@ async function runJavaInstall(ctx: CommandContext): Promise<number> {
 
   const layout = ctx.layout
 
-  process.stdout.write('\n')
-  process.stdout.write(`  ${C.dim}安装 Java${C.reset} ${major} → ${join(layout.root, 'java')}\n\n`)
+  say('\n')
+  say(`  ${C.dim}安装 Java${C.reset} ${major} → ${join(layout.root, 'java')}\n\n`)
 
   const op = createJavaInstall({
     layout,
@@ -542,10 +576,10 @@ async function runJavaInstall(ctx: CommandContext): Promise<number> {
       },
       exitCode: () => 0,
       result: (r) => {
-        process.stdout.write(
+        say(
           `  ${C.green}${r.skipped ? '已存在' : '装好了'}${C.reset}  Java ${r.java.major} · ${r.java.version}\n`,
         )
-        process.stdout.write(`  ${C.dim}${r.java.path}${C.reset}\n\n`)
+        say(`  ${C.dim}${r.java.path}${C.reset}\n\n`)
         return 0
       },
     },
@@ -630,10 +664,8 @@ function runLogin(ctx: CommandContext): Promise<number> {
   })
   const timeoutMs = parseTimeoutArg(ctx.value('--timeout'))
 
-  process.stdout.write('\n')
-  process.stdout.write(
-    `  ${C.bold}BlockPilot login${C.reset}  ${C.dim}微软账号 · 设备码${C.reset}\n\n`,
-  )
+  say('\n')
+  say(`  ${C.bold}BlockPilot login${C.reset}  ${C.dim}微软账号 · 设备码${C.reset}\n\n`)
 
   return consume(
     createLogin({
@@ -651,19 +683,17 @@ function runLogin(ctx: CommandContext): Promise<number> {
             hour: '2-digit',
             minute: '2-digit',
           })
-          process.stdout.write('\n')
-          process.stdout.write(
-            `  ${C.bold}1.${C.reset} 打开  ${C.cyan}${d.verificationUri}${C.reset}\n`,
-          )
-          process.stdout.write(
+          say('\n')
+          say(`  ${C.bold}1.${C.reset} 打开  ${C.cyan}${d.verificationUri}${C.reset}\n`)
+          say(
             `  ${C.dim}   打不开（国内常见）就用备用地址  ${DEVICE_AUTH_FALLBACK_URI}${C.reset}\n`,
           )
           // 两张页面长得很像，标题是唯一一眼能分辨的差别；走错了只会得到「代码无法工作」
-          process.stdout.write(
+          say(
             `  ${C.dim}   它的标题应是 Microsoft account；写着 Sign in to your account 就是走错了${C.reset}\n`,
           )
-          process.stdout.write(`  ${C.bold}2.${C.reset} 输入  ${C.bold}${d.userCode}${C.reset}\n\n`)
-          process.stdout.write(`  ${C.dim}等待授权…（有效至 ${until}，Ctrl+C 取消）${C.reset}\n\n`)
+          say(`  ${C.bold}2.${C.reset} 输入  ${C.bold}${d.userCode}${C.reset}\n\n`)
+          say(`  ${C.dim}等待授权…（有效至 ${until}，Ctrl+C 取消）${C.reset}\n\n`)
           return
         }
         if (ev.code === 'auth.step') {
@@ -680,11 +710,9 @@ function runLogin(ctx: CommandContext): Promise<number> {
       },
       exitCode: () => 0,
       result: (acc) => {
-        process.stdout.write(`  ${C.green}登录成功${C.reset}  ${C.bold}${acc.name}${C.reset}\n`)
-        process.stdout.write(`  ${C.dim}uuid ${acc.uuid}${C.reset}\n`)
-        process.stdout.write(
-          `  ${C.dim}令牌有效至 ${new Date(acc.expiresAt).toLocaleString()}${C.reset}\n\n`,
-        )
+        say(`  ${C.green}登录成功${C.reset}  ${C.bold}${acc.name}${C.reset}\n`)
+        say(`  ${C.dim}uuid ${acc.uuid}${C.reset}\n`)
+        say(`  ${C.dim}令牌有效至 ${new Date(acc.expiresAt).toLocaleString()}${C.reset}\n\n`)
         return 0
       },
     },
@@ -706,23 +734,23 @@ async function runAccounts(ctx: CommandContext): Promise<number> {
   const storePath = authStorePath(ctx.layout.root)
   const remove = ctx.value('--remove')
 
-  process.stdout.write('\n')
+  say('\n')
   const credentials = createCredentialStore(join(ctx.layout.root, 'auth'))
   if (remove !== undefined) {
     const removed = removeAccount(storePath, remove, credentials)
-    process.stdout.write(
+    say(
       removed
         ? `  ${C.green}已移除${C.reset}  ${remove}\n`
         : `  ${C.yellow}没有这个账号${C.reset}  ${remove}\n`,
     )
-    process.stdout.write('\n')
+    say('\n')
     return removed ? 0 : 1
   }
 
   const store = loadStore(storePath, credentials)
-  process.stdout.write(`  ${C.dim}${storePath}${C.reset}\n\n`)
+  say(`  ${C.dim}${storePath}${C.reset}\n\n`)
   if (store.accounts.length === 0) {
-    process.stdout.write(`  ${C.dim}还没有账号。跑一次 blockpilot login 会加一个。${C.reset}\n\n`)
+    say(`  ${C.dim}还没有账号。跑一次 blockpilot login 会加一个。${C.reset}\n\n`)
     return 0
   }
 
@@ -734,10 +762,10 @@ async function runAccounts(ctx: CommandContext): Promise<number> {
         ? `${C.dim}令牌有效${C.reset}`
         : `${C.yellow}令牌过期，启动时自动刷新${C.reset}`
     const refreshable = a.refreshToken === undefined ? `${C.red}不可刷新${C.reset}` : state
-    process.stdout.write(`  ${active} ${C.bold}${a.name}${C.reset}  ${C.dim}${a.uuid}${C.reset}\n`)
-    process.stdout.write(`     ${refreshable}\n`)
+    say(`  ${active} ${C.bold}${a.name}${C.reset}  ${C.dim}${a.uuid}${C.reset}\n`)
+    say(`     ${refreshable}\n`)
   }
-  process.stdout.write('\n')
+  say('\n')
   return 0
 }
 
@@ -816,9 +844,9 @@ async function runVerify(ctx: CommandContext): Promise<number> {
       exitCode: (r) => (r.okAll ? 0 : 2),
       result: (r) => {
         if (asJson) {
-          process.stdout.write(`${JSON.stringify(r, null, 2)}\n`)
+          say(`${JSON.stringify(r, null, 2)}\n`)
         } else {
-          process.stdout.write(renderVerify(r, layout.gameDir))
+          say(renderVerify(r, layout.gameDir))
         }
         return r.okAll ? 0 : 2
       },
@@ -884,11 +912,8 @@ async function runConfig(ctx: CommandContext): Promise<number> {
     memoryArg !== undefined || javaArg !== undefined || jvmArgsArg !== undefined || unset.length > 0
 
   if (!changed) {
-    if (asJson)
-      process.stdout.write(
-        `${JSON.stringify({ path: configPath(layout.gameDir), config }, null, 2)}\n`,
-      )
-    else process.stdout.write(renderConfig(config, layout.gameDir))
+    if (asJson) say(`${JSON.stringify({ path: configPath(layout.gameDir), config }, null, 2)}\n`)
+    else say(renderConfig(config, layout.gameDir))
     return 0
   }
 
@@ -932,10 +957,10 @@ async function runConfig(ctx: CommandContext): Promise<number> {
 
   const path = writeConfig(layout.gameDir, next)
   if (asJson) {
-    process.stdout.write(`${JSON.stringify({ path, config: next }, null, 2)}\n`)
+    say(`${JSON.stringify({ path, config: next }, null, 2)}\n`)
   } else {
-    process.stdout.write(`${C.green}已写入${C.reset} ${path}\n`)
-    process.stdout.write(renderConfig(next, layout.gameDir))
+    say(`${C.green}已写入${C.reset} ${path}\n`)
+    say(renderConfig(next, layout.gameDir))
   }
   return 0
 }
@@ -950,11 +975,6 @@ const cmdUpdate = defineCommand({
     '--loader': '只升级加载器到最新兼容版，不检查模组',
     '--java': { takesValue: true, value: '<path>', help: '升级 Forge 时跑 installer 用的 java' },
     '--china': CHINA,
-    '--curseforge-key': {
-      takesValue: true,
-      value: '<key>',
-      help: 'CurseForge 官方接口 key；缺省走镜像',
-    },
     '--no-cf-mirror': '禁用 CurseForge 镜像回落',
     '--json': '输出 JSON',
   },
@@ -1119,8 +1139,8 @@ async function runLoaderUpdate(ctx: CommandContext): Promise<number> {
     return 1
   }
 
-  process.stdout.write('\n')
-  process.stdout.write(`  ${C.dim}加载器${C.reset}  ${kind} ${version}\n\n`)
+  say('\n')
+  say(`  ${C.dim}加载器${C.reset}  ${kind} ${version}\n\n`)
 
   return consume(
     updateLoader({ gameDir: layout.gameDir, setup }),
@@ -1130,16 +1150,14 @@ async function runLoaderUpdate(ctx: CommandContext): Promise<number> {
       exitCode: () => 0,
       result: (r) => {
         if (asJson) {
-          process.stdout.write(`${JSON.stringify(r, null, 2)}\n`)
+          say(`${JSON.stringify(r, null, 2)}\n`)
           return 0
         }
-        process.stdout.write(
-          `  ${C.green}已升级${C.reset}  ${r.from} → ${r.to}  ${C.dim}${r.versionId}${C.reset}\n`,
-        )
+        say(`  ${C.green}已升级${C.reset}  ${r.from} → ${r.to}  ${C.dim}${r.versionId}${C.reset}\n`)
         if (r.versionJsonPath !== undefined) {
-          process.stdout.write(`  ${C.dim}版本 JSON${C.reset}  ${r.versionJsonPath}\n`)
+          say(`  ${C.dim}版本 JSON${C.reset}  ${r.versionJsonPath}\n`)
         }
-        process.stdout.write('\n')
+        say('\n')
         return 0
       },
     },
@@ -1151,16 +1169,16 @@ async function runUpdate(ctx: CommandContext): Promise<number> {
   if (ctx.has('--loader')) return runLoaderUpdate(ctx)
   const layout = ctx.layout
   const asJson = ctx.has('--json')
-  const cfKey = ctx.value('--curseforge-key')
+  const resolver = new ModrinthSource(ctx.china ? { apiBase: MODRINTH_API_MCIM } : {})
+  // ADR-0029：key 只从环境变量 BLOCKPILOT_CF_API_KEY 读，不接受命令行参数（会进 shell history）
   return consume(
     checkUpdates({
       gameDir: layout.gameDir,
-      resolver: new ModrinthSource(),
-      cfResolver: resolveCurseforge({
-        ...(cfKey === undefined ? {} : { apiKey: cfKey }),
-        ...(ctx.has('--no-cf-mirror') ? { allowMirror: false } : {}),
-      }),
+      resolver,
+      versionSource: resolver,
+      cfResolver: resolveCurseforge(ctx.has('--no-cf-mirror') ? { allowMirror: false } : {}),
       ...(ctx.has('--apply') ? { apply: true } : {}),
+      sources: ctx.sources,
     }),
     {
       progress: () => {},
@@ -1168,8 +1186,8 @@ async function runUpdate(ctx: CommandContext): Promise<number> {
       exitCode: (r) =>
         r.applyFailed.length > 0 ? 2 : r.applied.length === 0 && r.updates.length > 0 ? 2 : 0,
       result: (r) => {
-        if (asJson) process.stdout.write(`${JSON.stringify(r, null, 2)}\n`)
-        else process.stdout.write(renderUpdate(r, layout.gameDir))
+        if (asJson) say(`${JSON.stringify(r, null, 2)}\n`)
+        else say(renderUpdate(r, layout.gameDir))
         return r.applyFailed.length > 0 ? 2 : r.applied.length === 0 && r.updates.length > 0 ? 2 : 0
       },
     },
@@ -1243,7 +1261,7 @@ async function runLaunch(ctx: CommandContext): Promise<number> {
     {
       exitCode: () => 0,
       result: (plan) => {
-        process.stdout.write(renderLaunch(plan, raw))
+        say(renderLaunch(plan, raw))
         return 0
       },
     },
@@ -1274,10 +1292,10 @@ async function runSetup(ctx: CommandContext): Promise<number> {
   const dryRun = ctx.has('--dry-run')
   const china = ctx.china
 
-  process.stdout.write('\n')
-  process.stdout.write(`  ${C.dim}根目录${C.reset}  ${layout.root}\n`)
-  process.stdout.write(`  ${C.dim}实例${C.reset}    ${layout.instanceId} → ${layout.gameDir}\n`)
-  process.stdout.write('\n')
+  say('\n')
+  say(`  ${C.dim}根目录${C.reset}  ${layout.root}\n`)
+  say(`  ${C.dim}实例${C.reset}    ${layout.instanceId} → ${layout.gameDir}\n`)
+  say('\n')
 
   const op = createVanillaSetup({
     layout,
@@ -1313,28 +1331,30 @@ async function runSetup(ctx: CommandContext): Promise<number> {
       },
       exitCode: (r) => (r.failed.length > 0 ? 2 : 0),
       result: (r) => {
-        process.stdout.write('\n')
+        say('\n')
         if (dryRun) {
-          process.stdout.write(`  ${C.yellow}--dry-run${C.reset}：${r.total} 个文件需要下载\n\n`)
+          say(`  ${C.yellow}--dry-run${C.reset}：${r.total} 个文件需要下载\n\n`)
           return 0
         }
-        process.stdout.write(
+        say(
           `  ${C.green}完成${C.reset} 下载 ${r.downloaded} · 跳过 ${r.skipped} · 失败 ${r.failed.length} · ` +
             `解压原生库 ${r.nativesExtracted} 个 · ${humanBytes(r.totalBytes)}\n`,
         )
         for (const f of r.failed.slice(0, 5)) {
-          process.stdout.write(
-            `  ${C.red}✗${C.reset} ${f.fileName}  ${C.dim}${f.error}${C.reset}\n`,
-          )
+          say(`  ${C.red}✗${C.reset} ${f.fileName}  ${C.dim}${f.error}${C.reset}\n`)
         }
         // setup 不装 assets（它 1–2 GB，且跨实例共享）。但必须提醒一句，
         // 否则用户会以为「setup 完成 = 能玩了」，然后崩在标题画面（issue #2）
         const warn = assetsIncompleteHint(
-          probeAssets(layout.assets, gameVersionOf(versionId) ?? versionId)?.probe ?? null,
+          probeAssets(
+            layout.assets,
+            gameVersionOf(versionId) ?? versionId,
+            readAssetIndexId(layout.versionJson(versionId)),
+          )?.probe ?? null,
           versionId,
         )
-        if (warn !== undefined) process.stdout.write(`  ${C.yellow}!${C.reset} ${warn}\n`)
-        process.stdout.write('\n')
+        if (warn !== undefined) say(`  ${C.yellow}!${C.reset} ${warn}\n`)
+        say('\n')
         return r.failed.length > 0 ? 2 : 0
       },
     },
@@ -1364,10 +1384,10 @@ async function runAssets(ctx: CommandContext): Promise<number> {
   }
   const layout = ctx.layout
   const dryRun = ctx.has('--dry-run')
-  const conc = ctx.value('--concurrency')
+  const concurrency = parseConcurrencyArg(ctx.value('--concurrency'))
 
-  process.stdout.write('\n')
-  process.stdout.write(`  ${C.dim}root${C.reset}  ${layout.root}\n\n`)
+  say('\n')
+  say(`  ${C.dim}root${C.reset}  ${layout.root}\n\n`)
 
   const op = createAssetsSetup({
     layout,
@@ -1375,7 +1395,7 @@ async function runAssets(ctx: CommandContext): Promise<number> {
     dryRun,
     sources: ctx.sources,
     mirror: ctx.china,
-    ...(conc === undefined ? {} : { concurrency: Number(conc) }),
+    ...(concurrency === undefined ? {} : { concurrency }),
   })
 
   return consume(
@@ -1396,12 +1416,12 @@ async function runAssets(ctx: CommandContext): Promise<number> {
       },
       exitCode: (r) => (r.failed.length > 0 ? 2 : 0),
       result: (r) => {
-        process.stdout.write('\n')
+        say('\n')
         if (dryRun) {
-          process.stdout.write(`  ${C.yellow}--dry-run${C.reset}：${r.unique} 个对象需要下载\n\n`)
+          say(`  ${C.yellow}--dry-run${C.reset}：${r.unique} 个对象需要下载\n\n`)
           return 0
         }
-        process.stdout.write(
+        say(
           `  ${C.green}完成${C.reset} 下载 ${r.downloaded} · 跳过 ${r.skipped} · 失败 ${r.failed.length} · ${humanBytes(r.totalBytes)}\n\n`,
         )
         return r.failed.length > 0 ? 2 : 0
@@ -1464,7 +1484,7 @@ async function runGame(ctx: CommandContext): Promise<number> {
   const layout = ctx.layout
   const root = layout.root
   const quiet = ctx.has('--quiet')
-  const stopArg = ctx.value('--stop')
+  const autoStopSeconds = parseStopArg(ctx.value('--stop'))
   const config = readConfig(layout.gameDir)
 
   // 参数校验放在所有 I/O 之前：--memory 写错时不该先去探测 Java、解析版本，
@@ -1506,6 +1526,8 @@ async function runGame(ctx: CommandContext): Promise<number> {
         plan = value
         return 0
       },
+      // 真正启动是下一个 Operation；exit 留给它
+      exitEvent: false,
     },
     ctx.signal,
   )
@@ -1525,15 +1547,15 @@ async function runGame(ctx: CommandContext): Promise<number> {
     process.stderr.write(`\n${C.yellow}!${C.reset} ${missingAssets}\n`)
   }
 
-  process.stdout.write('\n')
-  process.stdout.write(`  ${C.green}启动${C.reset} ${plan.versionId} · 实例 ${layout.instanceId}\n`)
-  process.stdout.write(`  ${C.dim}${plan.java}${C.reset}\n`)
-  process.stdout.write(`  ${C.dim}日志实时输出，Ctrl+C 结束${C.reset}\n\n`)
+  say('\n')
+  say(`  ${C.green}启动${C.reset} ${plan.versionId} · 实例 ${layout.instanceId}\n`)
+  say(`  ${C.dim}${plan.java}${C.reset}\n`)
+  say(`  ${C.dim}日志实时输出，Ctrl+C 结束${C.reset}\n\n`)
 
   const op = createLauncher({
     plan,
     logsDir: join(layout.gameDir, 'logs'),
-    ...(stopArg === undefined ? {} : { autoStopSeconds: Number(stopArg) }),
+    ...(autoStopSeconds === undefined ? {} : { autoStopSeconds }),
   })
 
   return consume(
@@ -1557,47 +1579,41 @@ async function runGame(ctx: CommandContext): Promise<number> {
       exitCode: (result) => (result.crashed ? 2 : 0),
       result: (result) => {
         const secs = (result.durationMs / 1000).toFixed(1)
-        process.stdout.write('\n')
+        say('\n')
         if (result.stopped) {
-          process.stdout.write(
-            `  ${C.green}已到时限结束${C.reset}  ${secs}s · ${result.lineCount} 行日志\n`,
+          say(
+            `  ${C.green}${result.aborted ? '已中断' : '已到时限结束'}${C.reset}  ${secs}s · ${result.lineCount} 行日志\n`,
           )
           if (result.logPath !== undefined) {
-            process.stdout.write(`  ${C.dim}日志${C.reset}  ${result.logPath}\n`)
+            say(`  ${C.dim}日志${C.reset}  ${result.logPath}\n`)
           }
-          process.stdout.write('\n')
+          say('\n')
           return 0
         }
         if (result.crashed) {
-          process.stdout.write(
+          say(
             `  ${C.red}异常退出${C.reset}  code=${result.exitCode ?? '-'} signal=${result.signal ?? '-'} · ${secs}s · ${result.lineCount} 行日志\n`,
           )
           if (result.diedBeforeStop) {
-            process.stdout.write(
+            say(
               `  ${C.yellow}游戏在中途就停了${C.reset}${C.dim}（进程一直没退，--stop 到点才被结束）${C.reset}\n`,
             )
           }
           if (result.logPath !== undefined) {
-            process.stdout.write(`  ${C.dim}完整日志${C.reset}  ${result.logPath}\n`)
+            say(`  ${C.dim}完整日志${C.reset}  ${result.logPath}\n`)
           }
-          process.stdout.write('\n')
-          process.stdout.write(`  ${C.bold}下一步${C.reset}\n`)
-          process.stdout.write(
-            `    ${diagHint(root, layout.instanceId)}      ${C.dim}# 分析这份日志${C.reset}\n`,
-          )
-          process.stdout.write(
-            `    ${preflightHint(layout.gameDir)}   ${C.dim}# 扫描实例里的 mods${C.reset}\n\n`,
-          )
+          say('\n')
+          say(`  ${C.bold}下一步${C.reset}\n`)
+          say(`    ${diagHint(root, layout.instanceId)}      ${C.dim}# 分析这份日志${C.reset}\n`)
+          say(`    ${preflightHint(layout.gameDir)}   ${C.dim}# 扫描实例里的 mods${C.reset}\n\n`)
           return 2
         }
 
-        process.stdout.write(
-          `  ${C.green}正常退出${C.reset}  ${secs}s · ${result.lineCount} 行日志\n`,
-        )
+        say(`  ${C.green}正常退出${C.reset}  ${secs}s · ${result.lineCount} 行日志\n`)
         if (result.logPath !== undefined) {
-          process.stdout.write(`  ${C.dim}日志${C.reset}  ${result.logPath}\n`)
+          say(`  ${C.dim}日志${C.reset}  ${result.logPath}\n`)
         }
-        process.stdout.write('\n')
+        say('\n')
         return 0
       },
     },
@@ -1630,9 +1646,9 @@ async function runFabric(ctx: CommandContext): Promise<number> {
   const loader = ctx.value('--loader')
   const china = ctx.china
 
-  process.stdout.write('\n')
-  process.stdout.write(`  ${C.dim}root${C.reset}  ${layout.root}\n`)
-  process.stdout.write(`  ${C.dim}游戏版本${C.reset}  ${gameVersion}\n\n`)
+  say('\n')
+  say(`  ${C.dim}root${C.reset}  ${layout.root}\n`)
+  say(`  ${C.dim}游戏版本${C.reset}  ${gameVersion}\n\n`)
 
   const op = createFabricSetup({
     layout,
@@ -1675,14 +1691,14 @@ async function runFabric(ctx: CommandContext): Promise<number> {
       },
       exitCode: (r) => (r.failed.length > 0 ? 2 : 0),
       result: (r) => {
-        process.stdout.write('\n')
-        process.stdout.write(
+        say('\n')
+        say(
           `  ${C.green}完成${C.reset} loader ${r.loaderVersion} · ${r.libraries} 个库 · ` +
             `下载 ${r.downloaded} · 跳过 ${r.skipped} · 失败 ${r.failed.length}` +
             `${r.nativesExtracted > 0 ? ` · 原生库 ${r.nativesExtracted} 个` : ''}\n`,
         )
-        process.stdout.write(`  ${C.dim}版本 JSON${C.reset}  ${r.versionJsonPath}\n`)
-        process.stdout.write(
+        say(`  ${C.dim}版本 JSON${C.reset}  ${r.versionJsonPath}\n`)
+        say(
           `\n  ${C.bold}启动${C.reset}  ${runHint(r.versionId, layout.root, layout.instanceId)}\n\n`,
         )
         return r.failed.length > 0 ? 2 : 0
@@ -1710,9 +1726,9 @@ async function runForge(ctx: CommandContext, kind: 'forge' | 'neoforge'): Promis
   const loader = ctx.value('--loader')
   const china = ctx.china
 
-  process.stdout.write('\n')
-  process.stdout.write(`  ${C.dim}root${C.reset}  ${layout.root}\n`)
-  process.stdout.write(`  ${C.dim}游戏版本${C.reset}  ${gameVersion} + ${kind}\n\n`)
+  say('\n')
+  say(`  ${C.dim}root${C.reset}  ${layout.root}\n`)
+  say(`  ${C.dim}游戏版本${C.reset}  ${gameVersion} + ${kind}\n\n`)
 
   // ---- 1. 原版：client jar / libraries / natives ----
   const vanillaCode = await consume(
@@ -1733,11 +1749,13 @@ async function runForge(ctx: CommandContext, kind: 'forge' | 'neoforge'): Promis
         }
       },
       result: (r) => {
-        process.stdout.write(
+        say(
           `  ${C.green}原版就绪${C.reset}  下载 ${r.downloaded} · 跳过 ${r.skipped} · 原生库 ${r.nativesExtracted} 个\n`,
         )
         return r.failed.length > 0 ? 2 : 0
       },
+      // installer 是下一步；exit 留给它
+      exitEvent: false,
     },
     ctx.signal,
   )
@@ -1774,13 +1792,13 @@ async function runForge(ctx: CommandContext, kind: 'forge' | 'neoforge'): Promis
       },
       exitCode: () => 0,
       result: (r) => {
-        process.stdout.write('\n')
-        process.stdout.write(
+        say('\n')
+        say(
           `  ${C.green}完成${C.reset} ${kind} ${r.forgeVersion} · ` +
             `${r.installerRan ? '已跑官方 installer' : '复用已有安装'}\n`,
         )
-        process.stdout.write(`  ${C.dim}版本 JSON${C.reset}  ${r.versionJsonPath}\n`)
-        process.stdout.write(
+        say(`  ${C.dim}版本 JSON${C.reset}  ${r.versionJsonPath}\n`)
+        say(
           `\n  ${C.bold}启动${C.reset}  ${runHint(r.versionId, layout.root, layout.instanceId)}\n\n`,
         )
         return 0
@@ -1817,9 +1835,9 @@ async function runQuilt(ctx: CommandContext): Promise<number> {
   const layout = ctx.layout
   const loader = ctx.value('--loader')
 
-  process.stdout.write('\n')
-  process.stdout.write(`  ${C.dim}root${C.reset}  ${layout.root}\n`)
-  process.stdout.write(`  ${C.dim}游戏版本${C.reset}  ${gameVersion}\n\n`)
+  say('\n')
+  say(`  ${C.dim}root${C.reset}  ${layout.root}\n`)
+  say(`  ${C.dim}游戏版本${C.reset}  ${gameVersion}\n\n`)
 
   const op = createQuiltSetup({
     layout,
@@ -1856,14 +1874,14 @@ async function runQuilt(ctx: CommandContext): Promise<number> {
       },
       exitCode: (r) => (r.failed.length > 0 ? 2 : 0),
       result: (r) => {
-        process.stdout.write('\n')
-        process.stdout.write(
+        say('\n')
+        say(
           `  ${C.green}完成${C.reset} loader ${r.loaderVersion} · ${r.libraries} 个库 · ` +
             `下载 ${r.downloaded} · 跳过 ${r.skipped} · 失败 ${r.failed.length}` +
             `${r.nativesExtracted > 0 ? ` · 原生库 ${r.nativesExtracted} 个` : ''}\n`,
         )
-        process.stdout.write(`  ${C.dim}版本 JSON${C.reset}  ${r.versionJsonPath}\n`)
-        process.stdout.write(
+        say(`  ${C.dim}版本 JSON${C.reset}  ${r.versionJsonPath}\n`)
+        say(
           `\n  ${C.bold}启动${C.reset}  ${runHint(r.versionId, layout.root, layout.instanceId)}\n\n`,
         )
         return r.failed.length > 0 ? 2 : 0
@@ -1911,7 +1929,6 @@ const cmdDeploy = defineCommand({
     '--instance': INSTANCE,
     '--china': CHINA,
     '--java': { takesValue: true, value: '<path>', help: '跑 Forge installer 用的 java' },
-    '--curseforge-key': { takesValue: true, value: '<key>', help: '有 key 走官方批量接口（更快）' },
     '--no-cf-mirror': '禁用镜像回落，没 key 时只装加载器与 overrides',
     '--allow-host': {
       takesValue: true,
@@ -2008,38 +2025,46 @@ async function runDeploy(ctx: CommandContext): Promise<number> {
   if (resolved === undefined) return 1
   packPath = resolved
 
-  process.stdout.write('\n')
-  process.stdout.write(`  ${C.dim}整合包${C.reset}  ${packPath}\n`)
-  process.stdout.write(`  ${C.dim}实例${C.reset}    ${instance} → ${layout.gameDir}\n\n`)
+  say('\n')
+  say(`  ${C.dim}整合包${C.reset}  ${packPath}\n`)
+  say(`  ${C.dim}实例${C.reset}    ${instance} → ${layout.gameDir}\n\n`)
 
   // 部署后自检要判 Java。检测会起若干次 JVM 进程（1–3 秒），相比后面几分钟的
   // 下载可以忽略；省掉它的代价是自检看不见 Java 不对，装完打「通过」再崩
-  const host = await detectHost()
+  const host = await detectHost({ root: layout.root })
 
   // Forge 要跑 installer，得有 java。Fabric 用不到，但先检测一次省得后续分支判断。
   // 必须把包里的游戏版本传进去：26.2 要 Java 25，不知道版本就只能「捡最高的那个用」，
   // 机器上只有 Java 8 时也会被当成可用，Forge installer 随后炸得莫名其妙。
+  let pack: PackFileRead | undefined
   let packGameVersion: string | undefined
+  let packLoaderKind: string | undefined
   try {
-    packGameVersion = readPackFile(packPath).instance.gameVersion
+    pack = readPackFile(packPath)
+    packGameVersion = pack.instance.gameVersion
+    packLoaderKind = pack.instance.loader.kind
   } catch {
     // 包本身读不出来由 createDeploy 报 BAD_MODPACK，这里不抢它的活
   }
+  // 只有 Forge / NeoForge 要 java；对 Quilt 说「没找到可用的 Java」会让人以为装不了
+  const needsJava = packLoaderKind === 'forge' || packLoaderKind === 'neoforge'
   const config = readConfig(layout.gameDir)
-  const javaPath = await pickJavaOrReport(
-    packGameVersion,
-    layout,
-    ctx.signal,
-    ctx.value('--java') ?? config.javaPath,
-  )
+  const javaPath = needsJava
+    ? await pickJavaOrReport(
+        packGameVersion,
+        layout,
+        ctx.signal,
+        ctx.value('--java') ?? config.javaPath,
+      )
+    : undefined
 
-  const key = ctx.value('--curseforge-key')
   const allowHosts = (ctx.value('--allow-host') ?? '')
     .split(',')
     .map((h) => h.trim())
     .filter((h) => h !== '')
   const op = createDeploy({
     packPath,
+    ...(pack === undefined ? {} : { pack }),
     layout,
     sources: ctx.sources,
     mirror: china,
@@ -2048,10 +2073,8 @@ async function runDeploy(ctx: CommandContext): Promise<number> {
     ...(ctx.has('--overwrite-overrides') ? { overwriteOverrides: true } : {}),
     ...(javaPath === undefined ? {} : { java: javaPath }),
     ...(ctx.proxy === undefined ? {} : { proxy: ctx.proxy }),
-    curseforge: resolveCurseforge({
-      ...(key === undefined ? {} : { apiKey: key }),
-      ...(ctx.has('--no-cf-mirror') ? { allowMirror: false } : {}),
-    }),
+    // key 只从环境变量读（ADR-0029）：命令行参数会留在 shell history 里
+    curseforge: resolveCurseforge(ctx.has('--no-cf-mirror') ? { allowMirror: false } : {}),
   })
 
   return consume(
@@ -2091,11 +2114,9 @@ async function runDeploy(ctx: CommandContext): Promise<number> {
       },
       exitCode: (r) => (r.check.verdict === 'blocked' || r.failed.length > 0 ? 2 : 0),
       result: (r) => {
-        process.stdout.write('\n')
-        process.stdout.write(
-          `  ${C.green}装好了${C.reset}  ${r.gameVersion} + ${r.loaderKind} ${r.loaderVersion}\n`,
-        )
-        process.stdout.write(
+        say('\n')
+        say(`  ${C.green}装好了${C.reset}  ${r.gameVersion} + ${r.loaderKind} ${r.loaderVersion}\n`)
+        say(
           `  ${C.dim}模组 ${r.mods} 个（文件 ${r.files} 个：下载 ${r.modsDownloaded} / 跳过 ${r.modsSkipped} / 失败 ${r.failed.length}）· ` +
             `overrides ${r.overrides} 个文件` +
             (r.overridesSkipped > 0 ? `（${r.overridesSkipped} 个已存在，未覆盖）` : '') +
@@ -2103,32 +2124,30 @@ async function runDeploy(ctx: CommandContext): Promise<number> {
         )
 
         // 部署后自检：装在完 ≠ 能跑
-        process.stdout.write('\n')
-        process.stdout.write(`  ${C.bold}部署后检查${C.reset}  ${VERDICT_TEXT[r.check.verdict]}\n`)
+        say('\n')
+        say(`  ${C.bold}部署后检查${C.reset}  ${VERDICT_TEXT[r.check.verdict]}\n`)
         const notable = r.check.findings.filter((f) => f.severity !== 'info')
         if (notable.length === 0) {
           // unknown 不能跟着「没有发现阻塞项」一起说：那是「没检查到」，不是「没问题」
-          process.stdout.write(
+          say(
             r.check.verdict === 'unknown'
               ? `    ${C.dim}有 ${r.check.stats.unresolved} 个文件没参与检查，这个结论不可信${C.reset}\n`
               : `    ${C.dim}没有发现阻塞项${C.reset}\n`,
           )
         } else {
           for (const f of notable) {
-            process.stdout.write(
-              `    ${SEVERITY_MARK[f.severity]} ${C.bold}${f.code}${C.reset}  ${f.message}\n`,
-            )
-            if (f.hint !== undefined) process.stdout.write(`      ${C.dim}→ ${f.hint}${C.reset}\n`)
+            say(`    ${SEVERITY_MARK[f.severity]} ${C.bold}${f.code}${C.reset}  ${f.message}\n`)
+            if (f.hint !== undefined) say(`      ${C.dim}→ ${f.hint}${C.reset}\n`)
           }
         }
 
-        process.stdout.write('\n')
+        say('\n')
         if (r.check.verdict === 'blocked') {
-          process.stdout.write(`  ${C.yellow}先别启动${C.reset}，上面这些会直接导致崩溃\n\n`)
+          say(`  ${C.yellow}先别启动${C.reset}，上面这些会直接导致崩溃\n\n`)
           return 2
         }
-        process.stdout.write(`  ${C.bold}启动${C.reset}\n`)
-        process.stdout.write(`    ${runHint(r.playableVersionId, layout.root, instance)}\n\n`)
+        say(`  ${C.bold}启动${C.reset}\n`)
+        say(`    ${runHint(r.playableVersionId, layout.root, instance)}\n\n`)
         return r.failed.length > 0 ? 2 : 0
       },
       failed: (ev) => {
@@ -2192,8 +2211,8 @@ async function runDiag(ctx: CommandContext): Promise<number> {
       result: (r) => {
         // 诊断结论是给机器读的最有价值的一份数据，MCP 那边一直是结构化的，
         // CLI 却只能拿到彩色文本——脚本还得正则解析，没道理
-        if (asJson) process.stdout.write(`${JSON.stringify(r, null, 2)}\n`)
-        else process.stdout.write(renderDiag(r))
+        if (asJson) say(`${JSON.stringify(r, null, 2)}\n`)
+        else say(renderDiag(r))
         return r.verdict === 'crash' ? 2 : 0
       },
     },
@@ -2213,19 +2232,19 @@ async function runLogs(ctx: CommandContext): Promise<number> {
   const logsDir = join(layout.gameDir, 'logs')
   const logs = listLogs(logsDir)
 
-  process.stdout.write('\n')
-  process.stdout.write(`  ${C.dim}${logsDir}${C.reset}\n\n`)
+  say('\n')
+  say(`  ${C.dim}${logsDir}${C.reset}\n\n`)
   if (logs.length === 0) {
-    process.stdout.write(`  ${C.dim}还没有日志。跑一次 run 就会产生。${C.reset}\n\n`)
+    say(`  ${C.dim}还没有日志。跑一次 run 就会产生。${C.reset}\n\n`)
     return 0
   }
   for (const l of logs) {
     const ago = Math.round((Date.now() - l.mtime) / 60000)
     const when = ago < 60 ? `${ago} 分钟前` : `${Math.round(ago / 60)} 小时前`
     const tag = l.native ? `${C.dim}[游戏原生]${C.reset} ` : ''
-    process.stdout.write(`  ${tag}${l.name}  ${C.dim}${humanBytes(l.size)} · ${when}${C.reset}\n`)
+    say(`  ${tag}${l.name}  ${C.dim}${humanBytes(l.size)} · ${when}${C.reset}\n`)
   }
-  process.stdout.write('\n')
+  say('\n')
   return 0
 }
 
@@ -2565,6 +2584,7 @@ async function main(): Promise<number> {
 
   const command = COMMANDS.find((c) => c.name === name)
   if (command === undefined) {
+    emitFailed('UNKNOWN_COMMAND', `未知命令 ${name}`)
     process.stderr.write(`${C.red}未知命令${C.reset} ${name}\n`)
     usage()
     return 1
@@ -2579,6 +2599,7 @@ async function main(): Promise<number> {
 
   const problem = validateFlags(args, command.flags)
   if (problem !== undefined) {
+    emitFailed('BAD_ARGS', problem)
     process.stderr.write(`${C.red}${problem}${C.reset}\n`)
     process.stderr.write(
       `${C.dim}${name} 接受：${Object.keys(command.flags).join(' ')}${C.reset}\n`,
@@ -2603,6 +2624,20 @@ async function main(): Promise<number> {
  * 用户需要知道是哪个地址、以及可以怎么办。
  */
 function reportFatal(err: unknown): never {
+  // 事件流消费者也要看到终止原因：以前这里只写 stderr，stdout 停在半截事件上
+  if (isEventStream()) {
+    const code =
+      err instanceof BlockPilotError
+        ? err.code
+        : err instanceof VersionNotFoundError
+          ? 'VERSION_NOT_FOUND'
+          : err instanceof NetworkError
+            ? 'NETWORK_ERROR'
+            : 'UNEXPECTED'
+    const message = err instanceof Error ? err.message : String(err)
+    emitFailed(code, message, err instanceof BlockPilotError ? err.hint : undefined)
+    emitExit(1)
+  }
   if (err instanceof LayoutError) {
     process.stderr.write(`${C.red}${err.message}${C.reset}\n`)
     process.exit(1)
@@ -2650,5 +2685,10 @@ function reportFatal(err: unknown): never {
  */
 const entry = process.argv[1]
 if (entry !== undefined && import.meta.url === pathToFileURL(entry).href) {
-  main().then((code) => process.exit(code), reportFatal)
+  main().then((code) => {
+    // 有些命令在进入 Operation 前就返回（缺位置参数、未知 flag）：
+    // 兜底保证事件流最后一行永远是 exit
+    if (isEventStream()) emitExit(code)
+    process.exit(code)
+  }, reportFatal)
 }

@@ -11,7 +11,7 @@
  */
 
 import { existsSync, rmSync } from 'node:fs'
-import { dirname, join, relative, sep } from 'node:path'
+import { basename, dirname, relative, sep } from 'node:path'
 import type { CurseforgeLike } from '../curseforge.js'
 import { downloadOne } from '../download/downloader.js'
 import { runPool } from '../download/queue.js'
@@ -21,7 +21,8 @@ import { Op } from '../events.js'
 import type { Operation } from '../operation.js'
 import { defineOperation } from '../operation.js'
 import { safeJoin } from '../safe-path.js'
-import type { DependencyResolver, VersionInfo } from '../sources.js'
+import { isForgeCdnUrl } from '../setup/pack.js'
+import type { ContentSource, DependencyResolver, VersionInfo } from '../sources.js'
 import type { LockedFile, LockFile } from './lock.js'
 import { readLock, writeLock } from './lock.js'
 
@@ -63,6 +64,11 @@ export interface UpdateCheckResult {
 export interface UpdateCheckOptions {
   readonly gameDir: string
   readonly resolver: DependencyResolver
+  /**
+   * 同一个内容源的批量查询能力。用来看当前已装版本的发布时间，
+   * 避免把「较旧的 release」当成更新覆盖掉用户装的 beta。
+   */
+  readonly versionSource?: ContentSource
   readonly concurrency?: number
   /** true 时下载并替换；缺省只检查 */
   readonly apply?: boolean
@@ -73,6 +79,19 @@ export interface UpdateCheckOptions {
 
 function primaryFile(info: VersionInfo): VersionInfo['files'][number] | undefined {
   return info.files.find((f) => f.primary) ?? info.files[0]
+}
+
+/**
+ * 解析出的「最新版」是不是比当前装的更旧。
+ *
+ * 只有内容源能给出两个版本的发布时间时才下结论；查不到就返回 false，
+ * 保持原来的「版本号不同即更新」行为，别把一次查询失败变成「没有更新」。
+ */
+function isOlderThanCurrent(current: VersionInfo | undefined, latest: VersionInfo): boolean {
+  if (current?.datePublished === undefined || latest.datePublished === undefined) return false
+  const latestAt = Date.parse(latest.datePublished)
+  const currentAt = Date.parse(current.datePublished)
+  return Number.isFinite(latestAt) && Number.isFinite(currentAt) && latestAt < currentAt
 }
 
 export function checkUpdates(opts: UpdateCheckOptions): Operation<UpdateCheckResult> {
@@ -113,6 +132,26 @@ export function checkUpdates(opts: UpdateCheckOptions): Operation<UpdateCheckRes
     const failed: { path: string; error: string }[] = []
     let upToDate = 0
 
+    // 当前版本的发布时间要用来判断方向。一次批量取回，别在循环里逐个请求。
+    const currentVersions = new Map<string, VersionInfo>()
+    if (opts.versionSource !== undefined) {
+      const currentIds = [
+        ...new Set(
+          candidates
+            .filter((f) => f.source === 'modrinth' && f.versionId !== undefined)
+            .map((f) => f.versionId as string),
+        ),
+      ]
+      if (currentIds.length > 0) {
+        try {
+          const rows = await opts.versionSource.getVersions(currentIds, signal)
+          for (const row of rows) currentVersions.set(row.versionId, row)
+        } catch {
+          // 方向判断只是保险：查不到就沿用「版本号不同即更新」
+        }
+      }
+    }
+
     await runPool(candidates, opts.concurrency ?? 4, async (file) => {
       if (signal.aborted) return
       const projectId = file.projectId
@@ -137,12 +176,18 @@ export function checkUpdates(opts: UpdateCheckOptions): Operation<UpdateCheckRes
             failed.push({ path: file.path, error: 'CurseForge 没有兼容当前版本的更新' })
             return
           }
-          if (String(latest.fileId) === currentVersionId) {
+          const currentFileId = Number(currentVersionId)
+          // CF 的 fileId 是自增的：拿一个更小的 id 去「更新」就是降级
+          if (String(latest.fileId) === currentVersionId || latest.fileId < currentFileId) {
             upToDate += 1
             return
           }
           if (latest.downloadUrl === null) {
             failed.push({ path: file.path, error: '新版本关闭了第三方下载' })
+            return
+          }
+          if (!isForgeCdnUrl(latest.downloadUrl)) {
+            failed.push({ path: file.path, error: '新版本下载地址不在 Forge CDN 域' })
             return
           }
           updates.push({
@@ -170,6 +215,12 @@ export function checkUpdates(opts: UpdateCheckOptions): Operation<UpdateCheckRes
           return
         }
         if (latest.versionId === currentVersionId) {
+          upToDate += 1
+          return
+        }
+        // `resolve` 优先选 release。用户装的是较新的 beta 时，那个 release 可能
+        // 反而更旧；直接替换就是降级。只有拿到两边发布时间才能证明方向。
+        if (isOlderThanCurrent(currentVersions.get(currentVersionId), latest)) {
           upToDate += 1
           return
         }
@@ -216,7 +267,17 @@ export function checkUpdates(opts: UpdateCheckOptions): Operation<UpdateCheckRes
           applyFailed.push({ path: item.path, error: '旧路径不在实例目录内' })
           continue
         }
-        const dest = join(dirname(oldAbs), item.fileName)
+        // 文件名来自接口，不能直接拼：`../../evil.jar` 会写出实例目录
+        const newName = basename(item.fileName)
+        if (newName === '' || newName === '.' || newName === '..') {
+          applyFailed.push({ path: item.path, error: `下载文件名不安全：${item.fileName}` })
+          continue
+        }
+        const dest = safeJoin(dirname(oldAbs), newName)
+        if (dest === null) {
+          applyFailed.push({ path: item.path, error: `下载文件名不安全：${item.fileName}` })
+          continue
+        }
         const rel = relative(opts.gameDir, dest).split(sep).join('/')
         const conflict = nextFiles.find((f) => f.path === rel && f.path !== item.path)
         if (conflict !== undefined) {
@@ -251,7 +312,7 @@ export function checkUpdates(opts: UpdateCheckOptions): Operation<UpdateCheckRes
             url: item.url,
             projectId: item.projectId,
             versionId: item.to,
-            source: 'modrinth',
+            source: item.source,
           }
           const index = nextFiles.findIndex((f) => f.path === item.path)
           if (index === -1) nextFiles.push(entry)

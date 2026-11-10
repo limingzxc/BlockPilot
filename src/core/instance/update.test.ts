@@ -188,6 +188,7 @@ test('--apply：下载校验后替换旧文件并重写 lock', async () => {
     const lock = readLock(dir)
     assert.equal(lock?.files[0]?.path, 'mods/new.jar')
     assert.equal(lock?.files[0]?.versionId, 'v9')
+    assert.equal(lock?.files[0]?.source, 'modrinth')
   })
 
   server.closeAllConnections()
@@ -231,7 +232,7 @@ test('CurseForge 条目用 getLatestFile 反查，比较 fileId', async () => {
             fileName: 'cf-2.jar',
             displayName: 'CF 2',
             size: 5,
-            downloadUrl: 'https://example.invalid/cf-2.jar',
+            downloadUrl: 'https://edge.forgecdn.net/files/2/cf-2.jar',
             hashes: { sha1: 'a'.repeat(40) },
             gameVersions: ['1.20.1', 'Fabric'],
             dependencies: [],
@@ -246,6 +247,91 @@ test('CurseForge 条目用 getLatestFile 反查，比较 fileId', async () => {
     assert.equal(r.updates[0]?.from, '1')
     assert.equal(r.updates[0]?.to, '2')
     assert.equal(r.updates[0]?.fileName, 'cf-2.jar')
+  })
+})
+
+test('Modrinth：最新 release 比已装 beta 更旧时不提供降级', async () => {
+  await withTemp(async (dir) => {
+    writeLock(
+      dir,
+      buildLock({
+        packName: 't',
+        packKind: 'mrpack',
+        packFile: 'p.mrpack',
+        gameVersion: '1.20.1',
+        loader: LOADER,
+        complete: true,
+        files: [
+          {
+            path: 'mods/x.jar',
+            projectId: 'xxxxxxx1',
+            versionId: 'beta',
+            source: 'modrinth',
+            size: 1,
+          },
+        ],
+      }),
+    )
+    const latest: VersionInfo = {
+      ...version('xxxxxxx1', 'release'),
+      datePublished: '2026-01-01T00:00:00Z',
+    }
+    const current: VersionInfo = {
+      ...version('xxxxxxx1', 'beta'),
+      datePublished: '2026-02-01T00:00:00Z',
+    }
+    const r = await collect(
+      checkUpdates({
+        gameDir: dir,
+        resolver: { resolve: async () => latest },
+        versionSource: { name: 'stub', getVersions: async () => [current] },
+      }),
+    )
+    assert.equal(r.updates.length, 0, '旧 release 不该盖掉新 beta')
+    assert.equal(r.upToDate, 1)
+  })
+})
+
+test('CurseForge：最新 fileId 比已装的小时不提供降级', async () => {
+  await withTemp(async (dir) => {
+    writeLock(
+      dir,
+      buildLock({
+        packName: 't',
+        packKind: 'curseforge',
+        packFile: 'p.zip',
+        gameVersion: '1.20.1',
+        loader: LOADER,
+        complete: true,
+        files: [
+          { path: 'mods/cf.jar', projectId: '1', versionId: '200', source: 'curseforge', size: 1 },
+        ],
+      }),
+    )
+    const r = await collect(
+      checkUpdates({
+        gameDir: dir,
+        resolver: { resolve: async () => null },
+        cfResolver: {
+          configured: true,
+          label: 'fake',
+          getFiles: async () => new Map(),
+          getLatestFile: async () => ({
+            fileId: 100,
+            modId: 1,
+            fileName: 'cf-100.jar',
+            displayName: 'CF 100',
+            size: 5,
+            downloadUrl: 'https://edge.forgecdn.net/files/100/cf-100.jar',
+            hashes: { sha1: 'a'.repeat(40) },
+            gameVersions: ['1.20.1', 'Fabric'],
+            dependencies: [],
+          }),
+        },
+      }),
+    )
+    assert.equal(r.updates.length, 0)
+    assert.equal(r.upToDate, 1)
   })
 })
 

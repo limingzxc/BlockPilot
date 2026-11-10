@@ -347,6 +347,33 @@ test('Forge 的 [[mods]] provides 要读（Forgified Fabric API 场景）', () =
   assert.deepEqual(readModMetadata(single)?.provides, ['connector'])
 })
 
+test('一个 jar 声明多个 [[mods]]：其余 modId 进 provides，依赖一起收集', () => {
+  const buf = jar({
+    'META-INF/mods.toml': [
+      'modLoader="javafml"',
+      'loaderVersion="[47,)"',
+      '[[mods]]',
+      'modId="bundle_core"',
+      'version="1.0.0"',
+      '[[mods]]',
+      'modId="bundle_addon"',
+      'version="1.0.0"',
+      '[[dependencies.bundle_addon]]',
+      'modId="extra_lib"',
+      'mandatory=true',
+      'versionRange="[1.0,)"',
+    ].join('\n'),
+  })
+  const meta = readModMetadata(buf)
+  assert.ok(meta)
+  assert.equal(meta.modId, 'bundle_core')
+  assert.ok(meta.provides.includes('bundle_addon'), '第二个 modId 应能被依赖匹配')
+  assert.ok(
+    meta.dependencies.some((d) => d.modId === 'extra_lib'),
+    '多个 mod 的依赖都要收集',
+  )
+})
+
 test('Forge 的 jar-in-jar 在 META-INF/jarjar/，子模块要读出来', () => {
   const sub = (id: string, version: string) =>
     zipSync({

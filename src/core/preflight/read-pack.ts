@@ -11,6 +11,8 @@
  * 那是 preflight 离线检查的输入，与「整合包文件」是两件事。
  */
 
+import { readFileSync } from 'node:fs'
+
 import { errMessage } from '../errors.js'
 import type { Instance } from '../instance.js'
 import { countOverridesMods } from '../setup/pack.js'
@@ -66,29 +68,32 @@ export type PackFileRead = MrpackFileRead | CurseforgeFileRead
  * 并校验 manifestType，前者更便宜。
  */
 export function readPackFile(path: string): PackFileRead {
+  // 一个 480 MB 的包会被反复读：index/manifest 一次、overrides 计数一次、
+  // deploy 再各来一次。至少把这里的三次收成一次。
+  const data = new Uint8Array(readFileSync(path))
   let mrpackError: unknown
   try {
-    const index = readMrpackIndex(path)
+    const index = readMrpackIndex(path, data)
     const instance = mrpackToInstance(index)
     return {
       kind: 'mrpack',
       instance,
       ability: { givesDownloadUrls: true, checksMods: true },
       mrpackIndex: index,
-      overridesMods: countOverridesMods(path),
+      overridesMods: countOverridesMods(path, data),
     }
   } catch (err) {
     mrpackError = err
   }
 
   try {
-    const pack = readCurseforgePack(path)
+    const pack = readCurseforgePack(path, data)
     return {
       kind: 'curseforge',
       instance: pack.instance,
       ability: { givesDownloadUrls: false, checksMods: false },
       curseforgeManifest: pack.manifest,
-      overridesMods: countOverridesMods(path),
+      overridesMods: countOverridesMods(path, data),
     }
   } catch {
     throw new Error(`无法解析整合包：${errMessage(mrpackError)}`)

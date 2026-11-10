@@ -128,10 +128,6 @@ export type LogCode =
   | 'update.applied'
   | 'update.apply_failed'
   | 'loader.updated'
-  // 测试与消费者占位：不承载语义
-  | 'silent'
-  | 'fake.vanilla.log'
-  | 'fake.loader.log'
 
 export type DeployStep = 'vanilla' | 'loader' | 'files' | 'overrides' | 'check'
 export type DownloadStream = 'stdout' | 'stderr'
@@ -353,10 +349,6 @@ export interface LogPayloads {
   'update.applied': { readonly path: string; readonly from: string; readonly to: string }
   'update.apply_failed': { readonly path: string; readonly error: string }
   'loader.updated': { readonly from: string; readonly to: string }
-
-  silent: undefined
-  'fake.vanilla.log': undefined
-  'fake.loader.log': undefined
 }
 
 export interface ProgressEvent {

@@ -20,6 +20,19 @@ export class NetworkError extends BlockPilotError {
   }
 }
 
+/** 非 2xx 响应。比从错误消息里正则抠状态码可靠。 */
+export class HttpError extends BlockPilotError {
+  readonly url: string
+  readonly status: number
+
+  constructor(url: string, status: number) {
+    super('HTTP_ERROR', `${url} -> HTTP ${status}`)
+    this.name = 'HttpError'
+    this.url = url
+    this.status = status
+  }
+}
+
 export interface JsonRequest {
   readonly signal?: AbortSignal
   /** 额外请求头，会覆盖默认值 */
@@ -46,7 +59,7 @@ export async function fetchJson<T>(url: string, opts: JsonRequest = {}): Promise
     throw new NetworkError(url, detailOf(err))
   }
 
-  if (!res.ok) throw new Error(`${url} -> HTTP ${res.status}`)
+  if (!res.ok) throw new HttpError(url, res.status)
   try {
     return (await res.json()) as T
   } catch {

@@ -1,5 +1,5 @@
 import { errMessage } from '../errors.js'
-import { fetchJson, NetworkError } from '../http.js'
+import { fetchJson, HttpError, NetworkError } from '../http.js'
 import type { Probe } from '../probe.js'
 import { absent, found, unreachable } from '../probe.js'
 import { USER_AGENT } from '../user-agent.js'
@@ -76,12 +76,6 @@ export async function listLoaders(
 
 export type FabricFlavor = 'official' | 'legacy'
 
-/** `fetchJson` 对非 2xx 抛 `... -> HTTP 400`；从消息里取回状态码。 */
-function httpStatusOf(err: unknown): number | null {
-  const m = /HTTP (\d{3})/.exec(errMessage(err))
-  return m?.[1] === undefined ? null : Number(m[1])
-}
-
 /**
  * 这个 MC 版本该用哪套 Fabric。
  *
@@ -113,9 +107,9 @@ export async function detectFabricFlavor(
         unreachableDetail ??= err.message
         continue
       }
-      const status = httpStatusOf(err)
       // 4xx（除 429）是「这套 meta 没有这个版本」，可以继续问下一套
-      if (status !== null && status >= 400 && status < 500 && status !== 429) continue
+      if (err instanceof HttpError && err.status >= 400 && err.status < 500 && err.status !== 429)
+        continue
       unreachableDetail ??= errMessage(err)
     }
   }

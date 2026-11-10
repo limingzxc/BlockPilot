@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { assetsHint } from '../hints.js'
 import type { AssetsProbe } from '../setup/assets.js'
@@ -67,28 +67,64 @@ export interface AssetsProbeResult {
 /**
  * 抽查指定版本的 assets。
  *
- * index 文件名不一定等于 MC 版本号（1.6.4 用的是 `legacy.json`），
- * 所以找不到同名 index 时退回到目录里任意一份——同一 root 的实例共享同一批对象，
- * 抽查哪一份都能区分「装过」和「没装」。
+ * index 文件名不一定等于 MC 版本号（1.20.1 的 index 叫 `5`，1.6.4 叫 `legacy`），
+ * 所以优先用调用方从版本 JSON 读到的 `assetIndex.id`。没给时才按版本号找同名文件；
+ * 再找不到——且目录里只有一份 index——才用它。**不能**按字典序取最后一份：
+ * 多版本共用一个 root 时，`5.json` 会排在 `32.json` 后面，拿 1.20.1 的清单去判 1.21.1。
  */
-export function probeAssets(assetsDir: string, gameVersion?: string): AssetsProbeResult | null {
+export function probeAssets(
+  assetsDir: string,
+  gameVersion?: string,
+  explicitIndexId?: string,
+): AssetsProbeResult | null {
   const indexesDir = join(assetsDir, 'indexes')
   if (!existsSync(indexesDir)) return null
 
-  let indexId: string | undefined
-  if (gameVersion !== undefined && existsSync(join(indexesDir, `${gameVersion}.json`))) {
-    indexId = gameVersion
-  } else {
-    const pick = readdirSync(indexesDir)
-      .filter((n) => n.endsWith('.json'))
-      .sort()
-      .pop()
-    indexId = pick === undefined ? undefined : pick.slice(0, -'.json'.length)
+  let indexId = explicitIndexId
+  if (indexId === undefined && gameVersion !== undefined) {
+    const candidate = join(indexesDir, `${gameVersion}.json`)
+    if (existsSync(candidate)) indexId = gameVersion
+  }
+  if (indexId === undefined) {
+    const all = readdirSync(indexesDir).filter((n) => n.endsWith('.json'))
+    // 多份 index 时无从判断哪一份属于目标版本；猜错比不查更糟
+    if (all.length !== 1) return null
+    indexId = all[0]?.slice(0, -'.json'.length)
   }
   if (indexId === undefined) return null
+  if (!existsSync(join(indexesDir, `${indexId}.json`))) return null
 
   const probe = probeAssetObjects(join(indexesDir, `${indexId}.json`), join(assetsDir, 'objects'))
   return probe === null ? null : { indexId, probe }
+}
+
+/**
+ * 从实例附近的版本 JSON 里找 `assetIndex.id`。
+ *
+ * 目录式实例没有 layout，只能按常见布局猜；读不到就返回 undefined，
+ * 让 probeAssets 走「同名 index / 唯一 index」的保守路径。
+ */
+export function findAssetIndexId(instanceDir: string, gameVersion: string): string | undefined {
+  if (gameVersion === '' || gameVersion === 'unknown') return undefined
+  const candidates = [
+    join(instanceDir, 'versions', gameVersion, `${gameVersion}.json`),
+    join(instanceDir, '.minecraft', 'versions', gameVersion, `${gameVersion}.json`),
+    join(instanceDir, '..', '..', 'versions', gameVersion, `${gameVersion}.json`),
+    join(instanceDir, '..', 'versions', gameVersion, `${gameVersion}.json`),
+  ]
+  for (const path of candidates) {
+    if (!existsSync(path)) continue
+    try {
+      const raw = JSON.parse(readFileSync(path, 'utf8')) as {
+        assetIndex?: { id?: unknown }
+      }
+      const id = raw.assetIndex?.id
+      if (typeof id === 'string' && id !== '') return id
+    } catch {
+      // 版本 JSON 坏了不阻断预检：assets 只是其中一条结论
+    }
+  }
+  return undefined
 }
 
 /**
@@ -102,11 +138,16 @@ export function checkAssets(
   instanceDir: string,
   gameVersion: string,
   assetsDirOverride?: string,
+  assetIndexId?: string,
 ): readonly Finding[] {
   const assetsDir = assetsDirOverride ?? findAssetsDir(instanceDir)
   if (assetsDir === null) return []
 
-  const found = probeAssets(assetsDir, gameVersion)
+  const found = probeAssets(
+    assetsDir,
+    gameVersion,
+    assetIndexId ?? findAssetIndexId(instanceDir, gameVersion),
+  )
   if (found === null || found.probe.total === 0) return []
   const { indexId, probe } = found
   if (probe.present === probe.sampled) return []

@@ -20,7 +20,8 @@ test('core 不 import 外层 sources / cli / mcp', () => {
     if (!name.endsWith('.ts') || name.endsWith('.test.ts')) continue
     const file = resolve(CORE, name)
     const text = readFileSync(file, 'utf8')
-    for (const match of text.matchAll(/from '(\.[^']+)'/g)) {
+    // 同时覆盖静态 import 与动态 import()：core 不能因为换一种写法就绕过边界
+    for (const match of text.matchAll(/(?:from\s*|import\s*\(\s*)'(\.[^']+)'/g)) {
       const spec = match[1] ?? ''
       const target = resolve(dirname(file), spec)
       if (/[\\/]src[\\/](sources|cli|mcp)[\\/]/.test(target)) {

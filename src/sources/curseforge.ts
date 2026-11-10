@@ -13,7 +13,8 @@
  * - {@link MirrorCurseforgeSource}：没 key 时走 MCIM 的 `/curseforge` 代理，
  *   逐个 `GET /v1/mods/{id}/files/{fid}`（镜像没代理批量 POST）
  *
- * key 从环境变量 `BLOCKPILOT_CF_API_KEY` 或 `--curseforge-key` 取，不落盘、不进日志。
+ * key 只从环境变量 `BLOCKPILOT_CF_API_KEY` 取，不落盘、不进日志（ADR-0029：
+ * 不接受命令行参数，避免留在 shell history 里）。
  */
 import {
   type CfDependencyRelation,
@@ -107,6 +108,7 @@ interface RawFile {
   readonly fileName?: string
   readonly displayName?: string
   readonly fileLength?: number
+  readonly fileDate?: string
   readonly downloadUrl?: string | null
   readonly gameVersions?: readonly string[]
   readonly hashes?: readonly { readonly algo?: number; readonly value?: string }[]
@@ -139,6 +141,7 @@ function toFileInfo(raw: RawFile): CfFileInfo | null {
     downloadUrl:
       typeof raw.downloadUrl === 'string' && raw.downloadUrl !== '' ? raw.downloadUrl : null,
     hashes: typeof sha1 === 'string' ? { sha1 } : {},
+    ...(typeof raw.fileDate === 'string' ? { datePublished: raw.fileDate } : {}),
     gameVersions: raw.gameVersions ?? [],
     dependencies: (raw.dependencies ?? [])
       .filter((d): d is { modId: number; relationType?: number } => typeof d.modId === 'number')

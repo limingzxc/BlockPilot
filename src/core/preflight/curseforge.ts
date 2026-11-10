@@ -57,8 +57,8 @@ export interface CurseforgePack {
 }
 
 /** 只解压 manifest 一个条目——CF 包的 overrides 可能上百 MB。 */
-export function readCurseforgeManifest(zipPath: string): CurseforgeManifest {
-  const entries = unzipSync(new Uint8Array(readFileSync(zipPath)), {
+export function readCurseforgeManifest(zipPath: string, data?: Uint8Array): CurseforgeManifest {
+  const entries = unzipSync(data ?? new Uint8Array(readFileSync(zipPath)), {
     filter: (f) => f.name === MANIFEST_ENTRY,
   })
   const buf = entries[MANIFEST_ENTRY]
@@ -124,8 +124,8 @@ export function isCurseforgeZip(zipPath: string): boolean {
   }
 }
 
-export function readCurseforgePack(zipPath: string): CurseforgePack {
-  const manifest = readCurseforgeManifest(zipPath)
+export function readCurseforgePack(zipPath: string, data?: Uint8Array): CurseforgePack {
+  const manifest = readCurseforgeManifest(zipPath, data)
   if (manifest.manifestType !== 'minecraftModpack') {
     throw new Error(`manifestType 不是 minecraftModpack：${String(manifest.manifestType)}`)
   }

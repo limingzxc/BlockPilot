@@ -19,3 +19,22 @@ export function readJavaMajor(versionJsonPath: string): number | undefined {
     return undefined
   }
 }
+
+/**
+ * 从版本 JSON 读 `assetIndex.id`。
+ *
+ * 现代版本的 index id 是 `5` / `17` / `32` 这类数字，和 MC 版本号没有关系。
+ * 抽查 assets 时必须用这个值，不能按目录里的文件名猜（见 preflight/assets.ts）。
+ */
+export function readAssetIndexId(versionJsonPath: string): string | undefined {
+  if (!existsSync(versionJsonPath)) return undefined
+  try {
+    const raw = JSON.parse(readFileSync(versionJsonPath, 'utf8')) as {
+      assetIndex?: { id?: unknown }
+    }
+    const id = raw.assetIndex?.id
+    return typeof id === 'string' && id !== '' ? id : undefined
+  } catch {
+    return undefined
+  }
+}

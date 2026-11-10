@@ -28,6 +28,8 @@ export interface VersionInfo {
   readonly projectSlug?: string
   readonly gameVersions: readonly string[]
   readonly loaders: readonly string[]
+  /** 发布时间（ISO 8601）。`update --apply` 用它判断「新版本」是不是反而更旧 */
+  readonly datePublished?: string
   readonly dependencies: readonly DependencyRef[]
   readonly files: readonly VersionFile[]
 }

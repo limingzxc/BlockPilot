@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { assetsRequiredToBoot, checkAssets, gameVersionOf } from './assets.js'
+import { assetsRequiredToBoot, checkAssets, gameVersionOf, probeAssets } from './assets.js'
 
 const HASH = 'cc'.repeat(20)
 
@@ -87,6 +87,57 @@ test('提示里给的是 MC 版本，不是 asset index id（1.20.1 的 index �
     assert.doesNotMatch(f.hint ?? '', /assets 5 /)
     // 但消息里仍要说清用的是哪份 index，方便核对
     assert.match(f.message, /index 5/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('多份 index 且无版本 JSON：不按字典序猜最后一份（5.json 会压过 32.json）', () => {
+  const root = mkdtempSync(join(tmpdir(), 'bp-assets-multi-'))
+  try {
+    const instanceDir = join(root, 'instances', 'pack')
+    mkdirSync(instanceDir, { recursive: true })
+    mkdirSync(join(root, 'assets', 'indexes'), { recursive: true })
+    for (const id of ['5', '32']) {
+      writeFileSync(
+        join(root, 'assets', 'indexes', `${id}.json`),
+        JSON.stringify({ objects: { [`a/${id}`]: { hash: HASH, size: 1 } } }),
+      )
+    }
+    assert.equal(probeAssets(join(root, 'assets'), '1.21.1'), null)
+    assert.equal(checkAssets(instanceDir, '1.21.1').length, 0)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('从实例附近的版本 JSON 读 assetIndex.id，抽查对应 index', () => {
+  const root = mkdtempSync(join(tmpdir(), 'bp-assets-indexjson-'))
+  try {
+    const instanceDir = join(root, 'instances', 'pack')
+    mkdirSync(instanceDir, { recursive: true })
+    mkdirSync(join(root, 'versions', '1.21.1'), { recursive: true })
+    writeFileSync(
+      join(root, 'versions', '1.21.1', '1.21.1.json'),
+      JSON.stringify({ id: '1.21.1', assetIndex: { id: '32' } }),
+    )
+    mkdirSync(join(root, 'assets', 'indexes'), { recursive: true })
+    // 5.json 是 1.20.1 的；32.json 才是 1.21.1 的。objects 里只有 5 的对象，
+    // 如果查错 index 会误报「已装」。
+    writeFileSync(
+      join(root, 'assets', 'indexes', '5.json'),
+      JSON.stringify({ objects: { 'a/5': { hash: HASH, size: 1 } } }),
+    )
+    writeFileSync(
+      join(root, 'assets', 'indexes', '32.json'),
+      JSON.stringify({ objects: { 'a/32': { hash: 'dd'.repeat(20), size: 1 } } }),
+    )
+
+    const found = probeAssets(join(root, 'assets'), '1.21.1', '32')
+    assert.equal(found?.indexId, '32')
+    const f = checkAssets(instanceDir, '1.21.1').find((x) => x.code === 'ASSETS_MISSING')
+    assert.ok(f)
+    assert.match(f.message, /index 32/)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

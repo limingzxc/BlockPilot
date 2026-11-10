@@ -43,6 +43,42 @@ export const FINDING_CODES = [
 
 export type FindingCode = (typeof FINDING_CODES)[number]
 
+/**
+ * 每个码的默认级别。`docs/finding-codes.md` 的「默认级别」列由
+ * `codes.test.ts` 与这张表对照，避免文档和代码各说各话。
+ *
+ * `ASSETS_MISSING` 同时可能是 blocker（1.19+ 一个对象都没有）或 warning
+ * （老版本、部分缺失），所以这里只登记最常见的那一档，测试按「包含」判断。
+ */
+export const FINDING_DEFAULT_SEVERITY: Readonly<Record<FindingCode, Severity>> = {
+  ASSETS_MISSING: 'blocker',
+  CF_NO_MOD_CHECK: 'warning',
+  CLOSURE_TRUNCATED: 'warning',
+  CORRUPT_JAR: 'warning',
+  DECLARED_INCOMPATIBLE: 'blocker',
+  DEPENDENCY_CYCLE: 'warning',
+  DEPENDENCY_VERSION_MISMATCH: 'blocker',
+  DUPLICATE_MOD: 'blocker',
+  JAVA_INCOMPATIBLE_WITH_MOD: 'blocker',
+  JAVA_MISSING: 'blocker',
+  JAVA_NEWER_ONLY: 'warning',
+  JAVA_OLDER_PRESENT: 'info',
+  JAVA_TOO_NEW: 'blocker',
+  LOADER_MISMATCH: 'warning',
+  LOW_MEMORY: 'warning',
+  MISSING_DEPENDENCY: 'blocker',
+  NESTED_ONLY_JAR: 'info',
+  PACK_BUILTIN_MODS: 'info',
+  SERVER_ONLY_MOD: 'warning',
+  UNKNOWN_GAME_VERSION: 'warning',
+  UNREADABLE_JAR: 'info',
+  UNRESOLVED_MOD: 'info',
+  UNSATISFIABLE_DEPENDENCY: 'blocker',
+  UNVERIFIED_DEPENDENCY: 'warning',
+  VERSION_MISMATCH: 'blocker',
+  VERSION_UNVERIFIED: 'warning',
+}
+
 export interface Finding {
   readonly severity: Severity
   /** 稳定的机器码。文案可以改，code 不能改——它是 LLM 的解释锚点，也是回归测试的断言对象。 */

@@ -69,8 +69,11 @@ export function validateFlags(
     if (!flag.takesValue) continue
 
     const value = args[i + 1]
-    // 值不能是另一个 flag：`--root --china` 是少写了路径，不是要把 root 设成 "--china"
-    if (value === undefined || value.startsWith('--')) return `${a} 需要一个值`
+    if (value === undefined) return `${a} 需要一个值`
+    // 值恰好是另一个已知 flag：`--root --china` 是少写了路径，不是要把 root 设成 "--china"。
+    // 不能见到 `--` 就拒绝——`config --jvm-args "--add-opens java.base/java.lang=ALL-UNNAMED"`
+    // 里现代 Java 的参数大量以 -- 开头。
+    if (value.startsWith('--') && spec[value] !== undefined) return `${a} 需要一个值`
     i += 1
   }
 

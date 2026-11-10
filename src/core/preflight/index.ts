@@ -1,6 +1,6 @@
 import { statSync } from 'node:fs'
-import type { CurseforgeLike } from '../curseforge.js'
-import { cfFileToVersionInfo, unconfiguredCurseforge } from '../curseforge.js'
+import type { CfFileInfo, CurseforgeLike } from '../curseforge.js'
+import { CurseforgeError, cfFileToVersionInfo, unconfiguredCurseforge } from '../curseforge.js'
 import type { ClosureResult } from '../deps/closure.js'
 import { closureToFindings, computeClosure } from '../deps/closure.js'
 import type { RepairPlan } from '../deps/plan.js'
@@ -156,7 +156,7 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
         .filter((f) => f.required !== false)
         .map((f) => ({ projectId: f.projectID, fileId: f.fileID }))
 
-      let infos: ReadonlyMap<number, import('../../sources/curseforge.js').CfFileInfo> = new Map()
+      let infos: ReadonlyMap<number, CfFileInfo> = new Map()
       if (cf.configured && queries.length > 0) {
         yield Op.progress('cf.resolve', 0, queries.length, `解析 CurseForge 文件（${cf.label}）`)
         try {
@@ -167,8 +167,10 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
             resolved: infos.size,
           })
         } catch (err) {
-          // 解析失败不该让整个预检崩掉：退回到「这一步没做」的老结论
-          if (err instanceof NetworkError) {
+          // 解析失败不该让整个预检崩掉：退回到「这一步没做」的老结论。
+          // 镜像 429 / 官方接口报错都是 CurseforgeError，和断网一样属于「这次没查成」，
+          // 不是「这个包有问题」。
+          if (err instanceof NetworkError || err instanceof CurseforgeError) {
             yield Op.log('warn', 'cf.resolve_failed', { message: err.message })
           } else throw err
         }

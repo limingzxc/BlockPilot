@@ -21,6 +21,11 @@ test('Quilt 的「最新」按版本号取最大，不依赖列表顺序', () =>
   assert.equal(pickQuiltLoaderVersion([]), undefined)
 })
 
+test('同号时优先正式版，不因列表顺序选中预发布', () => {
+  assert.equal(pickQuiltLoaderVersion(['0.29.2-beta.4', '0.29.2']), '0.29.2')
+  assert.equal(pickQuiltLoaderVersion(['0.29.2', '0.29.2-beta.4']), '0.29.2')
+})
+
 test('列表接口：抽出 loader.version', async () => {
   const stub = (async () =>
     new Response(

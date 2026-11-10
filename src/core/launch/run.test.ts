@@ -130,6 +130,34 @@ test('autoStopSeconds 到点杀进程：stopped=true、crashed=false 且发出 a
   })
 })
 
+test('Ctrl+C 中断：stopped=true、aborted=true，不报成崩溃', async () => {
+  await withTemp(async (dir) => {
+    const plan = planWith('console.log("running"); setTimeout(() => {}, 30000)', dir)
+    const controller = new AbortController()
+    const events: string[] = []
+    let result: RunResult | undefined
+    const timer = setTimeout(() => controller.abort(), 200)
+    for await (const ev of createLauncher({ plan }).run(controller.signal)) {
+      if (ev.type === 'log') events.push(ev.code)
+      if (ev.type === 'result') result = ev.value
+    }
+    clearTimeout(timer)
+    assert.ok(events.includes('launch.aborted'))
+    assert.equal(result?.stopped, true)
+    assert.equal(result?.aborted, true)
+    assert.equal(result?.crashed, false)
+  })
+})
+
+test('结尾没有换行符的半行也会进入 tail 与日志', async () => {
+  await withTemp(async (dir) => {
+    const plan = planWith('process.stdout.write("last line without newline")', dir)
+    const r = await collect(createLauncher({ plan, logsDir: join(dir, 'logs') }))
+    assert.ok(r.tail.includes('last line without newline'))
+    assert.match(readFileSync(r.logPath ?? '', 'utf8'), /last line without newline/)
+  })
+})
+
 test('实例目录不存在：报 INSTANCE_DIR_MISSING，不把它说成 java 的问题（issue #9）', async () => {
   await withTemp(async (dir) => {
     const plan = planWith('console.log("never runs")', join(dir, 'no-such-instance'))

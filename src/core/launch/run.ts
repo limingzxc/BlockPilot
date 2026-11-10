@@ -23,8 +23,10 @@ export interface RunResult {
   readonly exitCode: number | null
   readonly signal: string | null
   readonly durationMs: number
-  /** 到 `--stop` 时限由我们结束的。此时不算崩溃 */
+  /** 由我们主动结束的（`--stop` 到点或 Ctrl+C）。此时不算崩溃 */
   readonly stopped: boolean
+  /** 其中是 Ctrl+C 打断的。文案要说「已中断」而不是「已到时限」 */
+  readonly aborted: boolean
   /** 非 0 退出，或者被信号杀死（不含我们主动结束的情况） */
   readonly crashed: boolean
   /** 进程活着但日志早就断了：游戏中途死掉，进程没退 */
@@ -58,10 +60,16 @@ function endsWithStack(tail: readonly string[]): boolean {
   return false
 }
 
+interface Splitter {
+  (chunk: Buffer): void
+  /** 进程关闭时把最后一行没有换行符的残留也交出去 */
+  flush(): void
+}
+
 /** 跨 chunk 拼行：一行可能被切成两段，不能按 chunk 直接切。 */
-function makeSplitter(onLine: (line: string) => void): (chunk: Buffer) => void {
+function makeSplitter(onLine: (line: string) => void): Splitter {
   let buffer = ''
-  return (chunk: Buffer) => {
+  const push = (chunk: Buffer): void => {
     buffer += chunk.toString('utf8')
     const lines = buffer.split(/\r?\n/)
     buffer = lines.pop() ?? ''
@@ -69,6 +77,14 @@ function makeSplitter(onLine: (line: string) => void): (chunk: Buffer) => void {
       if (line !== '') onLine(line)
     }
   }
+  return Object.assign(push, {
+    flush: (): void => {
+      if (buffer !== '') {
+        onLine(buffer)
+        buffer = ''
+      }
+    },
+  })
 }
 
 function looksLikeError(line: string): boolean {
@@ -145,12 +161,16 @@ export function createLauncher(opts: RunOptions): Operation<RunResult> {
       queue.push(Op.log(looksLikeError(line) ? 'error' : 'info', 'game.output', { stream, line }))
     }
 
-    child.stdout.on('data', makeSplitter(onLine('stdout')))
-    child.stderr.on('data', makeSplitter(onLine('stderr')))
+    const stdoutSplitter = makeSplitter(onLine('stdout'))
+    const stderrSplitter = makeSplitter(onLine('stderr'))
+    child.stdout.on('data', stdoutSplitter)
+    child.stderr.on('data', stderrSplitter)
 
     let timer: NodeJS.Timeout | undefined
     /** 是我们自己按 --stop 结束的：不能既当裁判又吹哨，把主动结束报成崩溃 */
     let stopped = false
+    /** Ctrl+C 打断：同样不算崩溃，但文案要和「到点结束」区分 */
+    let aborted = false
     const autoStopSeconds = opts.autoStopSeconds
     if (autoStopSeconds !== undefined) {
       timer = setTimeout(() => {
@@ -161,11 +181,17 @@ export function createLauncher(opts: RunOptions): Operation<RunResult> {
     }
 
     const abortHandler = () => {
+      // 不标记 stopped 的话，child.kill() 会让下面算出 crashed=true：
+      // 用户按 Ctrl+C，最后却看到「异常退出」并建议 diag
+      aborted = true
+      stopped = true
       queue.push(Op.log('warn', 'launch.aborted'))
       child.kill()
     }
     signal.addEventListener('abort', abortHandler, { once: true })
 
+    // close 而不是 exit：exit 可能早于 stdout/stderr 排空，而 queue.close() 之后
+    // push 会被丢弃——崩溃现场的最后几行恰好是 diag 最需要的
     const exited = new Promise<{ code: number | null; sig: NodeJS.Signals | null }>((resolve) => {
       child.on('error', (err) => {
         queue.push(
@@ -175,7 +201,12 @@ export function createLauncher(opts: RunOptions): Operation<RunResult> {
         )
         resolve({ code: null, sig: null })
       })
-      child.on('exit', (code, sig) => resolve({ code, sig }))
+      child.on('close', (code, sig) => {
+        // 结尾没有换行符的半行也要进 tail/日志
+        stdoutSplitter.flush()
+        stderrSplitter.flush()
+        resolve({ code, sig })
+      })
     })
 
     const finish = exited.then((r) => {
@@ -216,6 +247,7 @@ export function createLauncher(opts: RunOptions): Operation<RunResult> {
       durationMs,
       // 「到点结束」只在真的跑到时限时才算：死在中途的要报成崩溃
       stopped: stopped && !diedBeforeStop,
+      aborted,
       crashed,
       diedBeforeStop,
       tail,

@@ -107,7 +107,7 @@ const tools: Tool[] = [
         logPath: {
           type: 'string',
           description:
-            '日志文件路径，通常是 `<实例>/logs/latest.log` 或带时间戳的会话日志。**优先传绝对路径**。',
+            '日志文件路径，通常是 `<实例>/logs/latest.log`、带时间戳的会话日志、hs_err_pid*.log 或 crash-reports/*.txt。**优先传绝对路径**；只接受 .log / .txt，避免变成任意文件读取。',
         },
         modsDir: {
           type: 'string',
@@ -188,6 +188,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra): Promise<
     }
 
     const logPath = resolve(rawLog)
+    // 只读诊断输入，不是任意文件读取器：限制在 Minecraft 日志与崩溃报告的扩展名内。
+    // ADR-0001 要求边界写进协议，所以这条也写进了工具描述。
+    if (!/\.(log|txt)$/i.test(logPath)) {
+      return {
+        content: [{ type: 'text', text: `logPath 必须是 .log 或 .txt 文件（收到 ${logPath}）` }],
+        isError: true,
+      }
+    }
     if (!existsSync(logPath)) {
       return { content: [{ type: 'text', text: `log not found: ${logPath}` }], isError: true }
     }

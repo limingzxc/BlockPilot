@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'node:test'
 
 import { resolveLayout } from '../layout.js'
+import { collect } from '../operation.js'
 import type { VersionJson } from '../version/types.js'
 import { expandArgs, substitute } from './command.js'
 import type { LaunchEnv } from './env.js'
 import { detectEnv, rulesAllow } from './env.js'
+import { createLaunchPlan } from './index.js'
 import { buildLaunchPlan } from './plan.js'
 
 const win: LaunchEnv = {
@@ -100,6 +105,32 @@ function fakeVersion(): VersionJson {
     },
   }
 }
+
+test('createLaunchPlan 把实例配置的 extraJvmArgs 交给启动命令（config → plan.args）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bp-launch-jvmargs-'))
+  try {
+    const layout = resolveLayout(dir, 'test')
+    const version = fakeVersion()
+    mkdirSync(join(layout.versions, version.id), { recursive: true })
+    writeFileSync(layout.versionJson(version.id), JSON.stringify(version))
+
+    const plan = await collect(
+      createLaunchPlan({
+        versionId: version.id,
+        layout,
+        java: 'java',
+        maxMemoryMiB: 2048,
+        extraJvmArgs: ['--add-opens', 'java.base/java.lang=ALL-UNNAMED'],
+      }),
+    )
+    const at = plan.args.indexOf('--add-opens')
+    assert.ok(at > 0, '--add-opens 应该出现在启动参数里')
+    assert.equal(plan.args[at - 1], '-Xmx2048M', '追加参数应排在 -Xmx 之后')
+    assert.equal(plan.args[at + 1], 'java.base/java.lang=ALL-UNNAMED')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 test('buildLaunchPlan 只把当前平台需要的 jar 放进 classpath', () => {
   const plan = buildLaunchPlan({

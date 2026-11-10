@@ -25,7 +25,7 @@ import { createForgeSetup } from './setup/forge.js'
 import { buildCurseforgeTasks, buildPackTasks, extractOverrides } from './setup/pack.js'
 import { createQuiltSetup } from './setup/quilt.js'
 import { createVanillaSetup } from './setup/vanilla.js'
-import { readJavaMajor } from './version/java-major.js'
+import { readAssetIndexId, readJavaMajor } from './version/java-major.js'
 
 /** deploy 能装的加载器。Quilt 与 Fabric 共用 profile 流程（ADR-0040 后续）。 */
 export const SUPPORTED_LOADERS: ReadonlySet<LoaderKind> = new Set([
@@ -37,6 +37,8 @@ export const SUPPORTED_LOADERS: ReadonlySet<LoaderKind> = new Set([
 
 export interface DeployOptions {
   readonly packPath: string
+  /** 已经读过的包。CLI 先读它拿游戏版本/加载器，不必在这里再解一遍 zip */
+  readonly pack?: PackFileRead
   readonly layout: Layout
   readonly sources?: readonly Mirror[]
   readonly concurrency?: number
@@ -172,7 +174,7 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
   return defineOperation<DeployResult>('deploy', async function* (signal) {
     let pack: PackFileRead
     try {
-      pack = readPackFile(opts.packPath)
+      pack = opts.pack ?? readPackFile(opts.packPath)
     } catch (err) {
       yield Op.failed(
         'BAD_MODPACK',
@@ -249,6 +251,22 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
       return
     }
 
+    /**
+     * 只有 Forge / NeoForge 需要 java 跑 installer；Fabric / Quilt 只下文件。
+     *
+     * 这个判断必须在原版下载之前：否则一个缺 java 的 Forge 包会先白下一轮
+     * 90 MB 的原版文件，再报「需要 java」。
+     */
+    const needsJava = instance.loader.kind === 'forge' || instance.loader.kind === 'neoforge'
+    if (needsJava && opts.java === undefined) {
+      yield Op.failed(
+        'NEED_JAVA',
+        `${instance.loader.kind} 需要 java 来跑 installer`,
+        '传 --java 或先跑 java 检测',
+      )
+      return
+    }
+
     const sources = opts.sources ?? defaultSources()
     const concurrency = opts.concurrency ?? 4
 
@@ -304,10 +322,6 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
     yield Op.log('info', 'deploy.step', { step: 'loader' })
 
     // Forge：靠官方 installer 下载依赖并给 client 打补丁，比自己解析 install_profile 可靠
-    if (instance.loader.kind !== 'fabric' && opts.java === undefined) {
-      yield Op.failed('NEED_JAVA', 'Forge 需要 java 来跑 installer', '传 --java 或先跑 java 检测')
-      return
-    }
     let playableVersionId: string | undefined
     const loaderFailed = yield* forwardStep(
       loaderStep({
@@ -409,8 +423,11 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
      * 手抄会漏：只查模组与 assets 就漏掉 Java，也没有「有东西没校验到就不算 ok」
      * 那条规则，于是自检说通过、run 说崩（ADR-0037）。
      */
-    // 版本 JSON 的 javaVersion 是权威值；读不到再退回 gameVersion 查表
-    const javaMajor = readJavaMajor(opts.layout.versionJson(instance.gameVersion))
+    // 版本 JSON 的 javaVersion 是权威值；读不到再退回 gameVersion 查表。
+    // assetIndex.id 同理：现代版本的 index 叫 5 / 17 / 32，不能按 MC 版本猜。
+    const versionJson = opts.layout.versionJson(instance.gameVersion)
+    const javaMajor = readJavaMajor(versionJson)
+    const assetIndexId = readAssetIndexId(versionJson)
     const check = preflightDir({
       dir: opts.layout.gameDir,
       scan,
@@ -418,6 +435,7 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
       assetsDir: opts.layout.assets,
       ...(opts.host === undefined ? {} : { host: opts.host }),
       ...(javaMajor === undefined ? {} : { javaMajor }),
+      ...(assetIndexId === undefined ? {} : { assetIndexId }),
     })
     yield Op.log('info', 'deploy.check', {
       verdict: check.verdict,

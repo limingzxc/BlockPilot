@@ -29,6 +29,8 @@ export interface CfFileInfo {
   /** 作者可以关掉第三方下载，这时是 null */
   readonly downloadUrl: string | null
   readonly hashes: Readonly<Record<string, string>>
+  /** 发布时间（ISO 8601）。`update --apply` 用它判断方向 */
+  readonly datePublished?: string
   /** CF 的 gameVersions 混着游戏版本与加载器名，如 ["1.12.2", "Forge"] */
   readonly gameVersions: readonly string[]
   readonly dependencies: readonly CfDependency[]

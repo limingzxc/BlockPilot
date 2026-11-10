@@ -38,8 +38,8 @@ RLCraft 2.9.3 的 187 个 fileID 用它逐个查：**187/187 全部解析、185 
    官方实现只用 fileId，镜像实现两者都要（URL 里带 projectId）。
 2. 新增 `MirrorCurseforgeSource`：并发 6 逐个 `GET /v1/mods/{id}/files/{fid}`；
    404 视为「镜像没收录，让调用方按拿不到处理」；429 → `CF_API_RATE_LIMIT`。
-3. `resolveCurseforge()` 决定用谁：**有 key（`--curseforge-key` 或
-   `BLOCKPILOT_CF_API_KEY`）走官方批量接口；没有就走镜像**。
+3. `resolveCurseforge()` 决定用谁：**有 key（只读环境变量
+   `BLOCKPILOT_CF_API_KEY`，见 ADR-0029）走官方批量接口；没有就走镜像**。
    `--no-cf-mirror` 关闭回落，复现老行为（未配置 → 降级安装）。
 4. `deploy` 日志里打印 `CurseForge 解析源：MCIM · … / api.curseforge.com`，
    用户不用猜这次走的是哪条路。
@@ -49,6 +49,16 @@ RLCraft 2.9.3 的 187 个 fileID 用它逐个查：**187/187 全部解析、185 
    - 空清单（作者没填）**不判**版本/加载器，否则会产出假 blocker；
    - 拿不到元数据的文件算 `unresolved`，verdict 落到 unknown；
    - `--no-cf-mirror` 时不联网，退回 `CF_NO_MOD_CHECK`（同时保留「没做校验」的诚实说法）。
+
+### 信任根
+
+免 key 路径下，**下载地址与 sha1 都来自同一个第三方（MCIM）**——哈希不再独立于
+来源，只能证明「拿到的字节与镜像声称的一致」。因此边界收紧到：
+
+- 下载 URL 必须落在 `forgecdn.net`（含 `edge.` / `mediafilez.` 等子域），
+  镜像返回任意域名时该文件进 `unresolved`，不发请求；
+- 文件名只取 `basename` 并经 `safeJoin` 落盘，不能写出 `mods/`；
+- 需要独立校验来源时，配置 `BLOCKPILOT_CF_API_KEY` 走官方接口。
 
 ## Consequences
 

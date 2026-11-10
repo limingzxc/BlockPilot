@@ -57,14 +57,14 @@ function writeMrpack(
 /** 假的原版步骤：发一条 log 再产出 result */
 const fakeVanilla = (): ReturnType<typeof defineOperation<unknown>> =>
   defineOperation<unknown>('fake-vanilla', async function* () {
-    yield Op.log('info', 'fake.vanilla.log')
+    yield Op.log('info', 'deploy.step', { step: 'vanilla' })
     yield Op.result({ ok: true })
     yield Op.done()
   })
 
 const fakeLoader = (versionId: string) =>
   defineOperation<{ versionId: string }>('fake-loader', async function* () {
-    yield Op.log('info', 'fake.loader.log')
+    yield Op.log('info', 'deploy.step', { step: 'loader' })
     yield Op.result({ versionId })
     yield Op.done()
   })
@@ -125,10 +125,12 @@ test('事件契约：子步骤的 log 转发，result 与 done 不转发', async
     })
     const { events, result } = await collectEvents(op.run(new AbortController().signal))
 
-    const codes = events.filter((e) => e.type === 'log').map((e) => (e as { code: string }).code)
-    assert.ok(codes.includes('fake.vanilla.log'), '子步骤的 log 应转发')
-    assert.ok(codes.includes('fake.loader.log'))
-    assert.ok(codes.includes('deploy.step'))
+    const steps = events
+      .filter((e) => e.type === 'log' && e.code === 'deploy.step')
+      .map((e) => (e as { data: { step: string } }).data.step)
+    assert.ok(steps.includes('vanilla'), '子步骤的 log 应转发')
+    assert.ok(steps.includes('loader'))
+    assert.ok(steps.includes('check'))
 
     // 整个流里只能有一个 result（deploy 自己的），子步骤的 result 被吞掉
     const results = events.filter((e) => e.type === 'result')
@@ -180,7 +182,7 @@ test('加载器没产出 result：报 LOADER_FAILED', async () => {
         vanilla: () => fakeVanilla(),
         loader: () =>
           defineOperation<{ versionId: string }>('silent-loader', async function* () {
-            yield Op.log('info', 'silent')
+            yield Op.log('info', 'deploy.step', { step: 'files' })
             // 故意不产出 result
           }),
       },
@@ -235,30 +237,43 @@ test('CurseForge 包没有 key：降级安装，清单文件进 failed 而不是
   })
 })
 
-test('Quilt 已在支持列表里，不再报 UNSUPPORTED_LOADER', async () => {
+test('Quilt 已在支持列表里，不再报 UNSUPPORTED_LOADER，也不需要 Java', async () => {
   await withTemp(async (dir) => {
     const layout = resolveLayout(dir, 'test')
     const op = createDeploy({
       packPath: writeMrpack(dir, { minecraft: '1.20.1', 'quilt-loader': '0.23.0' }),
       layout,
+      // 必须注入假步骤：否则这条用例会真的联网下载 1.20.1 原版
+      deps: {
+        vanilla: () => fakeVanilla(),
+        loader: () => fakeLoader('quilt-loader-0.23.0-1.20.1'),
+      },
     })
-    const { failed } = await collectEvents(op.run(new AbortController().signal))
-    assert.notEqual(failed?.code, 'UNSUPPORTED_LOADER')
+    const { failed, result } = await collectEvents(op.run(new AbortController().signal))
+    assert.equal(failed, undefined)
+    assert.equal(result?.failed.length, 0)
     assert.equal(SUPPORTED_LOADERS.has('quilt'), true)
     assert.equal(SUPPORTED_LOADERS.has('liteloader' as LoaderKind), false)
   })
 })
 
-test('Forge 包缺 java：NEED_JAVA', async () => {
+test('Forge 包缺 java：NEED_JAVA，且不先白下一轮原版', async () => {
   await withTemp(async (dir) => {
     const layout = resolveLayout(dir, 'test')
+    let vanillaCalled = false
     const op = createDeploy({
       packPath: writeMrpack(dir, { minecraft: '1.20.1', forge: '47.3.0' }),
       layout,
-      deps: { vanilla: () => fakeVanilla() },
+      deps: {
+        vanilla: () => {
+          vanillaCalled = true
+          return fakeVanilla()
+        },
+      },
     })
     const { failed } = await collectEvents(op.run(new AbortController().signal))
     assert.equal(failed?.code, 'NEED_JAVA')
+    assert.equal(vanillaCalled, false, '缺 java 时不应先下载原版')
   })
 })
 

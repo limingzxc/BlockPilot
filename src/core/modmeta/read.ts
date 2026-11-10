@@ -265,11 +265,15 @@ type McmodEntry = {
   dependencies?: unknown
 }
 
-function pickMcmodEntry(raw: Record<string, unknown>): McmodEntry | null {
-  if (Array.isArray(raw)) return (raw[0] as McmodEntry | undefined) ?? null
+function mcmodEntries(raw: Record<string, unknown>): McmodEntry[] {
+  if (Array.isArray(raw)) return raw as McmodEntry[]
   const list = raw.modList
-  if (Array.isArray(list)) return (list[0] as McmodEntry | undefined) ?? null
-  return raw as McmodEntry
+  if (Array.isArray(list)) return list as McmodEntry[]
+  return [raw as McmodEntry]
+}
+
+function pickMcmodEntry(raw: Record<string, unknown>): McmodEntry | null {
+  return mcmodEntries(raw)[0] ?? null
 }
 
 /** mcversion 可能是 `1.12.2`、`1.12`、`1.12.x`，也可能是 `[1.12.2,1.13)`。统一成范围表达式。 */
@@ -324,8 +328,17 @@ function parseForgeDeps(raw: unknown): ModDependency[] {
 function fromMcmodInfo(text: string): ModMetadata | null {
   const raw = parseModJson(text)
   if (raw === null) return null
+  const entries = mcmodEntries(raw)
   const entry = pickMcmodEntry(raw)
   if (entry === null || typeof entry.modid !== 'string' || entry.modid === '') return null
+
+  // 一个 jar 声明多个 mod 时，主 modId 之外的也要能被依赖匹配上，否则会报假缺前置
+  const provides: string[] = []
+  for (const extra of entries.slice(1)) {
+    if (typeof extra.modid === 'string' && extra.modid !== '' && !provides.includes(extra.modid)) {
+      provides.push(extra.modid)
+    }
+  }
 
   const deps = parseForgeDeps(entry.dependencies)
   const mc =
@@ -339,7 +352,7 @@ function fromMcmodInfo(text: string): ModMetadata | null {
     // mcversion 同样只是展示信息，放进字段供人参考，不升级成 minecraft 依赖
     ...(mc === undefined ? {} : { mcVersionRange: asRange(mc) }),
     dependencies: deps,
-    provides: [],
+    provides,
     nested: [],
   }
 }
@@ -351,13 +364,27 @@ function fromForgeToml(text: string, loader: ModLoaderKind): ModMetadata | null 
   } catch {
     return null
   }
-  const first = raw.mods?.[0]
+  const mods = raw.mods ?? []
+  const first = mods[0]
   if (first === undefined || typeof first.modId !== 'string') return null
 
-  const depsRaw = raw.dependencies?.[first.modId] ?? []
+  /**
+   * 一个 jar 可以声明多个 `[[mods]]`（常见于前置打包）。只读 `[0]` 会让后面那些
+   * modId 的依赖永远匹配不上，报出假的 MISSING_DEPENDENCY。
+   */
+  const declaredIds = mods
+    .map((m) => m.modId)
+    .filter((id): id is string => typeof id === 'string' && id !== '')
+  const depsRaw = mods.flatMap((m) =>
+    typeof m.modId === 'string' ? (raw.dependencies?.[m.modId] ?? []) : [],
+  )
   const deps: ModDependency[] = []
+  const seen = new Set<string>()
   for (const d of depsRaw) {
     if (typeof d.modId !== 'string') continue
+    const key = `${d.modId}|${d.versionRange ?? ''}|${d.type ?? ''}|${String(d.mandatory)}`
+    if (seen.has(key)) continue
+    seen.add(key)
     /**
      * `mandatory` 优先（老写法显式给了就以它为准）；否则看 `type`。
      * `incompatible` 不是「必需」，不能因为它不在实例里就报缺依赖。
@@ -400,6 +427,10 @@ function fromForgeToml(text: string, loader: ModLoaderKind): ModMetadata | null 
   } else if (typeof rawProvides === 'string' && rawProvides !== '') {
     // 单个字符串也接受（Toml 里写 provides = "x" 的情况）
     provides.push(rawProvides)
+  }
+  // 同一个 jar 里其余 [[mods]] 的 modId 也算「本 jar 提供了它」
+  for (const id of declaredIds.slice(1)) {
+    if (!provides.includes(id)) provides.push(id)
   }
 
   return {

@@ -29,6 +29,7 @@ interface RawVersion {
   readonly name: string
   readonly game_versions: readonly string[]
   readonly loaders: readonly string[]
+  readonly date_published?: string
   readonly version_type?: 'release' | 'beta' | 'alpha'
   readonly files?: readonly {
     readonly url: string
@@ -51,6 +52,7 @@ function toVersionInfo(raw: RawVersion): VersionInfo {
     name: raw.name,
     gameVersions: raw.game_versions,
     loaders: raw.loaders,
+    ...(raw.date_published === undefined ? {} : { datePublished: raw.date_published }),
     dependencies: (raw.dependencies ?? []).map((d) => ({
       projectId: d.project_id,
       versionId: d.version_id,

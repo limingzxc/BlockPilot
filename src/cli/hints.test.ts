@@ -6,7 +6,9 @@
  * 靠这条用例挡住的（5 是 asset index id，不是 MC 版本）。
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 import {
   assetsHint,
@@ -90,4 +92,15 @@ test('路径含空格时会被引号包住，切回来仍是完整路径', () =>
 test('java install 的参数是数字大版本，不是版本串', () => {
   const args = check(javaInstallHint(21))
   assert.deepEqual(args, ['install', '21'])
+})
+
+test('提示里用到的 --flag 必须是某条命令真的声明过的', () => {
+  const file = fileURLToPath(new URL('../core/hints.ts', import.meta.url))
+  const text = readFileSync(file, 'utf8')
+  const declared = new Set(COMMANDS.flatMap((c) => Object.keys(c.flags)))
+  declared.add('--proxy')
+  declared.add('--events')
+  for (const match of text.matchAll(/--[a-z][a-z0-9-]*/g)) {
+    assert.ok(declared.has(match[0]), `提示里出现了未声明的参数：${match[0]}`)
+  }
 })

@@ -1,4 +1,4 @@
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import type { RepairPlan } from '../deps/plan.js'
 import { errMessage } from '../errors.js'
 import type { OpEvent } from '../events.js'
@@ -19,13 +19,17 @@ export interface InstallOptions {
 }
 
 export function planToTasks(plan: RepairPlan, modsDir: string): readonly DownloadTask[] {
-  return plan.installs.map((i) => ({
-    url: i.url,
-    fileName: i.fileName,
-    destPath: join(modsDir, i.fileName),
-    expectedSize: i.size,
-    hashes: i.hashes,
-  }))
+  return plan.installs.map((i) => {
+    // 文件名来自内容源，只取最后一段：`../../evil.jar` 不能写出 mods/
+    const fileName = basename(i.fileName)
+    return {
+      url: i.url,
+      fileName,
+      destPath: join(modsDir, fileName),
+      expectedSize: i.size,
+      hashes: i.hashes,
+    }
+  })
 }
 
 export function createInstaller(opts: InstallOptions): Operation<InstallResult> {

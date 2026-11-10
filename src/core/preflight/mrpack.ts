@@ -67,15 +67,23 @@ function assertMrpackIndex(raw: unknown): MrpackIndex {
     if (!Array.isArray(file.downloads)) {
       throw new Error(`files[${i}]（${p}）缺少 downloads 数组`)
     }
+    // 缺 hashes 时以前会一路走到 pickAlgo 抛 TypeError，又变成「JS 内部错误」
+    if (typeof file.hashes !== 'object' || file.hashes === null || Array.isArray(file.hashes)) {
+      throw new Error(`files[${i}]（${p}）缺少 hashes 对象`)
+    }
   }
 
   return o as unknown as MrpackIndex
 }
 
-/** 只解压 index 一个条目——大整合包有几千个模组，全解会吃掉内存。 */
-export function readMrpackIndex(zipPath: string): MrpackIndex {
-  const raw = readFileSync(zipPath)
-  const entries = unzipSync(new Uint8Array(raw), {
+/**
+ * 只解压 index 一个条目——大整合包有几千个模组，全解会吃掉内存。
+ *
+ * `data` 允许调用方复用已经读入的 zip 字节，避免同一文件被 `readFileSync` 多次。
+ */
+export function readMrpackIndex(zipPath: string, data?: Uint8Array): MrpackIndex {
+  const raw = data ?? new Uint8Array(readFileSync(zipPath))
+  const entries = unzipSync(raw, {
     filter: (f) => f.name === INDEX_ENTRY,
   })
   const buf = entries[INDEX_ENTRY]

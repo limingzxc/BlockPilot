@@ -53,6 +53,10 @@ ADR-0024 的现状是：`refresh_token` 明文写进 `<root>/auth/accounts.json`
 - 每次 `loadStore` 对每个账号调一次 `security` / `secret-tool`，多几十毫秒。
 - 三个平台的后端无法在本机同时实测；macOS/Linux 只做了代码路径与降级逻辑，
   需要在真机上补一次手工验证。
+- macOS 的 `security add-generic-password -w <secret>` **把密文放在 argv 上**：
+  同用户的进程在写入瞬间能通过进程列表看到它。Windows（DPAPI stdin）与 Linux
+  （`secret-tool` stdin）没有这个问题；`security` 没有等价的 stdin 写法，
+  要消除只能改用原生钥匙串模块（已被本 ADR 否决）。
 
 ## Alternatives considered
 

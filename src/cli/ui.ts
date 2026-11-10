@@ -14,6 +14,7 @@
  */
 import type { OpEvent } from '../core/events.js'
 import type { Operation } from '../core/operation.js'
+import { redactArgs, redactSecrets } from '../core/redact.js'
 
 export const C = {
   reset: '\u001b[0m',
@@ -43,6 +44,67 @@ export function setEventStream(on: boolean): void {
   eventStream = on
 }
 
+export function isEventStream(): boolean {
+  return eventStream
+}
+
+/**
+ * 人类文本的出口。
+ *
+ * `--events` 的契约是「stdout 只有 ndjson」。子命令里散落的
+ * `process.stdout.write` 会在事件流之前/之间混进人类文本，消费者解析第一行就炸；
+ * 所以统一走这里：事件模式下改道 stderr，既不丢信息，也不污染协议。
+ */
+export function say(text: string): void {
+  if (eventStream) process.stderr.write(text)
+  else process.stdout.write(text)
+}
+
+/** 在事件流里补一条 failed。只给「还没进入 Operation 就失败」的路径用。 */
+export function emitFailed(code: string, message: string, hint?: string): void {
+  if (!eventStream) return
+  const payload = {
+    schemaVersion: 1,
+    type: 'failed',
+    code,
+    message: redactSecrets(message),
+    ...(hint === undefined ? {} : { hint: redactSecrets(hint) }),
+  }
+  process.stdout.write(`${JSON.stringify(payload)}\n`)
+}
+
+let exitEmitted = false
+
+/** 写 `exit` 行。整个进程只允许一行，重复调用返回 false。 */
+export function emitExit(code: number): boolean {
+  if (exitEmitted) return false
+  exitEmitted = true
+  process.stdout.write(`${JSON.stringify({ schemaVersion: 1, type: 'exit', code })}\n`)
+  return true
+}
+
+/** 事件流兜底脱敏。导出只给测试：证明 result 也不会漏令牌。 */
+export function sanitizeEventValue(value: unknown, key?: string): unknown {
+  if (typeof value === 'string') {
+    // JSON 里的 accessToken / refreshToken 字段按 key 处理；其余文本走通用规则
+    if (key === 'accessToken' || key === 'refreshToken') return '***'
+    return redactSecrets(value)
+  }
+  if (Array.isArray(value)) {
+    // 启动命令是数组：`--accessToken` 与它的值是两个元素，必须成对脱敏
+    if (key === 'args') return redactArgs(value.filter((v): v is string => typeof v === 'string'))
+    return value.map((item) => sanitizeEventValue(item))
+  }
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = sanitizeEventValue(v, k)
+    }
+    return out
+  }
+  return value
+}
+
 /** Ctrl+C → abort。11 个子命令的同一行样板。 */
 export function createInterrupt(): AbortController {
   const controller = new AbortController()
@@ -64,6 +126,13 @@ export interface OpUi<T> {
    * 缺省 0；preflight / diag / verify / deploy 这类有非零结论的命令必须给。
    */
   exitCode?(value: T): number
+  /**
+   * `--events` 模式是否在本次 Operation 结束时写 `exit` 行。
+   *
+   * 串联多个 Operation 的命令（run / install / forge）只有最后一步该写；
+   * 前几步传 false，由调用方在真正结束时统一写。
+   */
+  readonly exitEvent?: boolean
 }
 
 /**
@@ -77,7 +146,8 @@ export async function consume<T>(
   signal: AbortSignal,
 ): Promise<number> {
   const emit = (payload: object): void => {
-    process.stdout.write(`${JSON.stringify({ schemaVersion: 1, ...payload })}\n`)
+    const clean = sanitizeEventValue(payload) as Record<string, unknown>
+    process.stdout.write(`${JSON.stringify({ schemaVersion: 1, ...clean })}\n`)
   }
 
   for await (const ev of op.run(signal)) {
@@ -85,11 +155,11 @@ export async function consume<T>(
       emit(ev)
       if (ev.type === 'result') {
         const code = ui.exitCode?.(ev.value) ?? 0
-        emit({ type: 'exit', code })
+        if (ui.exitEvent !== false) emitExit(code)
         return code
       }
       if (ev.type === 'failed') {
-        emit({ type: 'exit', code: 1 })
+        if (ui.exitEvent !== false) emitExit(1)
         return 1
       }
       continue
@@ -129,6 +199,6 @@ export async function consume<T>(
         break
     }
   }
-  if (eventStream) emit({ type: 'exit', code: 1 })
+  if (eventStream && ui.exitEvent !== false) emitExit(1)
   return 1
 }

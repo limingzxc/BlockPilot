@@ -16,6 +16,8 @@ export interface LaunchOptions {
   /** 在线账号。给了按正版身份启动 */
   readonly account?: AuthAccount
   readonly maxMemoryMiB?: number
+  /** 实例配置里追加的 JVM 参数（config --jvm-args） */
+  readonly extraJvmArgs?: readonly string[]
   /** 走 BMCLAPI 拉版本 JSON */
   readonly mirror?: boolean
 }
@@ -55,6 +57,7 @@ export function createLaunchPlan(opts: LaunchOptions): Operation<LaunchPlan> {
       username: opts.username ?? 'Player',
       ...(opts.account === undefined ? {} : { account: opts.account }),
       ...(opts.maxMemoryMiB === undefined ? {} : { maxMemoryMiB: opts.maxMemoryMiB }),
+      ...(opts.extraJvmArgs === undefined ? {} : { extraJvmArgs: opts.extraJvmArgs }),
     })
 
     yield Op.log('info', 'launch.plan.ready', {

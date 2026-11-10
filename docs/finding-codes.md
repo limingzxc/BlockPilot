@@ -28,7 +28,7 @@
 | `PACK_BUILTIN_MODS` | info | overrides/mods 里还有 jar，装完会一起参与校验 |
 | `SERVER_ONLY_MOD` | warning | 声明为仅服务端的模组装在客户端，通常无意义 |
 | `UNKNOWN_GAME_VERSION` | warning | 读不出实例的 MC 版本，版本相关结论不可靠 |
-| `UNREADABLE_JAR` | warning | jar 内的元数据读不出来，该模组未参与检查 |
+| `UNREADABLE_JAR` | info | jar 内的元数据读不出来，该模组未参与检查；资源包/非模组 jar 属正常情况 |
 | `UNRESOLVED_MOD` | info | 拿不到这个模组的在线元数据，未参与检查 |
 | `UNSATISFIABLE_DEPENDENCY` | blocker | 依赖存在，但找不到兼容当前 MC / 加载器的版本 |
 | `UNVERIFIED_DEPENDENCY` | warning | 整合包里没看到依赖，但可能内置在某个 jar-in-jar 里 |

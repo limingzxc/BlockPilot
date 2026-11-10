@@ -98,7 +98,7 @@ export async function recommendedNeoForge(
     const text = await res.text()
     const versions = [...text.matchAll(/<version>([^<]+)<\/version>/g)]
       .map((m) => m[1])
-      .filter((v): v is string => v !== undefined && v.startsWith(`${prefix}.`))
+      .filter((v): v is string => v?.startsWith(`${prefix}.`) === true)
     if (versions.length === 0) return absent(`NeoForge 没有 ${gameVersion} 的构建`)
     let best: string | undefined
     for (const v of versions) {

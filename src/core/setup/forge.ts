@@ -12,7 +12,7 @@ import { defineOperation } from '../operation.js'
 import { javaProxyArgs } from '../proxy.js'
 import { fetchMavenSha1 } from '../sources/fabric.js'
 import type { InstallerKind } from '../sources/forge.js'
-import { installerSpec, recommendedForge } from '../sources/forge.js'
+import { installerSpec, recommendedForge, recommendedNeoForge } from '../sources/forge.js'
 
 export interface ForgeSetupOptions {
   readonly layout: Layout
@@ -104,12 +104,23 @@ function runInstaller(
     })
 
     const tail: string[] = []
-    const onLine = (chunk: Buffer) => {
-      const text = chunk.toString('utf8')
-      for (const line of text.split(/\r?\n/)) {
-        if (line === '') continue
-        tail.push(line)
-        if (tail.length > 30) tail.shift()
+    let buffer = ''
+    const record = (line: string): void => {
+      if (line === '') return
+      tail.push(line)
+      if (tail.length > 30) tail.shift()
+    }
+    const onLine = (chunk: Buffer): void => {
+      buffer += chunk.toString('utf8')
+      const lines = buffer.split(/\r?\n/)
+      buffer = lines.pop() ?? ''
+      for (const line of lines) record(line)
+    }
+    // 结尾没有换行符的半行也要留下：失败时最后一句往往就是原因
+    const flush = (): void => {
+      if (buffer !== '') {
+        record(buffer)
+        buffer = ''
       }
     }
     child.stdout.on('data', onLine)
@@ -131,9 +142,11 @@ function runInstaller(
       clearTimeout(timer)
       reject(err)
     })
-    child.on('exit', (code) => {
+    // close 而不是 exit：exit 可能早于 stdout/stderr 排空
+    child.on('close', (code) => {
       clearTimeout(timer)
       signal.removeEventListener('abort', onAbort)
+      flush()
       resolve({ code, tail })
     })
   })
@@ -144,7 +157,12 @@ export function createForgeSetup(opts: ForgeSetupOptions): Operation<ForgeSetupR
     const kind: InstallerKind = opts.kind ?? 'forge'
     let forgeVersion = opts.forgeVersion
     if (forgeVersion === undefined) {
-      const probe = await recommendedForge(opts.gameVersion, signal)
+      // Forge 有 promotions_slim.json，NeoForge 没有——两者的「推荐版本」来源不同，
+      // 一律查 Forge 的 promotions 会让 `blockpilot neoforge <mc>` 拿到一个 Forge 版本号
+      const probe =
+        kind === 'neoforge'
+          ? await recommendedNeoForge(opts.gameVersion, signal)
+          : await recommendedForge(opts.gameVersion, signal)
       if (probe.status === 'unreachable') {
         yield Op.failed(
           'NETWORK_ERROR',

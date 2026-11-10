@@ -172,14 +172,15 @@ export function checkJava(
  * `HostProfile.totalMemoryMiB` 一直在采集，但从来没用过——于是 3 GB 内存的机器
  * 装 300 个模组，预检会给一个干净的 OK，然后在启动时 OOM。
  *
- * 这里只报**有证据**的两件事：物理内存多少、模组多少个。堆大小给一个按
- * 「1 GB 起步 + 每个模组 6 MB」估算的推荐值，不声称是精确解。
+ * 这里只报**有证据**的两件事：物理内存多少、模组多少个。堆大小按
+ * 「2 GB 起步 + 每个模组 16 MB」估算，不声称是精确解——300 个模组的包
+ * 算出来约 6.8 GB，和实测里「大型整合包通常需要 6–8 GB」落在同一区间。
  */
 export function checkMemory(instance: Instance, host: HostProfile): readonly Finding[] {
   const total = host.totalMemoryMiB
   if (!Number.isFinite(total) || total <= 0) return []
   const mods = instance.mods.length
-  const recommended = Math.min(8192, Math.max(2048, Math.round((1024 + mods * 6) / 512) * 512))
+  const recommended = Math.min(8192, Math.max(2048, Math.round((2048 + mods * 16) / 512) * 512))
 
   if (total < 4096) {
     return [

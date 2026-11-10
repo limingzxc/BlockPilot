@@ -184,7 +184,8 @@ export function closureToFindings(
 
   if (result.truncated) {
     out.push({
-      severity: 'info',
+      // warning 而不是 info：ADR-0003 明确「截断时不允许说 ok」
+      severity: 'warning',
       code: 'CLOSURE_TRUNCATED',
       message: '依赖链超出展开上限，已停止递归',
       hint: '缺失项列表可能不完整，不能据此判断实例是干净的',

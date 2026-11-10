@@ -93,6 +93,8 @@ export interface DirReportInput {
   readonly now?: () => Date
   /** 版本 JSON 里的 Java 需求。缺省按 gameVersion 查表 */
   readonly javaMajor?: number
+  /** 版本 JSON 里的 `assetIndex.id`。缺省按实例附近的版本 JSON 或同名 index 猜 */
+  readonly assetIndexId?: string
 }
 
 /**
@@ -121,7 +123,7 @@ export function preflightDir(input: DirReportInput): PreflightReport {
       loaderVersion: instance.loader.version,
     }),
     // 资源包不在 mods 里，但缺了同样起不来——单独查一层（issue #2）
-    ...checkAssets(input.dir, instance.gameVersion, input.assetsDir),
+    ...checkAssets(input.dir, instance.gameVersion, input.assetsDir, input.assetIndexId),
   ]
 
   return assembleReport({
