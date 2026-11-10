@@ -25,12 +25,21 @@ export interface CredentialStore {
   delete(account: string): void
 }
 
-function run(file: string, args: readonly string[], input?: string): string {
+/**
+ * DPAPI 那几次 PowerShell 调用的超时。
+ *
+ * 常规耗时不到 1 秒，但 `powershell.exe` 冷启动（CI runner、刚开机、杀毒软件
+ * 扫描新进程）实测能超过 10 秒——超时被 kill 后 `set` 返回 false，凭证会静默
+ * 退回明文文件。登录是低频的用户操作，多等一会儿好过悄悄降级（issue 见 CI 红）。
+ */
+const DPAPI_TIMEOUT_MS = 30_000
+
+function run(file: string, args: readonly string[], input?: string, timeout = 10_000): string {
   return execFileSync(file, [...args], {
     input,
     encoding: 'utf8',
     stdio: ['pipe', 'pipe', 'ignore'],
-    timeout: 10_000,
+    timeout,
   }).trim()
 }
 
@@ -122,6 +131,7 @@ function windowsDpapi(dir: string): CredentialStore {
           'powershell.exe',
           ['-NoProfile', '-NonInteractive', '-Command', DPAPI_DECRYPT],
           b64,
+          DPAPI_TIMEOUT_MS,
         )
         return value === '' ? null : value
       } catch {
@@ -135,6 +145,7 @@ function windowsDpapi(dir: string): CredentialStore {
           'powershell.exe',
           ['-NoProfile', '-NonInteractive', '-Command', DPAPI_ENCRYPT],
           secret,
+          DPAPI_TIMEOUT_MS,
         )
         if (b64 === '') return false
         writeFileSync(fileOf(account), `${b64}\n`, { mode: 0o600 })
