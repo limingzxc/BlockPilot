@@ -7,6 +7,7 @@ import { redactSecrets } from '../redact.js'
 import type { AssetsProbe } from '../setup/assets.js'
 import { probeAssetObjects } from '../setup/assets.js'
 import type { VersionJson } from '../version/types.js'
+import { VERSION } from '../version-info.js'
 import {
   buildClasspath,
   expandArgs,
@@ -132,7 +133,7 @@ export function buildLaunchPlan(opts: LaunchPlanOptions): LaunchPlan {
     version_type: version.type,
     natives_directory: nativesDir,
     launcher_name: 'BlockPilot',
-    launcher_version: '0.0.1',
+    launcher_version: VERSION,
     classpath,
     classpath_separator: env.os === 'windows' ? ';' : ':',
     library_directory: librariesDir,

@@ -22,6 +22,7 @@ import { detectHost } from '../core/host.js'
 import { createPreflight } from '../core/preflight/index.js'
 import type { PreflightReport } from '../core/preflight/types.js'
 import { applyProxy } from '../core/proxy.js'
+import { VERSION } from '../core/version-info.js'
 import { resolveCurseforge } from '../sources/curseforge.js'
 import { ModrinthSource } from '../sources/modrinth.js'
 
@@ -172,7 +173,7 @@ function renderDiagForModel(r: DiagResult): string {
   return lines.join('\n')
 }
 
-const server = new Server({ name: 'blockpilot', version: '0.0.1' }, { capabilities: { tools: {} } })
+const server = new Server({ name: 'blockpilot', version: VERSION }, { capabilities: { tools: {} } })
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }))
 
