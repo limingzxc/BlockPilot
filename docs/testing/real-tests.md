@@ -75,6 +75,10 @@ Java 选择用例、CLI 消费循环）并新增了 auth。242 个单测全绿�
 | E2E-016 | hs_err | 只有 `hs_err_pid*.log` 时→2；`format=hs-err`；`primary.kind=graphics` |
 | E2E-017 | 实例配置 | `config` 写入→读取一致；`--unset memory` 只删内存；非法值→1 `BAD_MEMORY` |
 | E2E-019 | `--events` | stdout 全是 JSON 行；含 `schemaVersion=1`；最后 `type=exit, code=2`；无 ANSI |
+| E2E-020 | `config --jvm-args` 进启动命令 | 写入后 `launch` 输出含 `--add-opens` 与完整值，同时保留 `-Xmx2048M` |
+| E2E-021 | `install --events` | stdout 全是 JSON；只有一个 `exit` 且在最后；无 ANSI |
+| E2E-022 | `--stop` 非法值 | 退出码 1；稳定码 `BAD_STOP`，不把 NaN 交给 `setTimeout` |
+| E2E-023 | `--events` 令牌 | 在线账号启动时 stdout 不含真实 token；`result.value.args` 里 `--accessToken` 为 `***` |
 
 E2E-011 / 012 是本轮新发现，先按 knownIssue 记录（见 §5）。
 
@@ -127,7 +131,7 @@ npm run e2e -- --only E2E-101
 npm run e2e -- --list
 ```
 
-T0–T4 已实现（30 条）。`--tier 2,3` 会真的下载、并打开一个游戏窗口
+T0–T4 已实现（39 条）。`--tier 2,3` 会真的下载、并打开一个游戏窗口
 （E2E-301，默认 60 s，可用 `BP_E2E_STOP` 调短）；T4 只写 `/tmp` 与一个本地 HTTP 端口。
 
 T2 之后会写盘、占用带宽、开游戏窗口，**不作为默认**。CI 跑 T0：夹具用

@@ -776,6 +776,198 @@ const CASES: readonly CaseDef[] = [
   },
 
   {
+    id: 'E2E-020',
+    title: 'config --jvm-args 真正进入启动命令',
+    tier: 0,
+    async run(ctx) {
+      const root = join(ctx.tmp, 'jvmargs-root')
+      const instance = 'jvm'
+      // 只需要一个能在本地解析的版本 JSON；不需要真的下载 client jar
+      mkdirSync(join(root, 'versions', '1.20.1'), { recursive: true })
+      writeFileSync(
+        join(root, 'versions', '1.20.1', '1.20.1.json'),
+        JSON.stringify({
+          id: '1.20.1',
+          type: 'release',
+          mainClass: 'net.minecraft.client.main.Main',
+          assets: '5',
+          libraries: [],
+          arguments: {
+            // biome-ignore lint/suspicious/noTemplateCurlyInString: 版本 JSON 的占位符
+            jvm: ['-cp', '${classpath}'],
+            // biome-ignore lint/suspicious/noTemplateCurlyInString: 版本 JSON 的占位符
+            game: ['--username', '${auth_player_name}'],
+          },
+        }),
+      )
+
+      const set = await ctx.cli([
+        'config',
+        '--root',
+        root,
+        '--instance',
+        instance,
+        '--jvm-args',
+        '--add-opens java.base/java.lang=ALL-UNNAMED',
+      ])
+      assertCode(set, 0, 'config 写入 jvmArgs')
+
+      const launch = await ctx.cli([
+        'launch',
+        '1.20.1',
+        '--root',
+        root,
+        '--instance',
+        instance,
+        // 显式路径只检查存在性，不探测；用本进程的 node 当占位 java
+        '--java',
+        process.execPath,
+        '--memory',
+        '2048',
+      ])
+      assertCode(launch, 0, 'launch 生成命令')
+      assertText(launch, '--add-opens', 'jvmArgs 应进入命令')
+      assertText(launch, 'java.base/java.lang=ALL-UNNAMED', 'jvmArgs 的值应完整保留')
+      assertText(launch, '-Xmx2048M', '内存参数应同时存在')
+    },
+  },
+
+  {
+    id: 'E2E-021',
+    title: 'install --events：stdout 只有 JSON，且只写一个 exit',
+    tier: 0,
+    async run(ctx) {
+      const root = join(ctx.tmp, 'install-events-root')
+      const instance = 'e1'
+      const gameDir = join(root, 'instances', instance)
+      mkdirSync(join(gameDir, 'mods'), { recursive: true })
+
+      const r = await ctx.cli([
+        'install',
+        gameDir,
+        '--mods-dir',
+        join(gameDir, 'mods'),
+        '--no-host',
+        '--events',
+      ])
+      assertCode(r, 0, '没有要补的依赖应成功')
+
+      const lines = r.stdout
+        .trim()
+        .split('\n')
+        .filter((l) => l !== '')
+      const events = lines.map((l, i) => {
+        try {
+          return JSON.parse(l) as Record<string, unknown>
+        } catch {
+          throw new Error(`第 ${String(i + 1)} 行不是 JSON：${l.slice(0, 80)}`)
+        }
+      })
+      assert(!r.stdout.includes('\u001b['), 'stdout 不应有 ANSI 颜色')
+      const exits = events.filter((e) => e.type === 'exit')
+      assert(exits.length === 1, `exit 行应只有一个，实际 ${String(exits.length)}`)
+      assert(exits[0]?.code === 0, `exit.code 期望 0，实际 ${String(exits[0]?.code)}`)
+      assert(events[events.length - 1]?.type === 'exit', '最后一行应是 exit')
+    },
+  },
+
+  {
+    id: 'E2E-022',
+    title: '--stop 非法值给稳定码，不把 NaN 丢给 setTimeout',
+    tier: 0,
+    async run(ctx) {
+      const r = await ctx.cli([
+        'run',
+        '1.20.1',
+        '--root',
+        join(ctx.tmp, 'stop-root'),
+        '--instance',
+        's1',
+        '--stop',
+        'abc',
+      ])
+      assertCode(r, 1, '非法 --stop')
+      assertText(r, 'BAD_STOP', '稳定错误码')
+    },
+  },
+
+  {
+    id: 'E2E-023',
+    title: '--events 不泄漏在线账号令牌',
+    tier: 0,
+    async run(ctx) {
+      const root = join(ctx.tmp, 'events-token-root')
+      const instance = 'tok'
+      const uuid = '0'.repeat(32)
+      const secret = 'secret-token-123'
+      mkdirSync(join(root, 'versions', '1.20.1'), { recursive: true })
+      writeFileSync(
+        join(root, 'versions', '1.20.1', '1.20.1.json'),
+        JSON.stringify({
+          id: '1.20.1',
+          type: 'release',
+          mainClass: 'net.minecraft.client.main.Main',
+          assets: '5',
+          libraries: [],
+          arguments: {
+            // biome-ignore lint/suspicious/noTemplateCurlyInString: 版本 JSON 的占位符
+            jvm: ['-cp', '${classpath}'],
+            // biome-ignore lint/suspicious/noTemplateCurlyInString: 版本 JSON 的占位符
+            game: ['--username', '${auth_player_name}', '--accessToken', '${auth_access_token}'],
+          },
+        }),
+      )
+      mkdirSync(join(root, 'auth'), { recursive: true })
+      writeFileSync(
+        join(root, 'auth', 'accounts.json'),
+        JSON.stringify({
+          version: 1,
+          active: uuid,
+          accounts: [
+            {
+              uuid,
+              name: 'Tester',
+              accessToken: secret,
+              expiresAt: Date.now() + 3_600_000,
+              obtainedAt: Date.now(),
+            },
+          ],
+        }),
+      )
+
+      const r = await ctx.cli([
+        'launch',
+        '1.20.1',
+        '--root',
+        root,
+        '--instance',
+        instance,
+        '--java',
+        process.execPath,
+        '--account',
+        'Tester',
+        '--events',
+      ])
+      assertCode(r, 0, 'launch --events')
+      assert(!r.stdout.includes(secret), 'stdout 不应出现真实 accessToken')
+
+      const events = r.stdout
+        .trim()
+        .split('\n')
+        .filter((l) => l !== '')
+        .map((l) => JSON.parse(l) as Record<string, unknown>)
+      const result = events.find((e) => e.type === 'result')
+      assert(result !== undefined, '应包含 result 事件')
+      const value = asRecord(result.value, 'result.value')
+      const args = asArray(value.args, 'result.value.args')
+      const at = args.indexOf('--accessToken')
+      assert(at >= 0, 'args 里应保留 --accessToken 占位')
+      assert(args[at + 1] === '***', `--accessToken 的值应脱敏，实际 ${String(args[at + 1])}`)
+      assert(events[events.length - 1]?.type === 'exit', '最后一行应是 exit')
+    },
+  },
+
+  {
     id: 'E2E-019',
     title: '--events：ndjson 事件流与最终退出码',
     tier: 0,

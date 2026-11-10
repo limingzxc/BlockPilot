@@ -387,7 +387,7 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
     let overridesSkipped = 0
     let overridesFailed = false
     try {
-      const extracted = extractOverrides(
+      const extracted = await extractOverrides(
         opts.packPath,
         opts.layout.gameDir,
         opts.overwriteOverrides === true ? { overwrite: true } : {},

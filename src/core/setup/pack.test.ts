@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { randomBytes } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -119,7 +120,7 @@ test('清单路径穿越被拒绝，并作为失败项报出来', () => {
   assert.match(built.rejected[0]?.error ?? '', /路径不安全/)
 })
 
-test('overrides 默认不覆盖已存在的文件，--overwrite 才覆盖', () => {
+test('overrides 默认不覆盖已存在的文件，--overwrite 才覆盖', async () => {
   const packPath = join(dir, 'keep.mrpack')
   writeFileSync(
     packPath,
@@ -132,17 +133,17 @@ test('overrides 默认不覆盖已存在的文件，--overwrite 才覆盖', () =
   mkdirSync(gameDir, { recursive: true })
   writeFileSync(join(gameDir, 'config.toml'), 'user-edited')
 
-  const first = extractOverrides(packPath, gameDir)
+  const first = await extractOverrides(packPath, gameDir)
   assert.equal(first.skipped, 1)
   assert.equal(first.files, 0)
   assert.equal(readFileSync(join(gameDir, 'config.toml'), 'utf8'), 'user-edited')
 
-  const forced = extractOverrides(packPath, gameDir, { overwrite: true })
+  const forced = await extractOverrides(packPath, gameDir, { overwrite: true })
   assert.equal(forced.files, 1)
   assert.equal(readFileSync(join(gameDir, 'config.toml'), 'utf8'), 'from-pack')
 })
 
-test('overrides 与 client-overrides 都解压，后者覆盖前者', () => {
+test('overrides 与 client-overrides 都解压，后者覆盖前者', async () => {
   const packPath = join(dir, 'p.mrpack')
   writeFileSync(
     packPath,
@@ -155,13 +156,38 @@ test('overrides 与 client-overrides 都解压，后者覆盖前者', () => {
     }),
   )
   const gameDir = join(dir, 'game')
-  const count = extractOverrides(packPath, gameDir)
+  const count = await extractOverrides(packPath, gameDir)
 
   // files 是写入次数：config.toml 被写两次（overrides 一次、client-overrides 覆盖一次）
   assert.equal(count.files, 3)
   assert.equal(count.mods, 0)
   assert.equal(readFileSync(join(gameDir, 'config.toml'), 'utf8'), 'from-client-overrides')
   assert.equal(readFileSync(join(gameDir, 'only.toml'), 'utf8'), 'only')
+})
+
+test('大文件跨多个读取块仍能完整流式落盘', async () => {
+  const payload = new Uint8Array(randomBytes(300_000))
+  const packPath = join(dir, 'p-big.mrpack')
+  writeFileSync(packPath, zipSync({ 'overrides/big.bin': payload }))
+  const gameDir = join(dir, 'game-big')
+  const result = await extractOverrides(packPath, gameDir)
+  assert.equal(result.files, 1)
+  assert.deepEqual(readFileSync(join(gameDir, 'big.bin')), Buffer.from(payload))
+})
+
+test('zip 里 client-overrides 排在前面时，仍然赢过 overrides', async () => {
+  const packPath = join(dir, 'p-reversed.mrpack')
+  writeFileSync(
+    packPath,
+    zipSync({
+      'client-overrides/config.toml': strToU8('from-client-overrides'),
+      'overrides/config.toml': strToU8('from-overrides'),
+    }),
+  )
+  const gameDir = join(dir, 'game-reversed')
+  const count = await extractOverrides(packPath, gameDir)
+  assert.equal(readFileSync(join(gameDir, 'config.toml'), 'utf8'), 'from-client-overrides')
+  assert.equal(count.skipped, 1, '后到的 overrides 不该盖掉 client-overrides')
 })
 
 // ---------------- CurseForge ----------------
@@ -272,7 +298,7 @@ test('CF 包：同名文件不互相覆盖', () => {
   assert.notEqual(tasks[0]?.destPath, tasks[1]?.destPath)
 })
 
-test('overrides/mods 里的 jar 单独计数（issue #13）', () => {
+test('overrides/mods 里的 jar 单独计数（issue #13）', async () => {
   const zipPath = join(dir, 'overrides-count.zip')
   writeFileSync(
     zipPath,
@@ -289,7 +315,7 @@ test('overrides/mods 里的 jar 单独计数（issue #13）', () => {
   assert.equal(countOverridesMods(zipPath), 3)
 
   const layout = resolveLayout(join(dir, 'game-overrides'), 'default')
-  const extracted = extractOverrides(zipPath, layout.gameDir)
+  const extracted = await extractOverrides(zipPath, layout.gameDir)
   assert.equal(extracted.mods, 3)
   // overrides + client-overrides 一共 5 个文件（manifest 与 other/ 不算）
   assert.equal(extracted.files, 5)

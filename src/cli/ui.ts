@@ -127,6 +127,13 @@ export interface OpUi<T> {
    */
   exitCode?(value: T): number
   /**
+   * `--events` 模式下只要结果值、不要渲染。
+   *
+   * 串联多个 Operation 的命令（install / run）要在中间步骤拿到 result 继续编排；
+   * 非事件模式下走 `result`，这里只在事件模式下补一次捕获。
+   */
+  capture?(value: T): void
+  /**
    * `--events` 模式是否在本次 Operation 结束时写 `exit` 行。
    *
    * 串联多个 Operation 的命令（run / install / forge）只有最后一步该写；
@@ -154,6 +161,7 @@ export async function consume<T>(
     if (eventStream) {
       emit(ev)
       if (ev.type === 'result') {
+        ui.capture?.(ev.value)
         const code = ui.exitCode?.(ev.value) ?? 0
         if (ui.exitEvent !== false) emitExit(code)
         return code

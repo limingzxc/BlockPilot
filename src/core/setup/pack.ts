@@ -1,6 +1,14 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+  createReadStream,
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+} from 'node:fs'
 import { basename, dirname } from 'node:path'
-import { unzipSync } from 'fflate'
+import { Unzip, UnzipInflate, unzipSync } from 'fflate'
 import type { CfFileInfo } from '../curseforge.js'
 import type { DownloadTask } from '../download/types.js'
 import type { Layout } from '../layout.js'
@@ -265,44 +273,135 @@ export interface OverridesResult {
   readonly skipped: number
 }
 
-export function extractOverrides(
+/**
+ * 解压 overrides。流式读 zip、逐文件写盘，不把整个 overrides 解到内存。
+ *
+ * 大包（实测接近 500 MB）以前是 `readFileSync` + `unzipSync` 一次性展开，
+ * 峰值内存跟着包体积线性涨。现在按条目流式解压；落盘顺序不依赖 zip 里的排列，
+ * 用 `written` 记录本次写过的层级，保证 client-overrides 总是赢过 overrides。
+ */
+export async function extractOverrides(
   zipPath: string,
   gameDir: string,
   opts: OverridesOptions = {},
-): OverridesResult {
-  const raw = readFileSync(zipPath)
-  const entries = unzipSync(new Uint8Array(raw), {
-    filter: (f) => f.name.startsWith('overrides/') || f.name.startsWith('client-overrides/'),
-  })
-
+): Promise<OverridesResult> {
   let count = 0
   let mods = 0
   let skipped = 0
-  /** 本次运行写过的路径：client-overrides 要能覆盖同一次运行里的 overrides */
-  const written = new Set<string>()
-  // 先写 overrides，再写 client-overrides，后者自然覆盖前者
-  const ordered = Object.entries(entries).sort(([a], [b]) => {
-    const aClient = a.startsWith('client-overrides/') ? 1 : 0
-    const bClient = b.startsWith('client-overrides/') ? 1 : 0
-    return aClient - bClient
-  })
+  let sequence = 0
+  let failure: Error | undefined
+  /** 本次运行写到哪个层级：client-overrides 要能覆盖同一次运行里的 overrides */
+  const written = new Map<string, 'overrides' | 'client-overrides'>()
+  /** 同一目标路径的落盘任务要串行：client-overrides 后写必须晚于 overrides */
+  const queues = new Map<string, Promise<void>>()
+  const pending: Promise<void>[] = []
+  /** 文件流写缓冲满时产生的等待。每推完一个 zip 输入块就清一次 */
+  const drains: Promise<void>[] = []
+  const temps = new Set<string>()
 
-  for (const [name, data] of ordered) {
-    if (name.endsWith('/')) continue
-    const rel = name.replace(/^client-overrides\//, '').replace(/^overrides\//, '')
-    if (rel === '') continue
+  const unzip = new Unzip((file) => {
+    const tier = file.name.startsWith('client-overrides/')
+      ? 'client-overrides'
+      : file.name.startsWith('overrides/')
+        ? 'overrides'
+        : null
+    if (tier === null || file.name.endsWith('/')) return
+
+    const rel = file.name.replace(/^client-overrides\//, '').replace(/^overrides\//, '')
+    if (rel === '') return
     const out = safeJoin(gameDir, rel)
-    if (out === null) continue
-    if (opts.overwrite !== true && !written.has(out) && existsSync(out)) {
-      skipped += 1
-      continue
-    }
+    if (out === null) return
+
     mkdirSync(dirname(out), { recursive: true })
-    writeFileSync(out, data)
-    written.add(out)
-    count += 1
-    if (rel.startsWith('mods/') && rel.toLowerCase().endsWith('.jar')) mods += 1
+    const tmp = `${out}.blockpilot-${process.pid}-${sequence++}.tmp`
+    temps.add(tmp)
+    const sink = createWriteStream(tmp)
+
+    const finished = new Promise<void>((resolve, reject) => {
+      sink.once('finish', resolve)
+      sink.once('error', reject)
+    })
+
+    file.ondata = (err, chunk, final) => {
+      if (err !== null) {
+        failure ??= err
+        sink.destroy(err)
+        return
+      }
+      if (chunk.length > 0 && !sink.write(chunk)) {
+        drains.push(
+          new Promise<void>((resolve) => {
+            sink.once('drain', resolve)
+            sink.once('error', resolve)
+            sink.once('close', resolve)
+          }),
+        )
+      }
+      if (final) sink.end()
+    }
+
+    // 同一路径必须按「上一个落盘任务完成」再决定，不能只按文件流写完，
+    // 否则 client-overrides / overrides 的完成顺序会反过来
+    const decide = async (): Promise<void> => {
+      await finished
+      const previous = written.get(out)
+      // client-overrides 永远赢过 overrides；其余冲突（含同层重复）后写覆盖先写
+      if (previous === 'client-overrides' && tier === 'overrides') {
+        skipped += 1
+        rmSync(tmp, { force: true })
+        temps.delete(tmp)
+        return
+      }
+      // 磁盘上原本就有、且本次没写过：尊重 ADR-0012 的「重跑安全」
+      if (opts.overwrite !== true && previous === undefined && existsSync(out)) {
+        skipped += 1
+        rmSync(tmp, { force: true })
+        temps.delete(tmp)
+        return
+      }
+      renameSync(tmp, out)
+      temps.delete(tmp)
+      written.set(out, tier)
+      count += 1
+      if (rel.startsWith('mods/') && rel.toLowerCase().endsWith('.jar')) mods += 1
+    }
+
+    // 提前挂一个 catch，避免 finished 在排队期间先 reject 变成 unhandled rejection
+    void finished.catch(() => {})
+    const prior = queues.get(out) ?? Promise.resolve()
+    const queued = prior.then(decide)
+    queues.set(out, queued)
+    pending.push(queued)
+
+    file.start()
+  })
+  unzip.register(UnzipInflate)
+
+  try {
+    for await (const chunk of createReadStream(zipPath)) {
+      unzip.push(new Uint8Array(chunk as Buffer), false)
+      if (failure !== undefined) throw failure
+      // 解压器不认识 Promise：写入阻塞只在这里等，避免文件流缓冲无限增长
+      if (drains.length > 0) await Promise.all(drains.splice(0))
+    }
+    unzip.push(new Uint8Array(0), true)
+    const results = await Promise.allSettled(pending)
+    if (failure !== undefined) throw failure
+    const rejected = results.find((r) => r.status === 'rejected')
+    if (rejected !== undefined) throw rejected.reason
+  } catch (err) {
+    // 流可能还没关（磁盘满 / 读 zip 出错）：Windows 上删打开中的文件会 EBUSY，
+    // 清理失败不能盖掉真正的错误
+    for (const tmp of temps) {
+      try {
+        rmSync(tmp, { force: true })
+      } catch {
+        // 留给下一次运行；临时文件名带 pid，不会撞
+      }
+    }
+    throw err
   }
+
   return { files: count, mods, skipped }
 }
 
