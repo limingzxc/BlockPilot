@@ -27,62 +27,78 @@ export type RangeVerdict = 'satisfied' | 'violated' | 'unknown'
 export type RangeDialect = 'forge' | 'fabric' | 'any'
 
 /**
- * 把版本号拆成数字段。
+ * 拆开后的版本号。
  *
- * `-` / `+` 有两种含义，不能一刀切丢掉后面整段（issue #14）：
- *
- * - 版本分隔符：`1.20-3.1.43` 是 supplementaries 的版本写法，
- *   `1.20.1-47.3.22` 是 Forge 的；后缀就是版本的一部分，必须参与比较。
- * - 预发布标签：`1.0.0-beta.1` 里的 `beta` 不是数字段，遇到就停。
- *
- * 于是逐段处理：数字段并进主版本，第一个非数字段之后的内容全部忽略。
+ * 模组圈大量把 MC 版本与模组版本拼在一起写（`1.20.1-1.3.2`、
+ * `supplementaries-1.20-3.1.43`），两段必须**分开存**：
  *
  * ```
- * 1.20-3.1.43    -> [1,20,3,1,43]
- * 1.20.1-47.3.22 -> [1,20,1,47,3,22]
- * 1.0.0-beta.1   -> [1,0,0]
- * 26.4-snapshot-1 -> [26,4]
+ * 1.20.1-1.3.2 -> mc=[1,20,1] mod=[1,3,2]
+ * 1.20-1.2     -> mc=[1,20]   mod=[1,2]
  * ```
  *
- * 不这么做的话 `1.20-3.1.43` 与 `1.20-2.7.32` 都变成 `[1,20]`，
- * `breaks: { supplementaries: "<=1.20-2.7.32" }` 会把装了 3.1.43 的包判成不兼容。
- *
- * 两种「后缀」要分开：`-3.1.43` / `-47.3.22` 是带点的版本段，参与比较；
- * 而末尾孤零零一个数字（`1.0.5-264`）是构建号，按 `1.0.5` 处理——
- * Fabric 的 `flywheel 1.0.5+1.20.1.build.264` 就靠这条才能满足 `>=1.0.5-264`。
- *
- * `+` 之后是 build metadata（`0.92.12+1.20.1`），按 semver 不参与优先级，直接丢掉。
+ * 拼成一条扁平数组会让 MC 的 patch 位与模组的主版本位错位
+ * （`1.20.1-1.3.2` 与 `[1.20-1.2,)` 被判成不满足），见 issue #20。
  */
-function parseVersion(v: string): number[] | null {
-  const cleaned = v.trim().replace(/^v/, '')
-  if (cleaned === '') return null
+interface ParsedVersion {
+  /** `-` 之前的段。空数组不会出现：拆不出来就整个返回 null */
+  readonly mc: readonly number[]
+  /** `-` 之后的数字段；没有就是空数组 */
+  readonly mod: readonly number[]
+}
+
+/** 把一段点分版本拆成数字。遇到非数字标签（beta / snapshot）返回 null。 */
+function parseSegments(chunk: string): number[] | null {
+  if (chunk === '') return null
   const nums: number[] = []
-  const noBuild = cleaned.split('+')[0] ?? ''
-  const chunks = noBuild.split('-')
-  for (let i = 0; i < chunks.length; i += 1) {
-    const chunk = chunks[i] ?? ''
-    // 末尾的纯数字是构建号，不是版本的一部分
-    if (i > 0 && i === chunks.length - 1 && /^\d+$/.test(chunk)) break
-    let label = false
-    for (const p of chunk.split('.')) {
-      if (p === '' || p === 'x' || p === 'X' || p === '*') {
-        nums.push(0)
-        continue
-      }
-      if (!/^\d+$/.test(p)) {
-        // 预发布标签（beta / snapshot / rc）：后面的段都不是版本号了
-        label = true
-        break
-      }
-      nums.push(Number(p))
+  for (const p of chunk.split('.')) {
+    if (p === '' || p === 'x' || p === 'X' || p === '*') {
+      nums.push(0)
+      continue
     }
-    if (label) break
+    if (!/^\d+$/.test(p)) return null
+    nums.push(Number(p))
   }
-  // 整串都是标签（`not-a-version`）就是看不懂，交给调用方返回 unknown
   return nums.length === 0 ? null : nums
 }
 
-function compare(a: readonly number[], b: readonly number[]): number {
+/**
+ * 解析版本号。
+ *
+ * `-` 有两种含义，不能一刀切丢掉后面整段（issue #14）：
+ *
+ * - 版本分隔符：`1.20-3.1.43` 是 supplementaries 的版本写法，
+ *   `1.20.1-47.3.22` 是 Forge 的；后缀是模组版本，必须参与比较。
+ * - 预发布标签：`1.0.0-beta.1` 里的 `beta` 不是数字段，遇到就停。
+ *
+ * 于是逐段处理：数字段并进 `mod`，第一个非数字标签之后的内容全部忽略。
+ * `-` 之后末尾孤零零一个纯数字（`1.0.5-264`）是构建号，也丢掉——
+ * 不丢的话 flywheel 的 `>=1.0.5-264` 会反过来判 `1.0.5` 太小。
+ *
+ * `+` 之后是 build metadata（`0.92.12+1.20.1`），按 semver 不参与优先级，直接丢掉。
+ */
+function parseVersion(v: string): ParsedVersion | null {
+  const cleaned = v.trim().replace(/^v/, '')
+  if (cleaned === '') return null
+  const noBuild = cleaned.split('+')[0] ?? ''
+  const chunks = noBuild.split('-')
+  const mc = parseSegments(chunks[0] ?? '')
+  if (mc === null) return null
+
+  const mod: number[] = []
+  for (let i = 1; i < chunks.length; i += 1) {
+    const chunk = chunks[i] ?? ''
+    // 末尾的纯数字是构建号，不是版本的一部分
+    if (i === chunks.length - 1 && /^\d+$/.test(chunk)) break
+    const segs = parseSegments(chunk)
+    if (segs === null) break
+    mod.push(...segs)
+  }
+  return { mc, mod }
+}
+
+/** 逐位比较，缺位当 0。 */
+function compareNums(a: readonly number[], b: readonly number[]): number {
   const len = Math.max(a.length, b.length)
   for (let i = 0; i < len; i += 1) {
     const av = a[i] ?? 0
@@ -93,10 +109,44 @@ function compare(a: readonly number[], b: readonly number[]): number {
 }
 
 /**
+ * 按前缀比较：只比两边都有的位。
+ *
+ * MC 版本是「代」——`1.20` 与 `1.20.1` 属于同一代，写依赖时两种都有人用，
+ * 不能因为 patch 位缺失就说它们不是同一个 MC。
+ */
+function comparePrefix(a: readonly number[], b: readonly number[]): number {
+  const len = Math.min(a.length, b.length)
+  for (let i = 0; i < len; i += 1) {
+    const av = a[i] ?? 0
+    const bv = b[i] ?? 0
+    if (av !== bv) return av < bv ? -1 : 1
+  }
+  return 0
+}
+
+/**
+ * 比较两个版本。
+ *
+ * 两侧都带模组段时（`1.20.1-1.3.2` 对 `1.20-1.2`）：先按代比 MC，
+ * 代相同再比模组段。MC 段位数不同也不影响——`1.20` 与 `1.20.1` 是同一代。
+ *
+ * 只要有一侧没有模组段（`1.21` 对 `1.21.2`），就退回普通的逐位比较：
+ * 那种情况下 `1.21` 就该小于 `1.21.2`。
+ */
+function compare(a: ParsedVersion, b: ParsedVersion): number {
+  if (a.mod.length > 0 && b.mod.length > 0) {
+    const mc = comparePrefix(a.mc, b.mc)
+    if (mc !== 0) return mc
+    return compareNums(a.mod, b.mod)
+  }
+  return compareNums([...a.mc, ...a.mod], [...b.mc, ...b.mod])
+}
+
+/**
  * 比较两个版本号。看不懂的写法返回 null，让调用方自己决定怎么办。
  *
  * 只比数字段：`26.2` 与 `26.1.2` 能正确分出大小，`26.4-snapshot-1` 按 `26.4` 处理；
- * `1.20-3.1.43` 这种把 MC 版本与模组版本拼在一起写的，后缀照常参与比较。
+ * `1.20-3.1.43` 这种把 MC 版本与模组版本拼在一起写的，两段分开比（见 {@link compare}）。
  * 预发布标签的先后关系没有权威定义，这里不做精确排序——用来判断
  * 「目标版本是否高于模组声明过的最高版本」已经够用。
  */
@@ -108,7 +158,7 @@ export function compareVersions(a: string, b: string): number | null {
 }
 
 /** Maven 范围：[1.20.1,1.21) / [0.6.10,) / (,1.21] / [1.20.1] */
-function satisfiesMaven(version: number[], range: string): RangeVerdict {
+function satisfiesMaven(version: ParsedVersion, range: string): RangeVerdict {
   const m = /^([[（(])([^,\])]*)(,?)([^,\])]*)([\]）)])$/.exec(range.trim())
   if (m === null) return 'unknown'
   const [, open, loRaw, comma, hiRaw, close] = m
@@ -147,16 +197,16 @@ const OP_RE = /^(>=|<=|>|<|=)?\s*(.+)$/
  * 不支持它们会把真实的整合包判成「版本不兼容」——
  * Fabulously Optimized 里 controlify / zoomify 用的就是 `~1.21 <1.21.2`。
  */
-function satisfiesTildeCaret(version: number[], token: string): boolean | null {
+function satisfiesTildeCaret(version: ParsedVersion, token: string): boolean | null {
   const marker = token[0]
   if (marker !== '~' && marker !== '^') return null
   const rest = token.slice(1)
   const parts = parseVersion(rest)
   if (parts === null) return null
 
-  const major = parts[0] ?? 0
-  const minor = parts[1] ?? 0
-  const patch = parts[2] ?? 0
+  const major = parts.mc[0] ?? 0
+  const minor = parts.mc[1] ?? 0
+  const patch = parts.mc[2] ?? 0
 
   let lo: number[]
   let hi: number[]
@@ -173,10 +223,14 @@ function satisfiesTildeCaret(version: number[], token: string): boolean | null {
     lo = [0, 0, patch]
     hi = [0, 0, patch + 1]
   }
-  return compare(version, lo) >= 0 && compare(version, hi) < 0
+  return compare(version, { mc: lo, mod: [] }) >= 0 && compare(version, { mc: hi, mod: [] }) < 0
 }
 
-function satisfiesToken(version: number[], token: string, dialect: RangeDialect): boolean | null {
+function satisfiesToken(
+  version: ParsedVersion,
+  token: string,
+  dialect: RangeDialect,
+): boolean | null {
   if (token.startsWith('~') || token.startsWith('^')) {
     return satisfiesTildeCaret(version, token)
   }
@@ -196,7 +250,7 @@ function satisfiesToken(version: number[], token: string, dialect: RangeDialect)
       const p = segments[i]
       if (p === undefined) break
       if (p === 'x' || p === 'X' || p === '*') return true
-      if ((version[i] ?? 0) !== Number(p)) return false
+      if ((version.mc[i] ?? 0) !== Number(p)) return false
     }
     return true
   }

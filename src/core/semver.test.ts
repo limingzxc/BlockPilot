@@ -106,6 +106,27 @@ test('`1.20.1-47.3.22` 这类 Forge 版本也能分出大小', () => {
   assert.equal(satisfiesRange('1.20.1-47.3.22', '[1.20.1,1.21)'), 'satisfied')
 })
 
+test('MC 段位数不同时按「代」对齐，模组段才参与比较（issue #20）', () => {
+  // BMC4 的真实写法：chefsdelight 要求 farmersdelight [1.20-1.2,)
+  // 实际装的是 1.20.1-1.3.2 —— MC 段多一位 patch，扁平拼接会让模组段错位
+  assert.equal(satisfiesRange('1.20.1-1.3.2', '[1.20-1.2,)'), 'satisfied')
+  assert.equal(satisfiesRange('1.20.1-1.3.2', '[1.20-1.4,)'), 'violated')
+  // 反方向：范围写 1.20.1、实际是 1.20
+  assert.equal(satisfiesRange('1.20-1.3.2', '[1.20.1-1.2,)'), 'satisfied')
+  // #14 的两条用例不能回归
+  assert.equal(satisfiesRange('1.20-1.3.2', '[1.20-1.2,)'), 'satisfied')
+  assert.equal(satisfiesRange('1.20-3.1.43', '<=1.20-2.7.32'), 'violated')
+  // MC 代不同时仍然由 MC 说了算，不能因为模组版本更大就放行
+  assert.equal(satisfiesRange('1.21-1.0', '[1.20-9.9,)'), 'satisfied')
+  assert.equal(satisfiesRange('1.19.4-9.9', '[1.20-1.0,)'), 'violated')
+})
+
+test('只有一侧带模组段时退回逐位比较（`1.21` 仍小于 `1.21.2`）', () => {
+  assert.equal(satisfiesRange('1.21', '<1.21.2'), 'satisfied')
+  assert.equal(satisfiesRange('1.21.2', '<1.21.2'), 'violated')
+  assert.equal(satisfiesRange('1.20.1-1.3.2', '>=1.20.1'), 'satisfied')
+})
+
 test('build metadata（+ 之后）不参与比较', () => {
   assert.equal(satisfiesRange('0.92.12+1.20.1', '=0.92.12'), 'satisfied')
   assert.equal(satisfiesRange('0.4.32+1802ada577', '>=0.4.32'), 'satisfied')
