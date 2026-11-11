@@ -8,7 +8,7 @@ import { errMessage } from './errors.js'
 import type { OpEvent } from './events.js'
 import { Op } from './events.js'
 import { NetworkError } from './http.js'
-import { buildLock, toLockedFile, writeLock } from './instance/lock.js'
+import { buildLock, readLock, toLockedFile, writeLock } from './instance/lock.js'
 import { writeInstanceMarker } from './instance/marker.js'
 import { scanInstanceDir } from './instance/scan.js'
 import type { HostProfile, LoaderKind } from './instance.js'
@@ -184,6 +184,25 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
       return
     }
     const instance = pack.instance
+
+    /**
+     * 同一实例换包：旧 lock 指向别的包时提醒一句。
+     *
+     * 旧包的模组不会自动删除（overrides 还可能跳过），verify 又只看 lock，
+     * 所以这些 jar 会静默留在 mods/ 里。说一句，比让用户自己发现「怎么还有旧模组」好。
+     */
+    try {
+      const previous = readLock(opts.layout.gameDir)
+      if (previous !== null && previous.pack.name !== instance.name) {
+        yield Op.log('warn', 'deploy.pack_changed', {
+          from: previous.pack.name,
+          to: instance.name,
+          previousFiles: previous.files.length,
+        })
+      }
+    } catch {
+      // lock 坏了是 verify 的事；deploy 稍后会重写它，不该挡安装
+    }
 
     // CurseForge：fileID → 下载 URL 必须查 CF 的 API（要 key）。
     // 有 key 就走完整安装：换 URL → 与 mrpack 相同的下载 / 解压 / 检查流程。

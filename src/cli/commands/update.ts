@@ -204,14 +204,15 @@ export async function runLoaderUpdate(ctx: CommandContext): Promise<number> {
       result: (r) => {
         if (asJson) {
           say(`${JSON.stringify(r, null, 2)}\n`)
-          return 0
+        } else {
+          say(
+            `  ${C.green}已升级${C.reset}  ${r.from} → ${r.to}  ${C.dim}${r.versionId}${C.reset}\n`,
+          )
+          if (r.versionJsonPath !== undefined) {
+            say(`  ${C.dim}版本 JSON${C.reset}  ${r.versionJsonPath}\n`)
+          }
+          say('\n')
         }
-        say(`  ${C.green}已升级${C.reset}  ${r.from} → ${r.to}  ${C.dim}${r.versionId}${C.reset}\n`)
-        if (r.versionJsonPath !== undefined) {
-          say(`  ${C.dim}版本 JSON${C.reset}  ${r.versionJsonPath}\n`)
-        }
-        say('\n')
-        return 0
       },
     },
     ctx.signal,
@@ -241,7 +242,6 @@ export async function runUpdate(ctx: CommandContext): Promise<number> {
       result: (r) => {
         if (asJson) say(`${JSON.stringify(r, null, 2)}\n`)
         else say(renderUpdate(r, layout.gameDir))
-        return r.applyFailed.length > 0 ? 2 : r.applied.length === 0 && r.updates.length > 0 ? 2 : 0
       },
     },
     ctx.signal,

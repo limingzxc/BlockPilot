@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { emitExit, sanitizeEventValue, setEventStream } from './ui.js'
+import { Op } from '../core/events.js'
+import { defineOperation } from '../core/operation.js'
+import { consume, emitExit, sanitizeEventValue, setEventStream } from './ui.js'
 
 test('login 的 result 里 accessToken / refreshToken 都被兜底脱敏', () => {
   const clean = sanitizeEventValue({
@@ -55,4 +57,33 @@ test('exit 行只写一次：串联多个 Operation 也不能出现两个退出�
   const exits = chunks.filter((c) => c.includes('"type":"exit"'))
   assert.equal(exits.length, 1)
   assert.match(exits[0] ?? '', /"code":0/)
+})
+
+test('同一条命令在普通模式与 --events 下退出码一致', async () => {
+  const op = defineOperation<number>('test-exit', async function* () {
+    yield Op.result(2)
+    yield Op.done()
+  })
+  const chunks: string[] = []
+  const original = process.stdout.write.bind(process.stdout)
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    chunks.push(String(chunk))
+    return true
+  }) as typeof process.stdout.write
+  try {
+    const signal = new AbortController().signal
+    // 只渲染、不改退出码：以前 result 自己也算一遍，漏写 exitCode 时两边会分叉
+    const ui = { progress: () => {}, log: () => {}, result: () => {}, exitCode: () => 2 }
+    setEventStream(false)
+    const plain = await consume(op, ui, signal)
+    setEventStream(true)
+    const events = await consume(op, ui, signal)
+    assert.equal(plain, 2)
+    assert.equal(events, plain)
+  } finally {
+    process.stdout.write = original
+    setEventStream(false)
+  }
+  // 事件模式下 result 事件照发；exit 行由全局一次性开关控制，这里只验退出码
+  assert.match(chunks.join(''), /"type":"result"/)
 })

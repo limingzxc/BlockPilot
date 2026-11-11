@@ -13,7 +13,7 @@ import test from 'node:test'
 import { resolveLayout } from '../layout.js'
 import { collect } from '../operation.js'
 import { absent } from '../probe.js'
-import { createJavaInstall } from './install.js'
+import { createJavaInstall, findJavaExecutables } from './install.js'
 import type { JavaInstall } from './types.js'
 
 const EXE = process.platform === 'win32' ? 'java.exe' : 'java'
@@ -28,6 +28,18 @@ function fakeJdk(root: string, dirName: string): string {
 function probed(path: string, major: number): JavaInstall {
   return { path, version: `${major}.0.1`, major, source: 'managed' }
 }
+
+test('macOS 布局 <name>/Contents/Home/bin/java 也能找到', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bp-java-mac-'))
+  try {
+    const path = join(dir, 'java', 'temurin-21.jdk', 'Contents', 'Home', 'bin', EXE)
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, 'fake')
+    assert.deepEqual(findJavaExecutables(join(dir, 'java')), [path])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 test('同大版本已装：直接跳过，不联网', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'bp-java-skip-'))

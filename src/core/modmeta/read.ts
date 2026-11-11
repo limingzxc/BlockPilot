@@ -409,6 +409,21 @@ function fromForgeToml(text: string, loader: ModLoaderKind): ModMetadata | null 
   const fl = deps.find((d) => d.modId === 'forge' || d.modId === 'neoforge')
 
   /**
+   * NeoForge 1.20.2–1.20.4 仍然用 `META-INF/mods.toml`。
+   *
+   * 只看文件名会把它标成 forge，NeoForge 实例里这些模组全部进 ignored：
+   * 既误报 LOADER_MISMATCH，又失去依赖检查。这一段 NeoForge 模组的依赖里写
+   * `modId="neoforge"`，Forge 模组写 `modId="forge"`——两边都有（兼容包）时
+   * 保持 forge，避免在 Forge 实例上反过来误判。
+   */
+  const resolvedLoader: ModLoaderKind =
+    loader === 'forge' &&
+    deps.some((d) => d.modId === 'neoforge') &&
+    !deps.some((d) => d.modId === 'forge')
+      ? 'neoforge'
+      : loader
+
+  /**
    * Forge 的 `[[mods]]` 也有 `provides`，只是**必须加引号写成数组**：
    *
    *   [[mods]]
@@ -437,7 +452,7 @@ function fromForgeToml(text: string, loader: ModLoaderKind): ModMetadata | null 
     modId: first.modId,
     version: typeof first.version === 'string' ? first.version : 'unknown',
     ...(first.displayName === undefined ? {} : { name: first.displayName }),
-    loader,
+    loader: resolvedLoader,
     ...(mc?.versionRange === undefined ? {} : { mcVersionRange: mc.versionRange }),
     ...(fl?.versionRange === undefined ? {} : { loaderVersionRange: fl.versionRange }),
     dependencies: deps,

@@ -82,7 +82,7 @@ function assertMrpackIndex(raw: unknown): MrpackIndex {
  * `data` 允许调用方复用已经读入的 zip 字节，避免同一文件被 `readFileSync` 多次。
  */
 export function readMrpackIndex(zipPath: string, data?: Uint8Array): MrpackIndex {
-  const raw = data ?? new Uint8Array(readFileSync(zipPath))
+  const raw = data ?? readFileSync(zipPath)
   const entries = unzipSync(raw, {
     filter: (f) => f.name === INDEX_ENTRY,
   })

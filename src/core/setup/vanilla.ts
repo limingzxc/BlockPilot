@@ -162,7 +162,7 @@ export function extractNatives(version: VersionJson, env: LaunchEnv, layout: Lay
 
     let entries: Record<string, Uint8Array>
     try {
-      entries = unzipSync(new Uint8Array(readFileSync(jarPath)))
+      entries = unzipSync(readFileSync(jarPath))
     } catch {
       continue
     }
@@ -251,7 +251,7 @@ export function extractNativeJars(
     if (!existsSync(jar)) continue
     let entries: Record<string, Uint8Array>
     try {
-      entries = unzipSync(new Uint8Array(readFileSync(jar)))
+      entries = unzipSync(readFileSync(jar))
     } catch {
       continue
     }

@@ -46,6 +46,34 @@ test('非显卡的原生库崩溃归到 natives', () => {
   assert.equal(signals[0]?.kind, 'natives')
 })
 
+function withFrame(frame: string): string[] {
+  return HS_ERR.replace('# C  [lwjgl.dll+0x1a2b]', `# ${frame}`).split('\n')
+}
+
+test('Intel 显卡 DLL（ig9icd64.dll）要认出来', () => {
+  assert.equal(analyzeHsErr(withFrame('C  [ig9icd64.dll+0x1a2b]'))[0]?.kind, 'graphics')
+  assert.equal(analyzeHsErr(withFrame('C  [igd11dxva64.dll+0x1]'))[0]?.kind, 'graphics')
+})
+
+test('问题帧符号里的 allocation / initialization 不算显卡', () => {
+  const signals = analyzeHsErr(
+    withFrame('C  [libminecraft.so+0x1a2b]  _ZN3foo12initializationEv+0x10'),
+  )
+  assert.equal(signals[0]?.kind, 'natives')
+})
+
+test('Linux 的 libGL.so.1 仍归显卡', () => {
+  assert.equal(analyzeHsErr(withFrame('C  [libGL.so.1+0x1a2b]'))[0]?.kind, 'graphics')
+})
+
+test('VM 帧（V）与 JIT 帧（J）归到 JVM 自身，不冒充显卡', () => {
+  const vm = analyzeHsErr(withFrame('V  [libjvm.so+0x1a2b]  _ZN12allocationEv'))
+  assert.equal(vm[0]?.kind, 'unknown')
+  assert.match(vm[0]?.hint ?? '', /JVM 自身/)
+  const jit = analyzeHsErr(withFrame('J 1234 c1 com.example.Foo.bar()V (Foo.java:1)'))
+  assert.equal(jit[0]?.kind, 'unknown')
+})
+
 test('OutOfMemoryError 优先于信号分类', () => {
   const text = `${HS_ERR}\n# OutOfMemoryError: Java heap space`
   assert.equal(analyzeHsErr(text.split('\n'))[0]?.kind, 'out-of-memory')

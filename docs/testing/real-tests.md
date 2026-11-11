@@ -146,8 +146,6 @@ node dist/cli/index.js java install 21 --root fixtures/mcroot
 | E2E-034 | 版本隔离下的日志归属 | 当前实例无日志→1；不读另一实例的日志，不点名其模组 |
 | E2E-035 | 真实堆空间崩溃 | `OutOfMemoryError`→2；`out-of-memory`；建议含 `--memory`；不点名模组 |
 
-E2E-011 / 012 是本轮新发现，先按 knownIssue 记录（见 §5）。
-
 ### T1 只读网络（约 40 s，< 1 MB）
 
 | ID | 场景 | 判定 |

@@ -9,13 +9,116 @@ import {
   statSync,
   unlinkSync,
 } from 'node:fs'
-import { dirname } from 'node:path'
+import { basename, dirname } from 'node:path'
 import { errMessage } from '../errors.js'
 import { NetworkError } from '../http.js'
 import { USER_AGENT } from '../user-agent.js'
 import type { DownloadOutcome, DownloadTask, Mirror, SourceAttempt } from './types.js'
 
 type Algo = 'sha1' | 'sha256' | 'sha512'
+
+/**
+ * 下载层的信任边界。
+ *
+ * 文件名与 URL 来自第三方（mrpack 清单、CF 镜像、Modrinth API），不能直接信。
+ * 这里集中收口，避免「CF 做了清洗、deploy <slug> 又漏了」这类逐调用方遗漏。
+ * 本地回环允许 http，供 E2E 的本地 HTTP 服务使用。
+ */
+const ALLOWED_DOWNLOAD_HOSTS: ReadonlySet<string> = new Set([
+  'cdn.modrinth.com',
+  'cdn-raw.modrinth.com',
+  'github.com',
+  'www.github.com',
+  'objects.githubusercontent.com',
+  // GitHub Release 资产的 302 落点（Adoptium 的 Java 包）
+  'release-assets.githubusercontent.com',
+  'raw.githubusercontent.com',
+  'gitlab.com',
+  'piston-data.mojang.com',
+  'launcher.mojang.com',
+  'launchermeta.mojang.com',
+  'piston-meta.mojang.com',
+  'resources.download.minecraft.net',
+  'libraries.minecraft.net',
+  'files.minecraftforge.net',
+  'maven.minecraftforge.net',
+  'maven.fabricmc.net',
+  'meta.fabricmc.net',
+  'maven.legacyfabric.net',
+  'maven.quiltmc.org',
+  'maven.neoforged.net',
+  'neoforged.forgecdn.net',
+  'edge.forgecdn.net',
+  'mediafilez.forgecdn.net',
+  'mod.mcimirror.top',
+  'bmclapi2.bangbang93.com',
+  'mirrors.tuna.tsinghua.edu.cn',
+  // 部分加载器 profile 的库直接引用 Maven Central / Google Maven
+  'repo1.maven.org',
+  'repo.maven.apache.org',
+  'maven.google.com',
+])
+
+function isLoopback(hostname: string): boolean {
+  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '[::1]'
+}
+
+/** `--allow-host` 的写法与 mrpack 清单一致：精确域名，或 `.suffix` 后缀。 */
+function matchesExtraHost(host: string, extraHosts: readonly string[]): boolean {
+  for (const raw of extraHosts) {
+    const rule = raw.trim().toLowerCase()
+    if (rule === '') continue
+    if (rule.startsWith('.')) {
+      if (host.endsWith(rule)) return true
+    } else if (host === rule) {
+      return true
+    }
+  }
+  return false
+}
+
+function isAllowedHost(hostname: string, extraHosts: readonly string[]): boolean {
+  const host = hostname.toLowerCase()
+  return (
+    ALLOWED_DOWNLOAD_HOSTS.has(host) ||
+    host.endsWith('.forgecdn.net') ||
+    host.endsWith('.minecraft.net') ||
+    host.endsWith('.mojang.com') ||
+    host.endsWith('.fabricmc.net') ||
+    isLoopback(host) ||
+    matchesExtraHost(host, extraHosts)
+  )
+}
+
+/**
+ * 校验下载 URL：只允许 https（本地回环例外），且域名在白名单内。
+ *
+ * `extraHosts` 只来自用户显式写的 `--allow-host`；第三方清单里的地址不享受这条豁免。
+ */
+export function assertSafeDownloadUrl(raw: string, extraHosts: readonly string[] = []): URL {
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    throw new Error(`下载地址不是合法 URL：${raw}`)
+  }
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopback(url.hostname))) {
+    throw new Error(`拒绝下载：只允许 https，收到 ${url.protocol}//${url.hostname}`)
+  }
+  if (!isAllowedHost(url.hostname, extraHosts)) {
+    throw new Error(`拒绝下载：域名不在白名单：${url.hostname}`)
+  }
+  return url
+}
+
+/** 文件名只取最后一段，防止 `../../x` 借下载任务写出目标目录。 */
+export function assertSafeFileName(fileName: string): string {
+  const name = basename(fileName)
+  if (name === '' || name === '.' || name === '..' || name !== fileName) {
+    throw new Error(`拒绝下载：文件名不安全：${fileName}`)
+  }
+  return name
+}
 
 function pickAlgo(hashes: Readonly<Record<string, string>>): Algo | null {
   // 优先强哈希：sha512 > sha256 > sha1
@@ -66,6 +169,14 @@ async function fetchToFile(
 
   let idleTimer: NodeJS.Timeout | undefined
   let stalled = false
+  /**
+   * 写盘错误必须有人接住。
+   *
+   * 以前只在 `once(out, 'drain'/'finish')` 的等待窗口里才有 error 监听：
+   * 磁盘写满或杀软锁住 .part 时，错误常发生在等下一个网络块的间隙，
+   * 没有 listener 就变成 uncaughtException，整个进程带堆栈崩掉。
+   */
+  let writeError: Error | undefined
   const arm = (): void => {
     if (idleTimer !== undefined) clearTimeout(idleTimer)
     idleTimer = setTimeout(() => {
@@ -86,21 +197,28 @@ async function fetchToFile(
 
     const hash = createHash(algo)
     const out = createWriteStream(partPath)
+    out.on('error', (err) => {
+      writeError ??= err
+      controller.abort()
+    })
     let bytes = 0
     try {
       for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
         arm()
+        if (writeError !== undefined) throw writeError
         hash.update(chunk)
         bytes += chunk.byteLength
         if (!out.write(chunk)) await once(out, 'drain')
       }
       out.end()
       await once(out, 'finish')
+      if (writeError !== undefined) throw writeError
     } finally {
       if (!out.closed) out.destroy()
     }
     return { bytes, digest: hash.digest('hex'), finalUrl: res.url }
   } catch (err) {
+    if (writeError !== undefined) throw writeError
     if (stalled) {
       throw new Error(`超过 ${Math.round(idleTimeoutMs / 1000)} 秒没有收到数据，已中止`)
     }
@@ -124,6 +242,9 @@ export async function downloadOne(
   /** 测试注入：把空闲超时调短，不用等 30 秒 */
   opts: { readonly idleTimeoutMs?: number } = {},
 ): Promise<DownloadOutcome> {
+  assertSafeFileName(task.fileName)
+  assertSafeDownloadUrl(task.url, task.allowHosts ?? [])
+
   const cached = await verifyExisting(task)
   if (cached.ok) {
     return {
@@ -155,6 +276,8 @@ export async function downloadOne(
     if (target === null) continue
 
     try {
+      // 镜像可能把地址改到任意 host；改写结果同样要过白名单
+      assertSafeDownloadUrl(target, task.allowHosts ?? [])
       const { bytes, digest, finalUrl } = await fetchToFile(
         target,
         partPath,

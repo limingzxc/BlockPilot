@@ -13,6 +13,8 @@ import type { HostProfile, LoaderKind } from '../instance.js'
 import type { Operation } from '../operation.js'
 import { defineOperation } from '../operation.js'
 import type { ContentSource, DependencyResolver, ProjectNamer, VersionInfo } from '../sources.js'
+import { readJavaMajor } from '../version/java-major.js'
+import { findVersionJson } from './assets.js'
 import { cfDependencyFindings } from './cf-deps.js'
 import { checkInstance, checkJava } from './check.js'
 import type { CurseforgeManifest } from './curseforge.js'
@@ -72,12 +74,21 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
       })
 
       if (signal.aborted) return
+      /**
+       * 目录式实例也要读版本 JSON 的 `javaVersion.majorVersion`。
+       *
+       * 只查表的话，26.x 这类新版本会给出「Java 21 够用」的错误结论；
+       * deploy 的部署后自检已经传了权威值，两边输入必须一致（ADR-0037）。
+       */
+      const versionJson = findVersionJson(opts.target, scan.instance.gameVersion)
+      const javaMajor =
+        opts.javaMajor ?? (versionJson === null ? undefined : readJavaMajor(versionJson))
       yield Op.result(
         preflightDir({
           dir: opts.target,
           scan,
           ...(opts.host === undefined ? {} : { host: opts.host }),
-          ...(opts.javaMajor === undefined ? {} : { javaMajor: opts.javaMajor }),
+          ...(javaMajor === undefined ? {} : { javaMajor }),
         }),
       )
       yield Op.done()

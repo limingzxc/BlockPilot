@@ -179,6 +179,19 @@ test('Java：缺 Java 25 时提示要装的是 25，不是 21', () => {
   assert.match(f.hint ?? '', /java install 25/)
 })
 
+test('Java：模组声明了范围也不能压掉版本 JSON 的权威值（26.2 要求 25）', () => {
+  // 26.2 的实例装了 Java 21，Sodium 这类模组声明 java >=21，两者都满足——
+  // 但版本 JSON 要求 25，必须报 JAVA_MISSING，否则启动时才死
+  const findings = checkJava(
+    instance({ gameVersion: '26.2' }),
+    { os: 'windows', totalMemoryMiB: 16384, javaMajors: [21] },
+    [{ modId: 'sodium', range: '>=21' }],
+    { javaMajor: 25 },
+  )
+  assert.ok(findings.some((f) => f.code === 'JAVA_MISSING' && f.severity === 'blocker'))
+  assert.ok(!findings.some((f) => f.code === 'JAVA_INCOMPATIBLE_WITH_MOD'))
+})
+
 test('Java：一个都不够 → JAVA_MISSING (blocker)', () => {
   const findings = checkJava(instance({ gameVersion: '1.20.1' }), {
     os: 'windows',

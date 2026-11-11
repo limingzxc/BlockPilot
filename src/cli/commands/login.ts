@@ -106,7 +106,6 @@ export function runLogin(ctx: CommandContext): Promise<number> {
         say(`  ${C.green}登录成功${C.reset}  ${C.bold}${acc.name}${C.reset}\n`)
         say(`  ${C.dim}uuid ${acc.uuid}${C.reset}\n`)
         say(`  ${C.dim}令牌有效至 ${new Date(acc.expiresAt).toLocaleString()}${C.reset}\n\n`)
-        return 0
       },
     },
     ctx.signal,

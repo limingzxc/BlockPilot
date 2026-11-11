@@ -4,7 +4,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { assetsRequiredToBoot, checkAssets, gameVersionOf, probeAssets } from './assets.js'
+import {
+  assetsRequiredToBoot,
+  checkAssets,
+  findVersionJson,
+  gameVersionOf,
+  probeAssets,
+} from './assets.js'
 
 const HASH = 'cc'.repeat(20)
 
@@ -138,6 +144,27 @@ test('从实例附近的版本 JSON 读 assetIndex.id，抽查对应 index', () 
     const f = checkAssets(instanceDir, '1.21.1').find((x) => x.code === 'ASSETS_MISSING')
     assert.ok(f)
     assert.match(f.message, /index 32/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('实例附近的版本 JSON：Prism 与裸 .minecraft 布局都能找到', () => {
+  const root = mkdtempSync(join(tmpdir(), 'bp-version-json-'))
+  try {
+    const instanceDir = join(root, 'instances', 'pack')
+    mkdirSync(join(instanceDir, 'versions', '1.21.1'), { recursive: true })
+    const nested = join(instanceDir, 'versions', '1.21.1', '1.21.1.json')
+    writeFileSync(nested, JSON.stringify({ id: '1.21.1' }))
+    assert.equal(findVersionJson(instanceDir, '1.21.1'), nested)
+
+    // setup 写的是 root/versions/<mc>/<mc>.json（Prism 实例往上两级）
+    mkdirSync(join(root, 'versions', '1.20.1'), { recursive: true })
+    const shared = join(root, 'versions', '1.20.1', '1.20.1.json')
+    writeFileSync(shared, JSON.stringify({ id: '1.20.1' }))
+    assert.equal(findVersionJson(instanceDir, '1.20.1'), shared)
+
+    assert.equal(findVersionJson(instanceDir, 'unknown'), null)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

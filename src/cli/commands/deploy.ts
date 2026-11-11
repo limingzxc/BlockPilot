@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { createDeploy } from '../../core/deploy.js'
 import { downloadOne } from '../../core/download/downloader.js'
 import { runHint } from '../../core/hints.js'
@@ -8,6 +8,7 @@ import { readConfig } from '../../core/instance/config.js'
 import type { Layout } from '../../core/layout.js'
 import type { PackFileRead } from '../../core/preflight/read-pack.js'
 import { readPackFile } from '../../core/preflight/read-pack.js'
+import { safeJoin } from '../../core/safe-path.js'
 import type { VersionInfo } from '../../core/sources.js'
 import { resolveCurseforge } from '../../sources/curseforge.js'
 import { MODRINTH_API_MCIM, ModrinthSource } from '../../sources/modrinth.js'
@@ -86,15 +87,21 @@ async function resolvePackArg(
     return undefined
   }
 
-  const dest = join(layout.root, 'cache', 'packs', file.filename)
+  // 文件名来自 API；只取 basename，并确认落点仍在 cache/packs 下
+  const fileName = basename(file.filename)
+  const dest = safeJoin(join(layout.root, 'cache', 'packs'), fileName)
+  if (dest === null) {
+    process.stderr.write(`${C.red}Modrinth 返回的文件名不安全${C.reset}: ${file.filename}\n`)
+    return undefined
+  }
   process.stderr.write(
-    `${C.dim}· Modrinth ${info.name} · ${info.versionId} → ${file.filename}${C.reset}\n`,
+    `${C.dim}· Modrinth ${info.name} · ${info.versionId} → ${fileName}${C.reset}\n`,
   )
   try {
     await downloadOne(
       {
         url: file.url,
-        fileName: file.filename,
+        fileName,
         destPath: dest,
         expectedSize: file.size,
         hashes: file.hashes,
@@ -202,6 +209,12 @@ export async function runDeploy(ctx: CommandContext): Promise<number> {
           process.stderr.write(`  ${C.red}✗${C.reset} ${ev.data.file}  ${ev.data.error}\n`)
         } else if (ev.code === 'deploy.cf_source') {
           process.stderr.write(`${C.dim}· CurseForge 解析源：${ev.data.source}${C.reset}\n`)
+        } else if (ev.code === 'deploy.pack_changed') {
+          process.stderr.write(
+            `\n${C.yellow}!${C.reset} 这个实例之前装的是 ${ev.data.from}，现在是 ${ev.data.to}\n` +
+              `${C.dim}  旧包的 ${ev.data.previousFiles} 个文件不会自动删除；先清空 mods/ 再启动，` +
+              `否则新旧模组会混在一起${C.reset}\n\n`,
+          )
         } else if (ev.code === 'deploy.cf_no_key') {
           process.stderr.write(
             `\n${C.yellow}!${C.reset} 没有 BLOCKPILOT_CF_API_KEY：清单里的 ${ev.data.files} 个文件装不了，` +
@@ -242,11 +255,10 @@ export async function runDeploy(ctx: CommandContext): Promise<number> {
         say('\n')
         if (r.check.verdict === 'blocked') {
           say(`  ${C.yellow}先别启动${C.reset}，上面这些会直接导致崩溃\n\n`)
-          return 2
+          return
         }
         say(`  ${C.bold}启动${C.reset}\n`)
         say(`    ${runHint(r.playableVersionId, layout.root, instance)}\n\n`)
-        return r.failed.length > 0 ? 2 : 0
       },
       failed: (ev) => {
         process.stderr.write(`\n${C.red}${ev.code}${C.reset}: ${ev.message}\n`)

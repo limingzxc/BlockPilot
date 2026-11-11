@@ -1,8 +1,9 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { assetsHint } from '../hints.js'
 import type { AssetsProbe } from '../setup/assets.js'
 import { probeAssetObjects } from '../setup/assets.js'
+import { readAssetIndexId } from '../version/java-major.js'
 import type { Finding } from './types.js'
 
 /**
@@ -99,13 +100,13 @@ export function probeAssets(
 }
 
 /**
- * 从实例附近的版本 JSON 里找 `assetIndex.id`。
+ * 目录式实例附近的版本 JSON。
  *
- * 目录式实例没有 layout，只能按常见布局猜；读不到就返回 undefined，
- * 让 probeAssets 走「同名 index / 唯一 index」的保守路径。
+ * 目录式实例没有 layout，只能按常见布局猜（裸 .minecraft、Prism 的
+ * instances/<name>、以及共享的 root/versions）。找不到返回 null。
  */
-export function findAssetIndexId(instanceDir: string, gameVersion: string): string | undefined {
-  if (gameVersion === '' || gameVersion === 'unknown') return undefined
+export function findVersionJson(instanceDir: string, gameVersion: string): string | null {
+  if (gameVersion === '' || gameVersion === 'unknown') return null
   const candidates = [
     join(instanceDir, 'versions', gameVersion, `${gameVersion}.json`),
     join(instanceDir, '.minecraft', 'versions', gameVersion, `${gameVersion}.json`),
@@ -113,18 +114,20 @@ export function findAssetIndexId(instanceDir: string, gameVersion: string): stri
     join(instanceDir, '..', 'versions', gameVersion, `${gameVersion}.json`),
   ]
   for (const path of candidates) {
-    if (!existsSync(path)) continue
-    try {
-      const raw = JSON.parse(readFileSync(path, 'utf8')) as {
-        assetIndex?: { id?: unknown }
-      }
-      const id = raw.assetIndex?.id
-      if (typeof id === 'string' && id !== '') return id
-    } catch {
-      // 版本 JSON 坏了不阻断预检：assets 只是其中一条结论
-    }
+    if (existsSync(path)) return path
   }
-  return undefined
+  return null
+}
+
+/**
+ * 从实例附近的版本 JSON 里找 `assetIndex.id`。
+ *
+ * 目录式实例没有 layout，只能按常见布局猜；读不到就返回 undefined，
+ * 让 probeAssets 走「同名 index / 唯一 index」的保守路径。
+ */
+export function findAssetIndexId(instanceDir: string, gameVersion: string): string | undefined {
+  const path = findVersionJson(instanceDir, gameVersion)
+  return path === null ? undefined : readAssetIndexId(path)
 }
 
 /**

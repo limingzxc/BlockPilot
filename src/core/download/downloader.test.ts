@@ -1,13 +1,21 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, test } from 'node:test'
 
-import { downloadOne, verifyExisting } from './downloader.js'
+import { assertSafeDownloadUrl, downloadOne, verifyExisting } from './downloader.js'
 import type { DownloadTask, Mirror } from './types.js'
 
 const BODY = Buffer.from('hello blockpilot — this is a fake mod file')
@@ -153,6 +161,36 @@ test('连接卡住时按空闲超时中止，不留半成品', async () => {
   assert.deepEqual(
     readdirSync(join(t.destPath, '..')).filter((n) => n.endsWith('.part')),
     [],
+  )
+})
+
+test('写盘失败（.part 被占成目录）不会变成 uncaughtException', async () => {
+  const t = task('/good', 'blocked.jar')
+  // 模拟磁盘写满 / 杀软锁文件：createWriteStream 打开失败时错误发生在
+  // 「等下一个网络块」的间隙，没有 error 监听就会带堆栈崩掉整个进程
+  mkdirSync(`${t.destPath}.${process.pid}.part`, { recursive: true })
+  await assert.rejects(
+    () => downloadOne(t, [direct], signal),
+    (err: Error) => {
+      assert.equal(err.name, 'NetworkError')
+      assert.match(err.message, /EISDIR|directory/i)
+      return true
+    },
+  )
+})
+
+test('域名白名单收在下载层：陌生域名默认拒绝，--allow-host 才能放行', () => {
+  assert.throws(() => assertSafeDownloadUrl('https://evil.example.com/x.jar'), /不在白名单/)
+  assert.doesNotThrow(() =>
+    assertSafeDownloadUrl('https://evil.example.com/x.jar', ['evil.example.com']),
+  )
+  assert.doesNotThrow(() =>
+    assertSafeDownloadUrl('https://mirror.example.com/x.jar', ['.example.com']),
+  )
+  // 后缀规则不能放行 http：协议检查独立于域名
+  assert.throws(
+    () => assertSafeDownloadUrl('http://evil.example.com/x.jar', ['.example.com']),
+    /只允许 https/,
   )
 })
 

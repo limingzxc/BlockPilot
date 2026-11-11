@@ -103,6 +103,8 @@ export function buildPackTasks(
       destPath,
       expectedSize: file.fileSize,
       hashes: file.hashes,
+      // 下载层还会再查一次域名；显式放行的域名要跟着任务带过去
+      ...(opts.allowHosts === undefined ? {} : { allowHosts: opts.allowHosts }),
       ...(meta === undefined ? {} : { meta }),
     })
   }
@@ -415,7 +417,7 @@ export async function extractOverrides(
 export function countOverridesMods(zipPath: string, data?: Uint8Array): number {
   let mods = 0
   try {
-    unzipSync(data ?? new Uint8Array(readFileSync(zipPath)), {
+    unzipSync(data ?? readFileSync(zipPath), {
       filter: (f) => {
         if (f.name.endsWith('/')) return false
         if (!f.name.startsWith('overrides/') && !f.name.startsWith('client-overrides/'))

@@ -28,6 +28,7 @@ export type LogCode =
   | 'cf.resolve_failed'
   // 部署
   | 'deploy.pack'
+  | 'deploy.pack_changed'
   | 'deploy.step'
   | 'deploy.cf_source'
   | 'deploy.cf_no_key'
@@ -174,6 +175,11 @@ export interface LogPayloads {
     readonly blockers: number
     readonly findings: number
     readonly unresolved: number
+  }
+  'deploy.pack_changed': {
+    readonly from: string
+    readonly to: string
+    readonly previousFiles: number
   }
   'deploy.overrides_skipped': { readonly count: number }
   'deploy.overrides_failed': { readonly message: string }

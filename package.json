@@ -23,6 +23,7 @@
     "mcp": "tsx src/mcp/server.ts",
     "smoke": "tsx scripts/mcp-smoke.ts",
     "smoke:entry": "node scripts/entry-smoke.mjs",
+    "smoke:bin": "node scripts/bin-smoke.mjs",
     "smoke:auth": "tsx scripts/auth-shape-smoke.ts"
   },
   "dependencies": {

@@ -12,6 +12,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 import type { Layout } from '../layout.js'
+import { gameVersionOf } from '../preflight/assets.js'
 import { resolveVersion } from '../version/resolve.js'
 import { detectJava } from './detect.js'
 import type { JavaInstall, JavaScanResult } from './types.js'
@@ -93,7 +94,9 @@ async function inferNeedMajor(opts: SelectJavaOptions): Promise<number | undefin
     }
   }
 
-  return requiredJavaMajor(versionId)
+  // 版本 JSON 读不到时才查表。`versionId` 可能是加载器 profile
+  // （fabric-loader-0.19.3-1.21.1），直接查表匹配不上，会一律返回 21。
+  return requiredJavaMajor(gameVersionOf(versionId) ?? versionId)
 }
 
 export async function selectJava(opts: SelectJavaOptions): Promise<SelectJavaOutcome> {

@@ -171,7 +171,7 @@ export function buildModIndex(modsDir: string): ModIndex {
 
     let buf: Uint8Array
     try {
-      buf = new Uint8Array(readFileSync(full))
+      buf = readFileSync(full)
     } catch {
       continue
     }

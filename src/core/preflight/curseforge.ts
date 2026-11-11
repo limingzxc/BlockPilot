@@ -58,7 +58,7 @@ export interface CurseforgePack {
 
 /** 只解压 manifest 一个条目——CF 包的 overrides 可能上百 MB。 */
 export function readCurseforgeManifest(zipPath: string, data?: Uint8Array): CurseforgeManifest {
-  const entries = unzipSync(data ?? new Uint8Array(readFileSync(zipPath)), {
+  const entries = unzipSync(data ?? readFileSync(zipPath), {
     filter: (f) => f.name === MANIFEST_ENTRY,
   })
   const buf = entries[MANIFEST_ENTRY]

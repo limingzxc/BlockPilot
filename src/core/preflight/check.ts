@@ -82,47 +82,20 @@ function suggestMajorFor(range: string): number | undefined {
 }
 
 /**
- * Java 可用性检查。独立于在线/离线模式——两种链路都要跑。
+ * 版本 JSON（或兜底表）给出的 Java 要求。
  *
  * 判定分三档：
  * - 有精确版本：通过（更高版本只记一条 info）
  * - 没有精确版本但有更高版本：warning。Java 向后兼容，多数情况能跑，
  *   但老 Forge 常常栽在 Java 版本差异上，所以不判 blocker
  * - 一个都够不上：blocker
- *
- * `requirements` 非空时**不再用兜底表下结论**：模组说了算。
  */
-export function checkJava(
+function checkMinecraftJava(
   instance: Instance,
   host: HostProfile,
-  requirements: readonly JavaRequirement[] = [],
-  /** 版本 JSON 的 `javaVersion.majorVersion`。给了就以它为准，表只是兜底 */
-  opts: { readonly javaMajor?: number } = {},
+  need: number,
 ): readonly Finding[] {
   const findings: Finding[] = []
-
-  if (requirements.length > 0) {
-    const hostText = host.javaMajors.join(', ') || '无'
-    for (const req of requirements) {
-      const ok = host.javaMajors.some((j) => satisfiesRange(String(j), req.range) !== 'violated')
-      if (ok) continue
-      const suggest = suggestMajorFor(req.range)
-      findings.push({
-        severity: 'blocker',
-        code: 'JAVA_INCOMPATIBLE_WITH_MOD',
-        message: `${req.modId} 要求 Java ${req.range}，本机检测到 ${hostText}`,
-        hint:
-          suggest === undefined
-            ? '这个范围里没有可安装的大版本，核对 mod 说明；也可能是它自己写错了'
-            : `装 Java ${suggest}：${javaInstallHint(suggest)}`,
-      })
-    }
-    // 有模组明确声明时，不再叠加「1.12 只能用 Java 8」这类推断——
-    // 两张表冲突时模组自己说的算，否则用户会收到互相矛盾的两条建议
-    return findings
-  }
-
-  const need = opts.javaMajor ?? requiredJavaMajor(instance.gameVersion)
   const exact = host.javaMajors.includes(need)
   const newer = host.javaMajors.filter((j) => j > need)
   const older = host.javaMajors.filter((j) => j < need)
@@ -161,6 +134,55 @@ export function checkJava(
       code: 'JAVA_OLDER_PRESENT',
       message: `本机同时存在更低版本的 Java（${older.join(', ')}），启动时必须显式指定路径`,
     })
+  }
+
+  return findings
+}
+
+/**
+ * Java 可用性检查。独立于在线/离线模式——两种链路都要跑。
+ *
+ * 两个来源都查：版本 JSON 的权威值永远优先；只有没给 `javaMajor` 时才用
+ * 「MC 版本 → Java」兜底表。模组声明是补充，不再压掉版本 JSON 的要求。
+ */
+export function checkJava(
+  instance: Instance,
+  host: HostProfile,
+  requirements: readonly JavaRequirement[] = [],
+  /** 版本 JSON 的 `javaVersion.majorVersion`。给了就以它为准，表只是兜底 */
+  opts: { readonly javaMajor?: number } = {},
+): readonly Finding[] {
+  const findings: Finding[] = []
+
+  /**
+   * 版本 JSON 是 Mojang 写的权威值；只有没给 javaMajor 时，才退回查表。
+   *
+   * 以前 requirements 非空会连 javaMajor 一起跳过：26.2 的实例装了 Java 21，
+   * 模组声明 java >=21 满足，但版本 JSON 要求 25——预检和 deploy 自检都 OK，
+   * 启动时才死。现在两个来源都查：权威值永远优先，模组声明只补充。
+   */
+  if (opts.javaMajor !== undefined) {
+    findings.push(...checkMinecraftJava(instance, host, opts.javaMajor))
+  } else if (requirements.length === 0) {
+    findings.push(...checkMinecraftJava(instance, host, requiredJavaMajor(instance.gameVersion)))
+  }
+
+  if (requirements.length > 0) {
+    const hostText = host.javaMajors.join(', ') || '无'
+    for (const req of requirements) {
+      const ok = host.javaMajors.some((j) => satisfiesRange(String(j), req.range) !== 'violated')
+      if (ok) continue
+      const suggest = suggestMajorFor(req.range)
+      findings.push({
+        severity: 'blocker',
+        code: 'JAVA_INCOMPATIBLE_WITH_MOD',
+        message: `${req.modId} 要求 Java ${req.range}，本机检测到 ${hostText}`,
+        hint:
+          suggest === undefined
+            ? '这个范围里没有可安装的大版本，核对 mod 说明；也可能是它自己写错了'
+            : `装 Java ${suggest}：${javaInstallHint(suggest)}`,
+      })
+    }
   }
 
   return findings

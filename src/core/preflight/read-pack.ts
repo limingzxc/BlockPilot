@@ -70,7 +70,9 @@ export type PackFileRead = MrpackFileRead | CurseforgeFileRead
 export function readPackFile(path: string): PackFileRead {
   // 一个 480 MB 的包会被反复读：index/manifest 一次、overrides 计数一次、
   // deploy 再各来一次。至少把这里的三次收成一次。
-  const data = new Uint8Array(readFileSync(path))
+  // Buffer 本身就是 Uint8Array：不要再 `new Uint8Array(...)` 复制一份，
+  // 480 MB 的包会瞬时占掉双倍内存。
+  const data = readFileSync(path)
   let mrpackError: unknown
   try {
     const index = readMrpackIndex(path, data)

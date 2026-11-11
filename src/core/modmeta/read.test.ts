@@ -94,6 +94,24 @@ versionRange="[0.6.10,)"
   assert.ok(meta.dependencies.some((d) => d.modId === 'flywheel'))
 })
 
+test('NeoForge 1.20.2–1.20.4 仍用 mods.toml：依赖 neoforge 时识别为 neoforge', () => {
+  const toml = `
+modLoader="javafml"
+loaderVersion="[1,)"
+[[mods]]
+modId="jei"
+version="17.0.0"
+
+[[dependencies.jei]]
+modId="neoforge"
+type="required"
+versionRange="[20.2,)"
+`
+  const meta = readModMetadata(jar({ 'META-INF/mods.toml': toml }), { loader: 'neoforge' })
+  assert.equal(meta?.loader, 'neoforge')
+  assert.ok(meta?.dependencies.some((d) => d.modId === 'neoforge'))
+})
+
 test('neoforge.mods.toml 优先于 mods.toml', () => {
   const neoforgeToml = `
 modLoader="javafml"

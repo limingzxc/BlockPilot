@@ -27,7 +27,6 @@ export async function runJava(ctx: CommandContext): Promise<number> {
       exitCode: () => 0,
       result: (r) => {
         say(renderJava(r))
-        return 0
       },
     },
     ctx.signal,
@@ -81,7 +80,6 @@ export async function runJavaInstall(ctx: CommandContext): Promise<number> {
           `  ${C.green}${r.skipped ? '已存在' : '装好了'}${C.reset}  Java ${r.java.major} · ${r.java.version}\n`,
         )
         say(`  ${C.dim}${r.java.path}${C.reset}\n\n`)
-        return 0
       },
     },
     ctx.signal,

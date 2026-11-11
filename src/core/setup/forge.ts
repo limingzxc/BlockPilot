@@ -238,7 +238,7 @@ export function createForgeSetup(opts: ForgeSetupOptions): Operation<ForgeSetupR
     // 有代理时保持原包直连官方——保真度更高。
     if (kind === 'neoforge' && opts.proxy === undefined) {
       try {
-        writeFileSync(tmpJar, mirrorNeoForgeInstaller(new Uint8Array(readFileSync(tmpJar))))
+        writeFileSync(tmpJar, mirrorNeoForgeInstaller(readFileSync(tmpJar)))
         yield Op.log('info', 'forge.installer_mirrored', {
           from: NEOFORGE_MIRROR.from,
           to: NEOFORGE_MIRROR.to,

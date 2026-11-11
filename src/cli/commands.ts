@@ -42,8 +42,10 @@ export interface Command extends Omit<CommandSpec, 'flags'> {
  * 它们不该因为「默认根目录恰好是个文件」而在解析布局这一步失败。
  */
 export interface CommandContext {
-  /** 子命令之后的参数（含 flag）。位置参数是 `argv[0]` */
+  /** 子命令之后的参数（含 flag） */
   readonly argv: readonly string[]
+  /** 本条命令的 flag 声明。`positional()` 靠它跳过「flag + 值」 */
+  readonly flags: Readonly<Record<string, FlagSpec>>
   readonly signal: AbortSignal
   /** 全局 `--proxy` 解析出的地址。只有要传给子进程的地方用得上 */
   readonly proxy?: string | undefined
@@ -69,6 +71,7 @@ function argOf(argv: readonly string[], name: string): string | undefined {
 
 class Ctx implements CommandContext {
   readonly argv: readonly string[]
+  readonly flags: Readonly<Record<string, FlagSpec>>
   readonly signal: AbortSignal
   readonly proxy: string | undefined
   readonly root: string
@@ -79,11 +82,13 @@ class Ctx implements CommandContext {
 
   constructor(
     argv: readonly string[],
+    flags: Readonly<Record<string, FlagSpec>>,
     signal: AbortSignal,
     proxy: string | undefined,
     usage: () => void,
   ) {
     this.argv = argv
+    this.flags = flags
     this.signal = signal
     this.proxy = proxy
     this.usage = usage
@@ -116,11 +121,12 @@ class Ctx implements CommandContext {
 
 export function createContext(input: {
   readonly argv: readonly string[]
+  readonly flags: Readonly<Record<string, FlagSpec>>
   readonly signal: AbortSignal
   readonly proxy?: string
   readonly usage: () => void
 }): CommandContext {
-  return new Ctx(input.argv, input.signal, input.proxy, input.usage)
+  return new Ctx(input.argv, input.flags, input.signal, input.proxy, input.usage)
 }
 
 /**

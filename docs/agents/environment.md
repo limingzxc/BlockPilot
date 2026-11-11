@@ -75,17 +75,31 @@ registry 上有个废弃的同名包，装出来会打印 `This is not the tsc c
 | 命令 | 覆盖 |
 |---|---|
 | `npm run lint` | Biome：格式 + lint（含 core 禁止 console） |
+| `npm run lint:fix` | 先修格式与 import 排序；手工编辑后先跑它，再跑 `check` |
 | `npm run typecheck` | `src/**` + `scripts/**`（两个 tsconfig） |
 | `npm test` | `src/**/*.test.ts` + `scripts/**/*.test.ts`，全离线 |
 | `npm run e2e` | T0 + T1（约 30 s） |
 | `npm run e2e -- --tier 3 --only E2E-301` | 真启动，会开游戏窗口 |
 | `npm run smoke` | MCP 工具清单 + diag 结构化输出 |
 | `npm run smoke:entry` | 构建后按包名 import，校验 `exports` 与公共 API |
+| `npm run smoke:bin` | 通过符号链接跑 CLI 入口；本机 Windows 无符号链接权限时会打印 `SKIP`，由 Ubuntu CI 覆盖 |
 | `npm run smoke:auth` | 认证请求形状探针（真实端点 + 无效令牌，需要网络） |
 | `npm run check` | lint + typecheck + test，提交前一条命令 |
 
 迭代时只跑改到的文件（`npx tsx --test src/core/xxx.test.ts`），提交前跑全量。
+Biome 的格式与 import 排序问题 `typecheck` 不会报，手工改完先 `npm run lint:fix` 能省掉一轮 `check`。
 
+## 本机 PowerShell
+
+PowerShell 5 的 `Set-Content -Encoding UTF8` 会写 BOM。用它造日志/夹具时，靠
+`startsWith(...)` 判断首行的解析器（例如 `diag` 识别 hs_err）会直接匹配失败：
+文件明明有问题，结论却是 `clean`。造文件用无 BOM 写法：
+
+```powershell
+[System.IO.File]::WriteAllLines($path, $lines, (New-Object System.Text.UTF8Encoding($false)))
+```
+
+或优先用 `scripts/make-*.mjs` / `scripts/fetch-fixtures.mjs` 现成的夹具脚本。
 
 ## 上游接口（实测 2026-11-09）
 

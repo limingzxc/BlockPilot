@@ -20,8 +20,48 @@ const HEADER = '# A fatal error has been detected by the Java Runtime Environmen
 const PROBLEMATIC = '# Problematic frame:'
 const SIGNAL_RE = /^#\s+(EXCEPTION_[A-Z_]+|SIG[A-Z0-9]+)\b/
 
-const GRAPHICS_RE =
-  /opengl32|nvoglv|nvd3d|nvwgf|atio|amdvlk|amdxc|ig[0-9]?d|libGL|libEGL|libvulkan|glfw|lwjgl|vulkan-1/i
+/**
+ * 显卡 / 图形栈的原生库。
+ *
+ * 必须是完整库名加边界，不能用 `atio` / `ig[0-9]?d` 这类子串：Linux/macOS 的
+ * 问题帧带符号名，`...allocation...`、`...initialization...` 都会命中 `atio`，
+ * 把 JVM 内部崩溃误报成显卡驱动；反过来 `ig[0-9]?d` 又漏掉真实的 Intel DLL
+ * （ig9icd64.dll）。
+ */
+const GRAPHICS_LIBS: readonly string[] = [
+  // Windows：OpenGL / Vulkan / D3D 驱动
+  'opengl32\\.dll',
+  'nvoglv(?:32|64)?\\.dll',
+  'nvd3dum(?:64)?\\.dll',
+  'nvwgf2um(?:64)?\\.dll',
+  'atio6axx\\.dll',
+  'atioglxx\\.dll',
+  'atidxx(?:32|64)?\\.dll',
+  'amdvlk(?:32|64)?\\.dll',
+  'amdxc(?:32|64)?\\.dll',
+  'amdxx(?:32|64)?\\.dll',
+  'ig\\d{1,2}icd(?:64)?\\.dll',
+  'igd\\d{2}\\w*\\.dll',
+  'glfw3?\\.dll',
+  'lwjgl(?:_opengl|_vulkan)?\\.dll',
+  'vulkan-1\\.dll',
+  // Linux
+  'libGL(?:X|ESv2)?\\.so(?:\\.\\d+)*',
+  'libEGL\\.so(?:\\.\\d+)*',
+  'libOpenGL\\.so(?:\\.\\d+)*',
+  'libvulkan\\.so(?:\\.\\d+)*',
+  'libglfw\\.so(?:\\.\\d+)*',
+  'liblwjgl\\.so',
+  '(?:radeonsi|swrast|iris|i965|zink|llvmpipe)_dri\\.so',
+  // macOS
+  'libGL\\.dylib',
+  'libMoltenVK\\.dylib',
+  'libglfw\\.dylib',
+  'OpenGL\\.framework',
+  'Metal\\.framework',
+]
+
+const GRAPHICS_RE = new RegExp(`(?<![a-z0-9_])(?:${GRAPHICS_LIBS.join('|')})(?![a-z0-9_])`, 'i')
 
 export type DiagFormat = 'log' | 'hs-err' | 'crash-report'
 
@@ -73,9 +113,17 @@ export function analyzeHsErr(lines: readonly string[]): readonly CrashSignal[] {
   if (headerLine === -1) return []
 
   const text = lines.join('\n')
+  /**
+   * 问题帧的类型字母：C=原生库，V=VM 代码，J/j=Java 代码。
+   *
+   * 只有 C 帧才可能是显卡驱动；V 帧是 JVM 自身，J/j 是 JIT 编译后的 Java 代码。
+   * 以前不看这个字母，JVM 内部崩溃也会被归成「显卡驱动/原生库」。
+   */
+  const frameKind = /^([A-Za-z])\s/.exec(problemFrame)?.[1]?.toUpperCase()
   let kind: CrashSignal['kind']
   if (/OutOfMemoryError/.test(text)) kind = 'out-of-memory'
-  else if (GRAPHICS_RE.test(problemFrame)) kind = 'graphics'
+  else if (frameKind === 'C') kind = GRAPHICS_RE.test(problemFrame) ? 'graphics' : 'natives'
+  else if (frameKind === 'V' || frameKind === 'J') kind = 'unknown'
   else if (signalText !== '' || /Problematic frame/.test(text)) kind = 'natives'
   else kind = 'unknown'
 

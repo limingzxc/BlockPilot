@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { pathToFileURL } from 'node:url'
+import { realpathSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { BlockPilotError } from '../core/errors.js'
 import { NetworkError } from '../core/http.js'
 import { LayoutError } from '../core/layout.js'
@@ -146,6 +147,7 @@ async function main(): Promise<number> {
   return command.run(
     createContext({
       argv: args,
+      flags: command.flags,
       signal: createInterrupt().signal,
       usage,
       ...(proxy === undefined ? {} : { proxy }),
@@ -159,7 +161,7 @@ async function main(): Promise<number> {
  * 网络故障不该显示成「unexpected error」：它是最常见的一类失败，
  * 用户需要知道是哪个地址、以及可以怎么办。
  */
-function reportFatal(err: unknown): never {
+function reportFatal(err: unknown): void {
   // 事件流消费者也要看到终止原因：以前这里只写 stderr，stdout 停在半截事件上
   if (isEventStream()) {
     const code =
@@ -176,7 +178,8 @@ function reportFatal(err: unknown): never {
   }
   if (err instanceof LayoutError) {
     process.stderr.write(`${C.red}${err.message}${C.reset}\n`)
-    process.exit(1)
+    process.exitCode = 1
+    return
   }
   if (err instanceof NetworkError) {
     process.stderr.write(`${C.red}网络错误${C.reset}：${err.message}\n`)
@@ -195,36 +198,52 @@ function reportFatal(err: unknown): never {
         `${C.dim}检查网络；国内可加 --china 走镜像，或用 --proxy 指定代理${C.reset}\n`,
       )
     }
-    process.exit(1)
+    process.exitCode = 1
+    return
   }
   if (err instanceof VersionNotFoundError) {
     process.stderr.write(`${C.red}VERSION_NOT_FOUND${C.reset}: ${err.message}\n`)
     process.stderr.write(
       `${C.dim}先装一次：blockpilot deploy <整合包> 或 blockpilot setup <mc 版本>${C.reset}\n`,
     )
-    process.exit(1)
+    process.exitCode = 1
+    return
   }
   if (err instanceof BlockPilotError) {
     process.stderr.write(`${C.red}${err.code}${C.reset}: ${err.message}\n`)
     if (err.hint !== undefined) process.stderr.write(`${C.dim}${err.hint}${C.reset}\n`)
-    process.exit(1)
+    process.exitCode = 1
+    return
   }
   process.stderr.write(`${C.red}unexpected error${C.reset}: ${String(err)}\n`)
-  process.exit(1)
+  process.exitCode = 1
 }
 
 /**
- * 只在被当作入口执行时启动。
+ * 判断当前模块是不是入口。
  *
  * `hints.test.ts` 要 import 这个文件取 `COMMANDS`（提示里的命令必须真的能敲），
  * 无条件的 `main()` 会让那次 import 变成一次真实的命令行执行。
+ *
+ * 不能用 `import.meta.url === pathToFileURL(process.argv[1]).href`：npm link /
+ * 全局安装时 bin 是符号链接，argv[1] 是链接路径，而 ESM 的 import.meta.url
+ * 已经是 realpath，比较永远不相等，CLI 会静默退出 0。两边都取 realpath。
  */
-const entry = process.argv[1]
-if (entry !== undefined && import.meta.url === pathToFileURL(entry).href) {
+export function isEntryPoint(entry: string | undefined): boolean {
+  if (entry === undefined) return false
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url))
+  } catch {
+    return false
+  }
+}
+
+if (isEntryPoint(process.argv[1])) {
   main().then((code) => {
     // 有些命令在进入 Operation 前就返回（缺位置参数、未知 flag）：
     // 兜底保证事件流最后一行永远是 exit
     if (isEventStream()) emitExit(code)
-    process.exit(code)
+    // 不用 process.exit：管道里的 --json 大输出可能还没 flush 完就被截断
+    process.exitCode = code
   }, reportFatal)
 }

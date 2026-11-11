@@ -36,6 +36,10 @@ jobs:
 
       - run: npm run smoke:entry
 
+      # npm link / 全局安装时 bin 是符号链接：argv[1] 与 import.meta.url 必须
+      # 都取 realpath，否则 Linux/macOS 上 CLI 会静默退出 0
+      - run: npm run smoke:bin
+
       # 测试全部离线：下载器测试用本地假源，tar 测试用系统 GNU tar。
       # 不设任何代理环境变量，也不断网——避免 CI 环境差异造成假失败。
       #

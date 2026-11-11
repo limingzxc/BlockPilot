@@ -21,13 +21,17 @@ function safeDirs(parent: string): string[] {
   }
 }
 
-/** 每个子目录下都可能有 bin/java */
+/** 每个子目录下都可能有 bin/java（macOS 的 JDK 包还多一层 Contents/Home） */
 function fromParent(parent: string | undefined, tail: string, source: JavaSource): Candidate[] {
   if (parent === undefined || !existsSync(parent)) return []
-  return safeDirs(parent).map((name) => ({
-    path: join(parent, name, tail, EXE),
-    source,
-  }))
+  const out: Candidate[] = []
+  for (const name of safeDirs(parent)) {
+    out.push({ path: join(parent, name, tail, EXE), source })
+    if (isMac) {
+      out.push({ path: join(parent, name, 'Contents', 'Home', tail, EXE), source })
+    }
+  }
+  return out
 }
 
 /**

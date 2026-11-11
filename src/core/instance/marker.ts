@@ -55,7 +55,21 @@ export function writeInstanceMarker(gameDir: string, marker: InstanceMarker): st
 
   upsert('net.minecraft', marker.gameVersion)
   if (marker.loader !== undefined && marker.loader.kind !== 'vanilla') {
-    upsert(LOADER_UID[marker.loader.kind], marker.loader.version)
+    const keep = LOADER_UID[marker.loader.kind]
+    /**
+     * 换加载器时旧组件必须移除。
+     *
+     * `scanInstanceDir` 用 `find` 取第一个命中的加载器组件；残留的 Fabric
+     * 组件会让 Forge 实例继续被判成 Fabric，新包的模组全被判成
+     * LOADER_MISMATCH 而跳过检查。
+     */
+    for (let i = components.length - 1; i >= 0; i -= 1) {
+      const uid = components[i]?.uid
+      if (uid !== undefined && uid !== keep && Object.values(LOADER_UID).includes(uid)) {
+        components.splice(i, 1)
+      }
+    }
+    upsert(keep, marker.loader.version)
   }
 
   const next: MmcPackFile = { ...existing, formatVersion: 1, components }

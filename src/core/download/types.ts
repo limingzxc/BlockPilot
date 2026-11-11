@@ -8,6 +8,12 @@ export interface DownloadTask {
   /** 至少要有 sha1。没有哈希的任务不允许下载——无法验证来源。 */
   readonly hashes: Readonly<Record<string, string>>
   /**
+   * 用户显式放行的额外下载域名（CLI 的 `--allow-host`）。
+   *
+   * 只给 mrpack 清单用；第三方自己声明的地址不能靠它绕过下载层的白名单。
+   */
+  readonly allowHosts?: readonly string[]
+  /**
    * 这个文件来自哪个内容源的哪个版本。
    *
    * `update` 靠它反查新版本；没有它就只能猜 URL。mrpack 的清单不直接给

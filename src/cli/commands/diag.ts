@@ -62,7 +62,6 @@ export async function runDiag(ctx: CommandContext): Promise<number> {
         // CLI 却只能拿到彩色文本——脚本还得正则解析，没道理
         if (asJson) say(`${JSON.stringify(r, null, 2)}\n`)
         else say(renderDiag(r))
-        return r.verdict === 'crash' ? 2 : 0
       },
     },
     ctx.signal,

@@ -81,7 +81,6 @@ export async function runLaunch(ctx: CommandContext): Promise<number> {
       exitCode: () => 0,
       result: (plan) => {
         say(renderLaunch(plan, raw))
-        return 0
       },
     },
     ctx.signal,

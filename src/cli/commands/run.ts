@@ -144,7 +144,7 @@ export async function runGame(ctx: CommandContext): Promise<number> {
             say(`  ${C.dim}日志${C.reset}  ${result.logPath}\n`)
           }
           say('\n')
-          return 0
+          return
         }
         if (result.crashed) {
           say(
@@ -162,7 +162,7 @@ export async function runGame(ctx: CommandContext): Promise<number> {
           say(`  ${C.bold}下一步${C.reset}\n`)
           say(`    ${diagHint(root, layout.instanceId)}      ${C.dim}# 分析这份日志${C.reset}\n`)
           say(`    ${preflightHint(layout.gameDir)}   ${C.dim}# 扫描实例里的 mods${C.reset}\n\n`)
-          return 2
+          return
         }
 
         say(`  ${C.green}正常退出${C.reset}  ${secs}s · ${result.lineCount} 行日志\n`)
@@ -170,7 +170,6 @@ export async function runGame(ctx: CommandContext): Promise<number> {
           say(`  ${C.dim}日志${C.reset}  ${result.logPath}\n`)
         }
         say('\n')
-        return 0
       },
     },
     ctx.signal,

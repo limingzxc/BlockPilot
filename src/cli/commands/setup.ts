@@ -73,7 +73,7 @@ export async function runSetup(ctx: CommandContext): Promise<number> {
         say('\n')
         if (dryRun) {
           say(`  ${C.yellow}--dry-run${C.reset}：${r.total} 个文件需要下载\n\n`)
-          return 0
+          return
         }
         say(
           `  ${C.green}完成${C.reset} 下载 ${r.downloaded} · 跳过 ${r.skipped} · 失败 ${r.failed.length} · ` +
@@ -94,7 +94,6 @@ export async function runSetup(ctx: CommandContext): Promise<number> {
         )
         if (warn !== undefined) say(`  ${C.yellow}!${C.reset} ${warn}\n`)
         say('\n')
-        return r.failed.length > 0 ? 2 : 0
       },
     },
     ctx.signal,

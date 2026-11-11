@@ -45,6 +45,12 @@ before(async () => {
       )
       return
     }
+    // 镜像临时故障：单个文件 500，不能拖垮整批
+    if (req.url === '/mods/4/files/13') {
+      res.writeHead(500, { 'content-type': 'application/json' })
+      res.end('{"error":"boom"}')
+      return
+    }
     res.writeHead(404, { 'content-type': 'application/json' })
     res.end('{"error":"not found"}')
   })
@@ -91,6 +97,20 @@ test('镜像源对重复 fileID 只查一次', async () => {
     new AbortController().signal,
   )
   assert.deepEqual(seen, ['/mods/1/files/10'])
+})
+
+test('单个文件 5xx 不会拖垮整批解析', async () => {
+  const cf = new MirrorCurseforgeSource(base, 2)
+  const map = await cf.getFiles(
+    [
+      { projectId: 1, fileId: 10 },
+      { projectId: 4, fileId: 13 }, // 重试后仍 500
+    ],
+    new AbortController().signal,
+  )
+  // 没查到的那个交给 unresolved，已查到的必须留下
+  assert.equal(map.size, 1)
+  assert.equal(map.get(10)?.fileName, 'a.jar')
 })
 
 test('resolveCurseforge：有 key 走官方，没 key 走镜像，--no-cf-mirror 时不回落', () => {

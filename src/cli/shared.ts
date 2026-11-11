@@ -17,10 +17,21 @@ export class UsageError extends BlockPilotError {
   }
 }
 
-/** 第一个位置参数。缺了、或第一个参数是 flag，都算用法错误。 */
+/**
+ * 第一个位置参数。
+ *
+ * 不能只看 `argv[0]`：`deploy --root D:/mc pack.mrpack` 是合法写法，
+ * 以前会直接打印整篇用法。按 flag 声明跳过「flag + 它的值」，
+ * 不取值的开关只跳自己。
+ */
 export function positional(ctx: CommandContext): string | undefined {
-  const first = ctx.argv[0]
-  return first === undefined || first.startsWith('--') ? undefined : first
+  for (let i = 0; i < ctx.argv.length; i += 1) {
+    const arg = ctx.argv[i]
+    if (arg === undefined) continue
+    if (!arg.startsWith('--')) return arg
+    if (ctx.flags[arg]?.takesValue === true) i += 1
+  }
+  return undefined
 }
 
 /**

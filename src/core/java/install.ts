@@ -46,15 +46,22 @@ const EXE = process.platform === 'win32' ? 'java.exe' : 'java'
 /**
  * 已装好的运行时里找 java 可执行文件。Adoptium 的 zip 顶层只有一个目录，
  * 但 `<root>/java` 下可以有多套（17 与 21 共存），所以返回全部候选。
+ *
+ * macOS 的 Temurin 包是 `<name>/Contents/Home/bin/java`，少认这一层会在
+ * 解压完成后报 JAVA_EXECUTABLE_MISSING。
  */
-function findJavaExecutables(javaDir: string): string[] {
+export function findJavaExecutables(javaDir: string): string[] {
   if (!existsSync(javaDir)) return []
   const out: string[] = []
-  const direct = join(javaDir, 'bin', EXE)
-  if (existsSync(direct)) out.push(direct)
+  const add = (base: string): void => {
+    const direct = join(base, 'bin', EXE)
+    if (existsSync(direct)) out.push(direct)
+  }
+  add(javaDir)
+  add(join(javaDir, 'Contents', 'Home'))
   for (const name of readdirSync(javaDir)) {
-    const candidate = join(javaDir, name, 'bin', EXE)
-    if (existsSync(candidate)) out.push(candidate)
+    add(join(javaDir, name))
+    add(join(javaDir, name, 'Contents', 'Home'))
   }
   return out
 }
@@ -78,7 +85,7 @@ async function findExactMajor(
 
 /** 解压 zip。跳过目录项与 `..` 路径（zip slip）。 */
 function extractZip(zipPath: string, destDir: string): number {
-  const entries = unzipSync(new Uint8Array(readFileSync(zipPath)))
+  const entries = unzipSync(readFileSync(zipPath))
   let count = 0
   for (const [name, data] of Object.entries(entries)) {
     if (name.endsWith('/')) continue
@@ -93,7 +100,7 @@ function extractZip(zipPath: string, destDir: string): number {
 
 /** 解压 tar.gz。可执行位与 slip 防护都在 tar.ts 里。 */
 function extractTarGz(tarPath: string, destDir: string): { files: number; symlinks: number } {
-  return writeTarEntries(readTarGz(new Uint8Array(readFileSync(tarPath))), destDir)
+  return writeTarEntries(readTarGz(readFileSync(tarPath)), destDir)
 }
 
 export function createJavaInstall(opts: JavaInstallOptions): Operation<JavaInstallResult> {

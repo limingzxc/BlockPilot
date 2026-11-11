@@ -100,7 +100,9 @@ export function saveStore(
     active: store.active ?? null,
     accounts,
   }
-  const tmp = `${path}.tmp`
+  // 带 pid + 随机后缀：微软刷新令牌是一次性的，两个进程同时刷新时
+  // 固定 `.tmp` 会互相覆盖，后一个拿到 invalid_grant 并静默退回离线。
+  const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
   writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 })
   try {
     chmodSync(tmp, 0o600)

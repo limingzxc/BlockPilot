@@ -62,12 +62,11 @@ export async function runAssets(ctx: CommandContext): Promise<number> {
         say('\n')
         if (dryRun) {
           say(`  ${C.yellow}--dry-run${C.reset}：${r.unique} 个对象需要下载\n\n`)
-          return 0
+          return
         }
         say(
           `  ${C.green}完成${C.reset} 下载 ${r.downloaded} · 跳过 ${r.skipped} · 失败 ${r.failed.length} · ${humanBytes(r.totalBytes)}\n\n`,
         )
-        return r.failed.length > 0 ? 2 : 0
       },
     },
     ctx.signal,

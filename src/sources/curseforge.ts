@@ -331,8 +331,22 @@ export class MirrorCurseforgeSource implements CurseforgeLike {
         const next = queue[cursor]
         cursor += 1
         if (next === undefined) return
-        const info = await this.one(next, signal)
-        if (info !== null) out.set(info.fileId, info)
+        try {
+          const info = await this.one(next, signal)
+          if (info !== null) out.set(info.fileId, info)
+        } catch (err) {
+          /**
+           * 单个文件挂了不该拖垮整批。
+           *
+           * 271 个文件的包，只要有一个重试后仍 429/5xx/超时，以前整个
+           * `Promise.all` 就 reject，另外 270 个已查到的结果一起被丢掉，
+           * deploy 在第一步就终止。查不到的文件按「没查到」走 unresolved /
+           * 手动下载路径即可。真正的中止（用户 Ctrl+C）仍然往外抛。
+           */
+          if (signal.aborted) throw err
+          // 只吞这一层的预期失败；类型错误之类的实现 bug 不能悄悄消失
+          if (!(err instanceof NetworkError || err instanceof CurseforgeError)) throw err
+        }
       }
     }
     const width = Math.max(1, Math.min(this.concurrency, queue.length))

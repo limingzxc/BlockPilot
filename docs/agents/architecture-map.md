@@ -33,6 +33,8 @@
 - **串联命令用 `consumeValue`**：run / install 这类多 Operation 命令，中间步骤走
   `consumeValue(..., { exitEvent: false })` 拿 result；不要直接 `consume` 再手写
   `result`/`capture`——事件模式下忘记捕获会静默返回 1。
+- **退出码只算一次**：`OpUi.exitCode` 必填，`result` 只负责渲染；普通模式与
+  `--events` 共用同一个退出码，漏写一边会变成 typecheck 错误。
 
 ## 常用检查
 

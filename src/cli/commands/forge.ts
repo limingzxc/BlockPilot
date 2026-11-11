@@ -77,14 +77,14 @@ export async function runForge(ctx: CommandContext, kind: 'forge' | 'neoforge'):
           process.stderr.write(`\r${C.red}✗${C.reset} ${ev.data.file}  ${ev.data.error}\n`)
         }
       },
+      // installer 是下一步；exit 留给它
+      exitEvent: false,
+      exitCode: (r) => (r.failed.length > 0 ? 2 : 0),
       result: (r) => {
         say(
           `  ${C.green}原版就绪${C.reset}  下载 ${r.downloaded} · 跳过 ${r.skipped} · 原生库 ${r.nativesExtracted} 个\n`,
         )
-        return r.failed.length > 0 ? 2 : 0
       },
-      // installer 是下一步；exit 留给它
-      exitEvent: false,
     },
     ctx.signal,
   )
@@ -130,7 +130,6 @@ export async function runForge(ctx: CommandContext, kind: 'forge' | 'neoforge'):
         say(
           `\n  ${C.bold}启动${C.reset}  ${runHint(r.versionId, layout.root, layout.instanceId)}\n\n`,
         )
-        return 0
       },
       failed: (ev) => {
         process.stderr.write(`\n${C.red}${ev.code}${C.reset}: ${ev.message}\n`)

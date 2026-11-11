@@ -84,7 +84,6 @@ export async function runVerify(ctx: CommandContext): Promise<number> {
         } else {
           say(renderVerify(r, layout.gameDir))
         }
-        return r.okAll ? 0 : 2
       },
     },
     ctx.signal,

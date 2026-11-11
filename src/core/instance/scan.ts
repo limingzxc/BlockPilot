@@ -91,7 +91,7 @@ export function scanInstanceDir(dir: string, opts: ScanOptions): ScanResult {
       if (!statSync(full).isFile()) continue
       let bytes: Uint8Array
       try {
-        bytes = new Uint8Array(readFileSync(full))
+        bytes = readFileSync(full)
       } catch {
         skipped.push(name)
         continue

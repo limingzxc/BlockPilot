@@ -119,6 +119,7 @@ export async function runInstall(ctx: CommandContext): Promise<number> {
           )
         }
       },
+      exitCode: (result) => (result.failed.length > 0 ? 2 : 0),
       result: (result) => {
         say('\n')
         say(
@@ -142,7 +143,6 @@ export async function runInstall(ctx: CommandContext): Promise<number> {
           say(`  ${C.dim}${drifted} 个文件的索引体积与实际不符，已按哈希接受${C.reset}\n`)
         }
         say('\n')
-        return result.failed.length > 0 ? 2 : 0
       },
     },
     ctx.signal,

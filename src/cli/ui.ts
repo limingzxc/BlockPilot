@@ -119,13 +119,13 @@ export interface OpUi<T> {
   log?(ev: Extract<OpEvent<never>, { type: 'log' }>): void
   /** 缺省：红 `code: message` + dim hint */
   failed?(ev: Extract<OpEvent<never>, { type: 'failed' }>): void
-  /** 必填：渲染最终结果并映射为退出码 */
-  result(value: T): number
+  /** 必填：渲染最终结果。退出码只由 `exitCode` 决定，这里不再返回。 */
+  result(value: T): void
   /**
-   * `--events` 模式下只算退出码、不渲染。
-   * 缺省 0；preflight / diag / verify / deploy 这类有非零结论的命令必须给。
+   * 必填：结果的退出码。普通模式和 `--events` 共用这一处，
+   * 避免两边各算一遍后漏写一边（install / forge 都漏过）。
    */
-  exitCode?(value: T): number
+  exitCode(value: T): number
   /**
    * `--events` 模式下只要结果值、不要渲染。
    *
@@ -157,7 +157,10 @@ export interface ConsumedValue<T> {
  */
 export async function consumeValue<T>(
   op: Operation<T>,
-  ui: Omit<OpUi<T>, 'result' | 'capture'>,
+  ui: Omit<OpUi<T>, 'result' | 'capture' | 'exitCode'> & {
+    /** 中间步骤的结论码只用于判断「要不要继续」，缺省 0 */
+    readonly exitCode?: (value: T) => number
+  },
   signal: AbortSignal,
 ): Promise<ConsumedValue<T>> {
   let value: T | undefined
@@ -167,8 +170,8 @@ export async function consumeValue<T>(
       ...ui,
       result: (v) => {
         value = v
-        return ui.exitCode?.(v) ?? 0
       },
+      exitCode: (v) => ui.exitCode?.(v) ?? 0,
       capture: (v) => {
         value = v
       },
@@ -198,7 +201,7 @@ export async function consume<T>(
       emit(ev)
       if (ev.type === 'result') {
         ui.capture?.(ev.value)
-        const code = ui.exitCode?.(ev.value) ?? 0
+        const code = ui.exitCode(ev.value)
         if (ui.exitEvent !== false) emitExit(code)
         return code
       }
@@ -230,7 +233,8 @@ export async function consume<T>(
         }
         break
       case 'result':
-        return ui.result(ev.value)
+        ui.result(ev.value)
+        return ui.exitCode(ev.value)
       case 'failed':
         if (ui.failed !== undefined) {
           ui.failed(ev)

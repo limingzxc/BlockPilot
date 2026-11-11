@@ -47,7 +47,6 @@ export async function runPreflight(ctx: CommandContext): Promise<number> {
       result: (report) => {
         if (asJson) say(`${JSON.stringify(report, null, 2)}\n`)
         else say(renderHuman(report))
-        return verdictExit(report.verdict)
       },
     },
     ctx.signal,

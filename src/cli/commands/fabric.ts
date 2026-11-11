@@ -86,7 +86,6 @@ export async function runFabric(ctx: CommandContext): Promise<number> {
         say(
           `\n  ${C.bold}启动${C.reset}  ${runHint(r.versionId, layout.root, layout.instanceId)}\n\n`,
         )
-        return r.failed.length > 0 ? 2 : 0
       },
     },
     ctx.signal,

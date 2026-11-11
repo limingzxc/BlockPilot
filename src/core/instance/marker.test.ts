@@ -55,6 +55,22 @@ test('重跑 setup：已有加载器信息保留', () => {
   })
 })
 
+test('换加载器：旧加载器组件必须移除', () => {
+  withTemp((dir) => {
+    writeInstanceMarker(dir, {
+      gameVersion: '1.20.1',
+      loader: { kind: 'fabric', version: '0.15.0' },
+    })
+    writeInstanceMarker(dir, {
+      gameVersion: '1.20.1',
+      loader: { kind: 'forge', version: '47.2.0' },
+    })
+    // 残留的 Fabric 组件会让 scan 继续把实例判成 Fabric，新包的模组全被跳过
+    assert.equal(component(dir, 'net.fabricmc.fabric-loader'), undefined)
+    assert.equal(component(dir, 'net.minecraftforge'), '47.2.0')
+  })
+})
+
 test('标记文件损坏时当作不存在，不让安装失败', () => {
   withTemp((dir) => {
     writeFileSync(join(dir, MARKER_FILE), '{ 坏掉的 json')
