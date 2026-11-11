@@ -15,11 +15,12 @@
 import type { RepairPlan } from '../deps/plan.js'
 import { EMPTY_PLAN } from '../deps/plan.js'
 import type { ScannedMod, ScanResult } from '../instance/scan.js'
-import type { HostProfile } from '../instance.js'
+import type { HostProfile, Instance } from '../instance.js'
 import { depKey } from '../modmeta/types.js'
+import type { VersionInfo } from '../sources.js'
 import { checkAssets } from './assets.js'
 import type { JavaRequirement } from './check.js'
-import { checkJava, checkMemory } from './check.js'
+import { checkInstance, checkJava, checkMemory } from './check.js'
 import { checkLocalInstance } from './local.js'
 import type { Finding, PreflightReport } from './types.js'
 import { verdictOf } from './types.js'
@@ -82,6 +83,108 @@ export function javaRequirements(mods: readonly ScannedMod[]): JavaRequirement[]
   return out
 }
 
+/** 目录式证据：有它才查本地依赖与 assets。 */
+export interface DirEvidence {
+  /** 实例目录本身。assets 的缺省发现要用它（见 findAssetsDir） */
+  readonly path: string
+  readonly scan: ScanResult
+  /** assets 目录。缺省按 path 往上找；deploy 传 layout.assets 就是这条 */
+  readonly assetsDir?: string
+  /** 版本 JSON 里的 `assetIndex.id`。缺省按实例附近的版本 JSON 或同名 index 猜 */
+  readonly assetIndexId?: string
+}
+
+/**
+ * 一次预检的全部证据。
+ *
+ * 三个来源（目录 / 在线 / CurseForge）只是「证据怎么来」不同；**查哪些 checker
+ * 只由这里决定**。此前 `createPreflight` 的包分支与 `preflightDir` 各挑一遍，
+ * 结果包预检从来不做内存检查——同一个 host，`preflight <包>` 与 `preflight <目录>`
+ * 给出不同结论。
+ */
+export interface PreflightEvidence {
+  readonly instance: Instance
+  readonly host?: HostProfile
+  /** 版本 JSON 的 `javaVersion.majorVersion`；缺省按 gameVersion 查表 */
+  readonly javaMajor?: number
+  /** 目录式证据 */
+  readonly dir?: DirEvidence
+  /** 在线 / CurseForge 已解析到的版本元数据：有它就做模组级检查 */
+  readonly versions?: ReadonlyMap<string, VersionInfo>
+  /** 来源特有的 findings（PACK_BUILTIN_MODS、CF_NO_MOD_CHECK、依赖闭包……） */
+  readonly extraFindings?: readonly Finding[]
+  readonly plan?: RepairPlan
+  /** 注入时钟，见 AssembleInput.now */
+  readonly now?: () => Date
+}
+
+/**
+ * 证据 → 报告。checker 集合、stats 算法、verdict 规则都只在这条路径上。
+ *
+ * 目录预检、整合包预检、deploy 的部署后自检都从这里出结论。
+ */
+export function preflightFrom(input: PreflightEvidence): PreflightReport {
+  const { instance, dir } = input
+  const findings: Finding[] = []
+
+  if (input.host !== undefined) {
+    findings.push(
+      // Java 与在线/离线无关。模组自己声明的范围比「MC 版本 → Java」的兜底表准（issue #11）
+      ...checkJava(
+        instance,
+        input.host,
+        dir === undefined ? [] : javaRequirements(dir.scan.mods),
+        input.javaMajor === undefined ? {} : { javaMajor: input.javaMajor },
+      ),
+      ...checkMemory(instance, input.host),
+    )
+  }
+
+  if (dir !== undefined) {
+    findings.push(
+      ...checkLocalInstance(dir.scan, {
+        gameVersion: instance.gameVersion,
+        loaderVersion: instance.loader.version,
+      }),
+      // 资源包不在 mods 里，但缺了同样起不来——单独查一层（issue #2）
+      ...checkAssets(dir.path, instance.gameVersion, dir.assetsDir, dir.assetIndexId),
+    )
+  }
+
+  if (input.versions !== undefined) {
+    findings.push(...checkInstance({ instance, versions: input.versions }))
+  }
+  findings.push(...(input.extraFindings ?? []))
+
+  return assembleReport({
+    findings,
+    stats:
+      dir === undefined
+        ? statsForVersions(instance, input.versions?.size ?? 0)
+        : statsForScan(dir.scan),
+    target: { gameVersion: instance.gameVersion, loader: instance.loader },
+    plan: input.plan ?? EMPTY_PLAN,
+    ...(input.now === undefined ? {} : { now: input.now }),
+  })
+}
+
+/** skipped 是「没参与检查」：数字上要和 resolved 分开，否则 verdict 会给出假通过。 */
+function statsForScan(scan: ScanResult): ReportStats {
+  return {
+    mods: scan.mods.length + scan.skipped.length,
+    resolved: scan.mods.length,
+    unresolved: scan.skipped.length,
+  }
+}
+
+function statsForVersions(instance: Instance, resolved: number): ReportStats {
+  return {
+    mods: instance.mods.length,
+    resolved,
+    unresolved: instance.mods.length - resolved,
+  }
+}
+
 export interface DirReportInput {
   /** 实例目录本身。assets 的缺省发现要用它（见 findAssetsDir） */
   readonly dir: string
@@ -98,43 +201,22 @@ export interface DirReportInput {
 }
 
 /**
- * 一个磁盘上的 Instance 的完整预检：Java + 本地依赖 + assets，然后装配。
+ * 一个磁盘上的 Instance 的完整预检：Java + 内存 + 本地依赖 + assets，然后装配。
  *
  * `scan` 由调用方扫好传进来：目录扫描还被 deploy 与诊断复用，
  * 在这里再扫一遍只是多读一次磁盘。
  */
 export function preflightDir(input: DirReportInput): PreflightReport {
-  const { scan } = input
-  const { instance } = scan
-
-  const findings: Finding[] = [
-    // Java 与在线/离线无关。模组自己声明的范围比「MC 版本 → Java」的兜底表准（issue #11）
-    ...(input.host === undefined
-      ? []
-      : checkJava(
-          instance,
-          input.host,
-          javaRequirements(scan.mods),
-          input.javaMajor === undefined ? {} : { javaMajor: input.javaMajor },
-        )),
-    ...(input.host === undefined ? [] : checkMemory(instance, input.host)),
-    ...checkLocalInstance(scan, {
-      gameVersion: instance.gameVersion,
-      loaderVersion: instance.loader.version,
-    }),
-    // 资源包不在 mods 里，但缺了同样起不来——单独查一层（issue #2）
-    ...checkAssets(input.dir, instance.gameVersion, input.assetsDir, input.assetIndexId),
-  ]
-
-  return assembleReport({
-    findings,
-    // skipped 是「没参与检查」：数字上要和 resolved 分开，否则 verdict 会给出假通过
-    stats: {
-      mods: scan.mods.length + scan.skipped.length,
-      resolved: scan.mods.length,
-      unresolved: scan.skipped.length,
+  return preflightFrom({
+    instance: input.scan.instance,
+    ...(input.host === undefined ? {} : { host: input.host }),
+    ...(input.javaMajor === undefined ? {} : { javaMajor: input.javaMajor }),
+    dir: {
+      path: input.dir,
+      scan: input.scan,
+      ...(input.assetsDir === undefined ? {} : { assetsDir: input.assetsDir }),
+      ...(input.assetIndexId === undefined ? {} : { assetIndexId: input.assetIndexId }),
     },
-    target: { gameVersion: instance.gameVersion, loader: instance.loader },
     ...(input.now === undefined ? {} : { now: input.now }),
   })
 }

@@ -1,14 +1,11 @@
 import { basename, join } from 'node:path'
 import type { RepairPlan } from '../deps/plan.js'
-import { errMessage } from '../errors.js'
-import type { OpEvent } from '../events.js'
 import { Op } from '../events.js'
 import type { Operation } from '../operation.js'
 import { defineOperation } from '../operation.js'
-import { downloadOne } from './downloader.js'
-import { AsyncQueue, runPool } from './queue.js'
+import { runDownloadBatch } from './batch.js'
 import { defaultSources } from './sources.js'
-import type { DownloadOutcome, DownloadTask, InstallResult, Mirror } from './types.js'
+import type { DownloadTask, InstallResult, Mirror } from './types.js'
 
 export interface InstallOptions {
   readonly plan: RepairPlan
@@ -38,8 +35,7 @@ export function createInstaller(opts: InstallOptions): Operation<InstallResult> 
   const concurrency = opts.concurrency ?? 4
 
   return defineOperation<InstallResult>('install', async function* (signal) {
-    const total = tasks.length
-    if (total === 0) {
+    if (tasks.length === 0) {
       yield Op.log('info', 'install.nothing_to_do')
       yield Op.result({
         downloaded: [],
@@ -51,50 +47,33 @@ export function createInstaller(opts: InstallOptions): Operation<InstallResult> 
       return
     }
 
-    // 并发 worker 不能从 Promise 回调里 yield，所以推队列、外层拉。
-    const queue = new AsyncQueue<OpEvent<never>>()
-    const outcomes: DownloadOutcome[] = []
-    const failures: { fileName: string; error: string }[] = []
-    let finished = 0
+    // 下载池、逐文件事件与进度都交给 batch；这里只把汇总映射成 install 的结果。
+    // 以前 install 自己复制了一份池骨架，只因为旧汇总不带逐文件结果。
+    const summary = yield* runDownloadBatch({
+      tasks,
+      sources,
+      concurrency,
+      signal,
+      codes: {
+        ok: 'download.ok',
+        cached: 'download.cached',
+        failed: 'download.failed',
+        progressId: 'install',
+      },
+    })
 
-    const runner = runPool(tasks, concurrency, async (task) => {
-      if (signal.aborted) return
-      try {
-        const outcome = await downloadOne(task, sources, signal)
-        outcomes.push(outcome)
-        queue.push(
-          Op.log('info', outcome.skipped ? 'download.cached' : 'download.ok', {
-            file: outcome.fileName,
-            bytes: outcome.bytes,
-            source: outcome.source,
-          }),
-        )
-      } catch (err) {
-        const message = errMessage(err)
-        failures.push({ fileName: task.fileName, error: message })
-        queue.push(Op.log('error', 'download.failed', { file: task.fileName, error: message }))
-      } finally {
-        finished += 1
-        queue.push(Op.progress('install', finished, total, task.fileName))
-      }
-    }).finally(() => queue.close())
-
-    for await (const ev of queue.drain()) yield ev
-    await runner
-
-    const totalBytes = outcomes.reduce((sum, o) => sum + o.bytes, 0)
-
-    if (failures.length > 0) {
+    if (summary.failed.length > 0) {
       yield Op.log('error', 'install.partial', {
-        ok: outcomes.length,
-        failed: failures.length,
+        ok: summary.outcomes.length,
+        failed: summary.failed.length,
       })
     }
 
     yield Op.result({
-      downloaded: outcomes,
-      failed: failures,
-      totalBytes,
+      downloaded: summary.outcomes,
+      failed: summary.failed,
+      // 缓存命中的文件也占磁盘，仍计入总量（与重构前一致）
+      totalBytes: summary.outcomes.reduce((sum, o) => sum + o.bytes, 0),
       installedDir: opts.modsDir,
     })
     yield Op.done()

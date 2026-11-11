@@ -1,8 +1,9 @@
 import { runHint } from '../../core/hints.js'
-import { createFabricSetup } from '../../core/setup/fabric.js'
+import { createLoaderInstall } from '../../core/setup/loader.js'
 import type { CommandContext } from '../commands.js'
 import { defineCommand } from '../commands.js'
 import { CHINA, INSTANCE, ROOT } from '../common-flags.js'
+import { downloadRenderer } from '../render/download.js'
 import { positional } from '../shared.js'
 import { C, consume, say } from '../ui.js'
 
@@ -35,7 +36,8 @@ export async function runFabric(ctx: CommandContext): Promise<number> {
   say(`  ${C.dim}root${C.reset}  ${layout.root}\n`)
   say(`  ${C.dim}游戏版本${C.reset}  ${gameVersion}\n\n`)
 
-  const op = createFabricSetup({
+  const op = createLoaderInstall({
+    kind: 'fabric',
     layout,
     gameVersion,
     ...(loader === undefined ? {} : { loaderVersion: loader }),
@@ -44,16 +46,20 @@ export async function runFabric(ctx: CommandContext): Promise<number> {
     mirror: china,
   })
 
+  const downloads = downloadRenderer(
+    { ok: 'fabric.ok', cached: 'fabric.cached', failed: 'fabric.failed' },
+    { label: '下载' },
+  )
+
   return consume(
     op,
     {
-      progress: (ev) => {
-        process.stderr.write(
-          `\r${C.dim}下载 ${ev.done}/${ev.total}  ${ev.label}${C.reset}          `,
-        )
-        if (ev.done === ev.total) process.stderr.write('\r')
-      },
+      progress: downloads.progress,
       log: (ev) => {
+        if (ev.code === 'fabric.ok' || ev.code === 'fabric.cached' || ev.code === 'fabric.failed') {
+          downloads.log(ev)
+          return
+        }
         if (ev.code === 'fabric.legacy') {
           process.stderr.write(
             `${C.yellow}!${C.reset} ${gameVersion} 没有官方 Fabric，改用 Legacy Fabric\n`,
@@ -62,12 +68,6 @@ export async function runFabric(ctx: CommandContext): Promise<number> {
           process.stderr.write(`${C.dim}· 原生库 ${ev.data.extracted} 个${C.reset}\n`)
         } else if (ev.code === 'fabric.profile') {
           process.stderr.write(`${C.dim}· profile ${ev.data.id}${C.reset}\n`)
-        } else if (ev.code === 'fabric.ok') {
-          process.stderr.write(
-            `\r${C.green}↓${C.reset} ${ev.data.file}  ${C.dim}${ev.data.source}${C.reset}\n`,
-          )
-        } else if (ev.code === 'fabric.failed') {
-          process.stderr.write(`\r${C.red}✗${C.reset} ${ev.data.file}  ${ev.data.error}\n`)
         } else if (ev.code === 'fabric.no_hash') {
           process.stderr.write(
             `${C.yellow}!${C.reset} ${ev.data.count} 个库拿不到 sha1，跳过不下载：${ev.data.libs.join(', ')}\n`,
@@ -77,11 +77,12 @@ export async function runFabric(ctx: CommandContext): Promise<number> {
       exitCode: (r) => (r.failed.length > 0 ? 2 : 0),
       result: (r) => {
         say('\n')
-        say(
-          `  ${C.green}完成${C.reset} loader ${r.loaderVersion} · ${r.libraries} 个库 · ` +
-            `下载 ${r.downloaded} · 跳过 ${r.skipped} · 失败 ${r.failed.length}` +
-            `${r.nativesExtracted > 0 ? ` · 原生库 ${r.nativesExtracted} 个` : ''}\n`,
-        )
+        const stats =
+          r.detail.kind === 'profile'
+            ? ` · ${r.detail.libraries} 个库 · 下载 ${r.detail.downloaded} · 跳过 ${r.detail.skipped} · 失败 ${r.failed.length}` +
+              `${r.detail.nativesExtracted > 0 ? ` · 原生库 ${r.detail.nativesExtracted} 个` : ''}`
+            : ''
+        say(`  ${C.green}完成${C.reset} loader ${r.loaderVersion}${stats}\n`)
         say(`  ${C.dim}版本 JSON${C.reset}  ${r.versionJsonPath}\n`)
         say(
           `\n  ${C.bold}启动${C.reset}  ${runHint(r.versionId, layout.root, layout.instanceId)}\n\n`,

@@ -8,14 +8,15 @@
 | 要改什么 | 必须一起改的地方 |
 |---|---|
 | 新增/修改 CLI 命令 | `src/cli/commands/<name>.ts`（`defineCommand` + handler）、`src/cli/common-flags.ts`（共享 flag）、`src/cli/index.ts` 的 `COMMANDS` 汇总、`src/cli/commands.ts`（flag/usage 类型）、`README.md` 命令表（`src/cli/readme.test.ts` 会校验） |
-| 新增 CLI 渲染/共享辅助 | 多命令共用的渲染放 `src/cli/render/`；参数解析、Java/账号选择放 `src/cli/shared.ts`；不要反向 import `src/cli/index.ts` |
+| 新增 CLI 渲染/共享辅助 | 多命令共用的渲染放 `src/cli/render/`（下载类事件走 `render/download.ts`，不要各写进度与 ↓/=/✗）；参数解析、Java/账号选择放 `src/cli/shared.ts`；不要反向 import `src/cli/index.ts` |
 | 新增事件码 | `src/core/events.ts` 的 `LogCode` 与 `LogPayloads`；消费者按 `ev.code` 收窄。新增码后 typecheck 会指出所有需要处理的 switch |
 | 新增 Finding | `src/core/preflight/types.ts` 的 `FINDING_CODES`、`docs/finding-codes.md`（`codes.test.ts` 双向校验）、产生它的 checker |
-| 新增加载器 | `src/core/sources/<loader>.ts`、`src/core/setup/<loader>.ts`、`src/core/deploy.ts` 的 `SUPPORTED_LOADERS` 与 loader 分派、CLI 命令、`src/index.ts` 公共导出 |
+| 新增加载器 | `src/core/sources/<loader>.ts`、`src/core/setup/<loader>.ts`（adapter，返回 `LoaderInstallResult`）、`src/core/setup/loader.ts` 的 `LOADERS` 表、profile 型加载器复用 `src/core/setup/profile.ts`、CLI 命令、`src/index.ts` 公共导出 |
 | 实例状态 / lock | `src/core/instance/lock.ts`（schema、读写、verify）、`update.ts`、`loader-update.ts`；schema 变更先改 ADR-0041 |
 | 实例配置 | `src/core/instance/config.ts`、`src/cli/index.ts` 的 `config` 命令、`run`/`launch`/`deploy` 的读取点 |
 | 诊断输入 | `src/core/diagnostics/index.ts`；格式解析放 `crash.ts` / `hs-err.ts` / `crash-report.ts`，证据发现放 `artifacts.ts` |
-| 预检规则 | `src/core/preflight/`：`check.ts`（Java/内存）、`local.ts`（本地依赖/重复/加载器/breaks）、`assets.ts`、`report.ts`（verdict 只在这） |
+| 预检规则 | `src/core/preflight/`：`check.ts`（Java/内存）、`local.ts`（本地依赖/重复/加载器/breaks）、`assets.ts`、`report.ts`（checker 集合、stats 与 verdict 只在这） |
+| 实例身份 | `src/core/instance/identity.ts`（`mmc-pack.json` 的读写、Loader↔uid 表）、`scan.ts` 的读取点、`setup/*` 的写入点 |
 | 新增 E2E | `scripts/e2e.ts` + `docs/testing/real-tests.md`（`scripts/real-tests.test.ts` 校验集合一致） |
 | 新增公共 API | `src/index.ts` + `scripts/entry-smoke.mjs` 的必需导出列表；`npm run build && npm run smoke:entry` |
 
@@ -25,7 +26,12 @@
   （`src/core/architecture.test.ts`）。
 - **core 不直接输出**：不能 `console.*`、`process.stdout/stderr`；所有状态变化先成为
   `OpEvent`（同上测试 + Biome `noConsole`）。
-- **verdict 只有一份实现**：`src/core/preflight/report.ts`；deploy 自检也调它，不要手抄。
+- **加载器分派只有一处**：`src/core/setup/loader.ts` 的 `LOADERS` 表；deploy 与 CLI
+  都走 `createLoaderInstall`，`loaderNeedsJava` 也从这张表派生。不要在消费方再写
+  `kind === 'forge' || …`。
+- **报告装配只有一处**：`src/core/preflight/report.ts` 的 `preflightFrom`——checker 集合、
+  `stats` 与 `verdict` 都只在这。目录预检、包预检、deploy 自检都从这里出结论；
+  不要按来源各挑一遍 checker。
 - **事件码成对**：`LogCode` 与 `LogPayloads` 必须同时登记；`Finding.code` 用联合类型，
   新增码必须进 `FINDING_CODES` 与文档。
 - **lock 是磁盘事实**：`<实例>/.blockpilot/lock.json`；`verify` 只信 lock 与磁盘，不联网。

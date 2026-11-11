@@ -1,8 +1,9 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import type { Instance, LoaderKind, ModRef } from '../instance.js'
+import type { Instance, LoaderRef, ModRef } from '../instance.js'
 import { isCorruptZip, readModMetadata } from '../modmeta/read.js'
 import type { ModMetadata } from '../modmeta/types.js'
+import { readInstanceIdentity } from './identity.js'
 
 export interface ScannedMod {
   readonly fileName: string
@@ -19,20 +20,14 @@ export interface ScanResult {
 }
 
 export interface ScanOptions {
-  /** 目录里没有版本信息时的兜底 */
-  readonly fallbackGameVersion: string
-  readonly fallbackLoader: { readonly kind: LoaderKind; readonly version: string }
-}
-
-interface MmcPack {
-  readonly components?: ReadonlyArray<{ readonly uid?: string; readonly version?: string }>
-}
-
-const MMC_LOADER_UID: Readonly<Record<string, LoaderKind>> = {
-  'net.fabricmc.fabric-loader': 'fabric',
-  'org.quiltmc.quilt-loader': 'quilt',
-  'net.minecraftforge': 'forge',
-  'net.neoforged': 'neoforge',
+  /**
+   * 目录里没有身份标记时的兜底。
+   *
+   * 可选：调用方通常不该先知道要扫描出来的身份——`readInstanceIdentity` 会读
+   * `mmc-pack.json`；只有 deploy 这种「刚按包写进去」的场景才需要兜底。
+   */
+  readonly fallbackGameVersion?: string
+  readonly fallbackLoader?: LoaderRef
 }
 
 /** 支持 MultiMC / Prism 实例目录、裸 .minecraft、以及任何带 mods/ 的目录。 */
@@ -43,39 +38,17 @@ function findModsDir(dir: string): string | null {
   return null
 }
 
-function readVersionFromMmcPack(dir: string): {
-  gameVersion?: string
-  loader?: { kind: LoaderKind; version: string }
-} {
-  const file = join(dir, 'mmc-pack.json')
-  if (!existsSync(file)) return {}
-  try {
-    const pack = JSON.parse(readFileSync(file, 'utf8')) as MmcPack
-    const components = pack.components ?? []
-    const mc = components.find((c) => c.uid === 'net.minecraft')
-    const loaderComp = components.find((c) => c.uid !== undefined && c.uid in MMC_LOADER_UID)
-    const kind = loaderComp?.uid === undefined ? undefined : MMC_LOADER_UID[loaderComp.uid]
-    return {
-      ...(mc?.version === undefined ? {} : { gameVersion: mc.version }),
-      ...(kind === undefined
-        ? {}
-        : { loader: { kind, version: loaderComp?.version ?? 'unknown' } }),
-    }
-  } catch {
-    return {}
-  }
-}
-
 /** 1.12.2 及更早的 Forge 用 mcmod.info，1.13+ 用 mods.toml。 */
 function isLegacyMinecraft(gameVersion: string): boolean {
   const m = /^1\.(\d+)/.exec(gameVersion)
   return m !== null && Number(m[1]) <= 12
 }
 
-export function scanInstanceDir(dir: string, opts: ScanOptions): ScanResult {
-  const fromPack = readVersionFromMmcPack(dir)
-  const gameVersion = fromPack.gameVersion ?? opts.fallbackGameVersion
-  const loader = fromPack.loader ?? opts.fallbackLoader
+export function scanInstanceDir(dir: string, opts: ScanOptions = {}): ScanResult {
+  const identity = readInstanceIdentity(dir)
+  const gameVersion = identity.gameVersion ?? opts.fallbackGameVersion ?? 'unknown'
+  const loader = identity.loader ??
+    opts.fallbackLoader ?? { kind: 'vanilla' as const, version: 'unknown' }
   const legacy = isLegacyMinecraft(gameVersion)
 
   const modsDir = findModsDir(dir)

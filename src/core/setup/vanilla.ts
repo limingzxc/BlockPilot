@@ -5,7 +5,7 @@ import { runDownloadBatch } from '../download/batch.js'
 import { defaultSources } from '../download/sources.js'
 import type { DownloadTask, Mirror } from '../download/types.js'
 import { Op } from '../events.js'
-import { writeInstanceMarker } from '../instance/marker.js'
+import { writeInstanceIdentity } from '../instance/identity.js'
 import { pickLibraries } from '../launch/command.js'
 import { detectEnv, type LaunchEnv, type OsArch } from '../launch/env.js'
 import type { Layout } from '../layout.js'
@@ -332,7 +332,7 @@ export function createVanillaSetup(opts: VanillaSetupOptions): Operation<Vanilla
 
     // 让 `preflight <实例目录>` 知道这是哪个游戏版本。只有 Prism 的实例有这份文件，
     // 自己装的反而查不出 MC 版本，说不通。
-    const markerPath = writeInstanceMarker(opts.layout.gameDir, { gameVersion: version.id })
+    const markerPath = writeInstanceIdentity(opts.layout.gameDir, { gameVersion: version.id })
     yield Op.log('info', 'setup.marker', { path: markerPath })
 
     yield Op.result({

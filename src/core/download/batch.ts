@@ -14,7 +14,7 @@ import type { LogCode, OpEvent } from '../events.js'
 import { Op } from '../events.js'
 import { downloadOne } from './downloader.js'
 import { AsyncQueue, runPool } from './queue.js'
-import type { DownloadTask, Mirror } from './types.js'
+import type { DownloadOutcome, DownloadTask, Mirror } from './types.js'
 
 export interface BatchCodes {
   readonly ok: LogCode
@@ -29,6 +29,13 @@ export interface BatchSummary {
   readonly skipped: number
   readonly bytes: number
   readonly failed: readonly { readonly fileName: string; readonly error: string }[]
+  /**
+   * 每个成功/命中的文件的结果，含缓存来源与体积。
+   *
+   * 汇总如果只给计数，需要逐文件结果的调用方（install）就只能自己再实现一遍
+   * 下载池——以前正是这样。让汇总携带 outcomes，池骨架才真正只有一个。
+   */
+  readonly outcomes: readonly DownloadOutcome[]
 }
 
 export interface BatchOptions {
@@ -52,6 +59,7 @@ export async function* runDownloadBatch(
 ): AsyncGenerator<OpEvent<never>, BatchSummary> {
   const queue = new AsyncQueue<OpEvent<never>>()
   const failed: { fileName: string; error: string }[] = []
+  const outcomes: DownloadOutcome[] = []
   let done = 0
   let downloaded = 0
   let skipped = 0
@@ -62,6 +70,7 @@ export async function* runDownloadBatch(
     if (opts.signal.aborted) return
     try {
       const outcome = await downloadOne(task, opts.sources, opts.signal)
+      outcomes.push(outcome)
       if (outcome.skipped) skipped += 1
       else {
         downloaded += 1
@@ -71,6 +80,7 @@ export async function* runDownloadBatch(
         queue.push(
           Op.log('info', outcome.skipped ? opts.codes.cached : opts.codes.ok, {
             file: task.fileName,
+            bytes: outcome.bytes,
             source: outcome.source,
           }),
         )
@@ -91,5 +101,5 @@ export async function* runDownloadBatch(
   for await (const ev of queue.drain()) yield ev
   await runner
 
-  return { downloaded, skipped, bytes, failed }
+  return { downloaded, skipped, bytes, failed, outcomes }
 }

@@ -13,6 +13,7 @@ import { javaProxyArgs } from '../proxy.js'
 import { fetchMavenSha1 } from '../sources/fabric.js'
 import type { InstallerKind } from '../sources/forge.js'
 import { installerSpec, recommendedForge, recommendedNeoForge } from '../sources/forge.js'
+import type { LoaderInstallResult } from './loader.js'
 
 export interface ForgeSetupOptions {
   readonly layout: Layout
@@ -33,6 +34,16 @@ export interface ForgeSetupResult {
   readonly forgeVersion: string
   readonly installerRan: boolean
   readonly versionJsonPath: string
+}
+
+function installerResult(r: ForgeSetupResult): LoaderInstallResult {
+  return {
+    versionId: r.versionId,
+    loaderVersion: r.forgeVersion,
+    versionJsonPath: r.versionJsonPath,
+    failed: [],
+    detail: { kind: 'installer', installerRan: r.installerRan },
+  }
 }
 
 const INSTALLER_TIMEOUT_MS = 15 * 60 * 1000
@@ -152,8 +163,8 @@ function runInstaller(
   })
 }
 
-export function createForgeSetup(opts: ForgeSetupOptions): Operation<ForgeSetupResult> {
-  return defineOperation<ForgeSetupResult>('forge-setup', async function* (signal) {
+export function createForgeSetup(opts: ForgeSetupOptions): Operation<LoaderInstallResult> {
+  return defineOperation<LoaderInstallResult>('forge-setup', async function* (signal) {
     const kind: InstallerKind = opts.kind ?? 'forge'
     let forgeVersion = opts.forgeVersion
     if (forgeVersion === undefined) {
@@ -189,7 +200,14 @@ export function createForgeSetup(opts: ForgeSetupOptions): Operation<ForgeSetupR
     // 已经装过就直接返回，installer 很慢且会重写文件
     if (existsSync(jsonPath)) {
       yield Op.log('info', 'forge.already_installed', { versionId })
-      yield Op.result({ versionId, forgeVersion, installerRan: false, versionJsonPath: jsonPath })
+      yield Op.result(
+        installerResult({
+          versionId,
+          forgeVersion,
+          installerRan: false,
+          versionJsonPath: jsonPath,
+        }),
+      )
       yield Op.done()
       return
     }
@@ -287,7 +305,14 @@ export function createForgeSetup(opts: ForgeSetupOptions): Operation<ForgeSetupR
     }
 
     yield Op.log('info', 'forge.installed', { versionId })
-    yield Op.result({ versionId, forgeVersion, installerRan: true, versionJsonPath: jsonPath })
+    yield Op.result(
+      installerResult({
+        versionId,
+        forgeVersion,
+        installerRan: true,
+        versionJsonPath: jsonPath,
+      }),
+    )
     yield Op.done()
   })
 }

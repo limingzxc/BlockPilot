@@ -8,8 +8,8 @@ import { errMessage } from './errors.js'
 import type { OpEvent } from './events.js'
 import { Op } from './events.js'
 import { NetworkError } from './http.js'
+import { writeInstanceIdentity } from './instance/identity.js'
 import { buildLock, readLock, toLockedFile, writeLock } from './instance/lock.js'
-import { writeInstanceMarker } from './instance/marker.js'
 import { scanInstanceDir } from './instance/scan.js'
 import type { HostProfile, LoaderKind } from './instance.js'
 import type { Layout } from './layout.js'
@@ -20,20 +20,13 @@ import { readPackFile } from './preflight/read-pack.js'
 import type { ReportStats } from './preflight/report.js'
 import { preflightDir } from './preflight/report.js'
 import type { Finding, Verdict } from './preflight/types.js'
-import { createFabricSetup } from './setup/fabric.js'
-import { createForgeSetup } from './setup/forge.js'
+import { createLoaderInstall, loaderNeedsJava, SUPPORTED_LOADERS } from './setup/loader.js'
 import { buildCurseforgeTasks, buildPackTasks, extractOverrides } from './setup/pack.js'
-import { createQuiltSetup } from './setup/quilt.js'
 import { createVanillaSetup } from './setup/vanilla.js'
 import { readAssetIndexId, readJavaMajor } from './version/java-major.js'
 
-/** deploy 能装的加载器。Quilt 与 Fabric 共用 profile 流程（ADR-0040 后续）。 */
-export const SUPPORTED_LOADERS: ReadonlySet<LoaderKind> = new Set([
-  'fabric',
-  'quilt',
-  'forge',
-  'neoforge',
-])
+/** deploy 能装的加载器。名单由 `setup/loader.ts` 的分派表派生。 */
+export { SUPPORTED_LOADERS }
 
 export interface DeployOptions {
   readonly packPath: string
@@ -276,7 +269,7 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
      * 这个判断必须在原版下载之前：否则一个缺 java 的 Forge 包会先白下一轮
      * 90 MB 的原版文件，再报「需要 java」。
      */
-    const needsJava = instance.loader.kind === 'forge' || instance.loader.kind === 'neoforge'
+    const needsJava = loaderNeedsJava(instance.loader.kind)
     if (needsJava && opts.java === undefined) {
       yield Op.failed(
         'NEED_JAVA',
@@ -294,32 +287,17 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
     const loaderStep =
       deps.loader ??
       ((o: LoaderStepOptions) =>
-        o.kind === 'fabric'
-          ? createFabricSetup({
-              layout: o.layout,
-              gameVersion: o.gameVersion,
-              loaderVersion: o.loaderVersion,
-              sources: o.sources,
-              concurrency: o.concurrency,
-              ...(o.mirror === undefined ? {} : { mirror: o.mirror }),
-            })
-          : o.kind === 'quilt'
-            ? createQuiltSetup({
-                layout: o.layout,
-                gameVersion: o.gameVersion,
-                loaderVersion: o.loaderVersion,
-                sources: o.sources,
-                concurrency: o.concurrency,
-              })
-            : createForgeSetup({
-                layout: o.layout,
-                gameVersion: o.gameVersion,
-                kind: o.kind === 'neoforge' ? 'neoforge' : 'forge',
-                forgeVersion: o.loaderVersion,
-                java: o.java ?? '',
-                ...(o.proxy === undefined ? {} : { proxy: o.proxy }),
-                sources: o.sources,
-              }))
+        createLoaderInstall({
+          kind: o.kind,
+          layout: o.layout,
+          gameVersion: o.gameVersion,
+          loaderVersion: o.loaderVersion,
+          ...(o.java === undefined ? {} : { java: o.java }),
+          ...(o.proxy === undefined ? {} : { proxy: o.proxy }),
+          ...(o.mirror === undefined ? {} : { mirror: o.mirror }),
+          sources: o.sources,
+          concurrency: o.concurrency,
+        }))
 
     // ---- 1. 原版：client jar + libraries + assetIndex + natives ----
     yield Op.log('info', 'deploy.step', { step: 'vanilla' })
@@ -428,7 +406,7 @@ export function createDeploy(opts: DeployOptions): Operation<DeployResult> {
     yield Op.log('info', 'deploy.step', { step: 'check' })
     // 先写版本标记，再自检：这样自检走的是「和用户 preflight 完全一样」的路径，
     // 而不是靠 fallback 参数凑出来的版本号
-    writeInstanceMarker(opts.layout.gameDir, {
+    writeInstanceIdentity(opts.layout.gameDir, {
       gameVersion: instance.gameVersion,
       loader: { kind: instance.loader.kind, version: instance.loader.version },
     })

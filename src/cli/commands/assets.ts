@@ -2,6 +2,7 @@ import { createAssetsSetup } from '../../core/setup/assets.js'
 import type { CommandContext } from '../commands.js'
 import { defineCommand } from '../commands.js'
 import { CHINA, ROOT } from '../common-flags.js'
+import { downloadRenderer } from '../render/download.js'
 import { parseConcurrencyArg, positional } from '../shared.js'
 import { C, consume, humanBytes, say } from '../ui.js'
 
@@ -41,20 +42,25 @@ export async function runAssets(ctx: CommandContext): Promise<number> {
     ...(concurrency === undefined ? {} : { concurrency }),
   })
 
+  const downloads = downloadRenderer(
+    { ok: 'assets.ok', cached: 'assets.cached', failed: 'assets.failed' },
+    // 3000+ 个哈希文件名显示出来只是噪音；逐条成功/缓存本来就是关掉的
+    { label: '下载', quiet: true, showFileName: false },
+  )
+
   return consume(
     op,
     {
-      progress: (ev) => {
-        process.stderr.write(`\r${C.dim}下载 ${ev.done}/${ev.total}${C.reset}                    `)
-        if (ev.done === ev.total) process.stderr.write('\r')
-      },
+      progress: downloads.progress,
       log: (ev) => {
+        if (ev.code === 'assets.ok' || ev.code === 'assets.cached' || ev.code === 'assets.failed') {
+          downloads.log(ev)
+          return
+        }
         if (ev.code === 'assets.tasks') {
           process.stderr.write(
             `${C.dim}· index 里 ${ev.data.keys} 个 key，去重后 ${ev.data.unique} 个对象 · ${humanBytes(ev.data.totalBytes)}${C.reset}\n`,
           )
-        } else if (ev.code === 'assets.failed') {
-          process.stderr.write(`\r${C.red}✗${C.reset} ${ev.data.file}  ${ev.data.error}\n`)
         }
       },
       exitCode: (r) => (r.failed.length > 0 ? 2 : 0),

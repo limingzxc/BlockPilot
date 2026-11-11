@@ -5,6 +5,7 @@ import type { CommandContext } from '../commands.js'
 import { defineCommand } from '../commands.js'
 import { CHINA, INSTANCE, ROOT } from '../common-flags.js'
 import { assetsIncompleteHint } from '../render/assets.js'
+import { downloadRenderer } from '../render/download.js'
 import { positional } from '../shared.js'
 import { C, consume, humanBytes, say } from '../ui.js'
 
@@ -44,25 +45,21 @@ export async function runSetup(ctx: CommandContext): Promise<number> {
     mirror: china,
   })
 
+  const downloads = downloadRenderer(
+    { ok: 'setup.ok', cached: 'setup.cached', failed: 'setup.failed' },
+    { label: '下载' },
+  )
+
   return consume(
     op,
     {
-      progress: (ev) => {
-        process.stderr.write(
-          `\r${C.dim}下载 ${ev.done}/${ev.total}  ${ev.label}${C.reset}          `,
-        )
-        if (ev.done === ev.total) process.stderr.write('\r')
-      },
+      progress: downloads.progress,
       log: (ev) => {
-        if (ev.code === 'setup.ok') {
-          process.stderr.write(
-            `\r${C.green}↓${C.reset} ${ev.data.file}  ${C.dim}${ev.data.source}${C.reset}\n`,
-          )
-        } else if (ev.code === 'setup.cached') {
-          process.stderr.write(`\r${C.cyan}=${C.reset} ${ev.data.file}\n`)
-        } else if (ev.code === 'setup.failed') {
-          process.stderr.write(`\r${C.red}✗${C.reset} ${ev.data.file}  ${ev.data.error}\n`)
-        } else if (ev.code === 'setup.tasks') {
+        if (ev.code === 'setup.ok' || ev.code === 'setup.cached' || ev.code === 'setup.failed') {
+          downloads.log(ev)
+          return
+        }
+        if (ev.code === 'setup.tasks') {
           process.stderr.write(
             `${C.dim}· ${ev.data.tasks} 个文件 · ${humanBytes(ev.data.totalBytes)}${C.reset}\n`,
           )

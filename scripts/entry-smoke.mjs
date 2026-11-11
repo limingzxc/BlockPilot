@@ -11,7 +11,7 @@ const REQUIRED = {
   createVerify: 'function',
   checkUpdates: 'function',
   updateLoader: 'function',
-  createQuiltSetup: 'function',
+  createLoaderInstall: 'function',
   createCredentialStore: 'function',
   resolveLayout: 'function',
   Op: 'object',

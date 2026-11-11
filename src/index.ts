@@ -39,7 +39,8 @@ export type { PreflightOptions } from './core/preflight/index.js'
 export { createPreflight } from './core/preflight/index.js'
 export type { Finding, FindingCode, PreflightReport, Severity } from './core/preflight/types.js'
 export type { Probe } from './core/probe.js'
-export { createQuiltSetup } from './core/setup/quilt.js'
+export type { LoaderInstallOptions, LoaderInstallResult } from './core/setup/loader.js'
+export { createLoaderInstall, loaderNeedsJava, SUPPORTED_LOADERS } from './core/setup/loader.js'
 export type { ContentSource, VersionInfo } from './core/sources.js'
 export {
   CurseforgeSource,

@@ -150,8 +150,8 @@ export interface LogPayloads {
     readonly unique: number
     readonly totalBytes: number
   }
-  'assets.ok': { readonly file: string; readonly source: string }
-  'assets.cached': { readonly file: string; readonly source: string }
+  'assets.ok': { readonly file: string; readonly bytes: number; readonly source: string }
+  'assets.cached': { readonly file: string; readonly bytes: number; readonly source: string }
   'assets.failed': { readonly file: string; readonly error: string }
 
   'cf.resolved': {
@@ -183,8 +183,8 @@ export interface LogPayloads {
   }
   'deploy.overrides_skipped': { readonly count: number }
   'deploy.overrides_failed': { readonly message: string }
-  'deploy.ok': { readonly file: string; readonly source: string }
-  'deploy.cached': { readonly file: string; readonly source: string }
+  'deploy.ok': { readonly file: string; readonly bytes: number; readonly source: string }
+  'deploy.cached': { readonly file: string; readonly bytes: number; readonly source: string }
   'deploy.failed': { readonly file: string; readonly error: string }
   'deploy.lock': { readonly path: string; readonly files: number }
   'deploy.lock_failed': { readonly message: string }
@@ -224,8 +224,8 @@ export interface LogPayloads {
   'fabric.version_json': { readonly path: string }
   'fabric.marker': { readonly path: string }
   'fabric.natives': { readonly extracted: number }
-  'fabric.ok': { readonly file: string; readonly source: string }
-  'fabric.cached': { readonly file: string; readonly source: string }
+  'fabric.ok': { readonly file: string; readonly bytes: number; readonly source: string }
+  'fabric.cached': { readonly file: string; readonly bytes: number; readonly source: string }
   'fabric.failed': { readonly file: string; readonly error: string }
 
   'quilt.loader': { readonly gameVersion: string; readonly loaderVersion: string }
@@ -234,8 +234,8 @@ export interface LogPayloads {
   'quilt.version_json': { readonly path: string }
   'quilt.marker': { readonly path: string }
   'quilt.natives': { readonly extracted: number }
-  'quilt.ok': { readonly file: string; readonly source: string }
-  'quilt.cached': { readonly file: string; readonly source: string }
+  'quilt.ok': { readonly file: string; readonly bytes: number; readonly source: string }
+  'quilt.cached': { readonly file: string; readonly bytes: number; readonly source: string }
   'quilt.failed': { readonly file: string; readonly error: string }
 
   'forge.already_installed': { readonly versionId: string }
@@ -334,8 +334,8 @@ export interface LogPayloads {
   'setup.version_json': { readonly path: string }
   'setup.natives': { readonly extracted: number }
   'setup.marker': { readonly path: string }
-  'setup.ok': { readonly file: string; readonly source: string }
-  'setup.cached': { readonly file: string; readonly source: string }
+  'setup.ok': { readonly file: string; readonly bytes: number; readonly source: string }
+  'setup.cached': { readonly file: string; readonly bytes: number; readonly source: string }
   'setup.failed': { readonly file: string; readonly error: string }
 
   'verify.start': { readonly files: number; readonly complete: boolean }

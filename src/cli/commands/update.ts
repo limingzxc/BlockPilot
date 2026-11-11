@@ -1,15 +1,9 @@
-import { Op } from '../../core/events.js'
 import { readConfig } from '../../core/instance/config.js'
-import type { LoaderSetupOutcome } from '../../core/instance/loader-update.js'
 import { updateLoader } from '../../core/instance/loader-update.js'
 import { readLock } from '../../core/instance/lock.js'
 import type { UpdateCheckResult } from '../../core/instance/update.js'
 import { checkUpdates } from '../../core/instance/update.js'
-import type { Operation } from '../../core/operation.js'
-import { createFabricSetup } from '../../core/setup/fabric.js'
-import { createForgeSetup } from '../../core/setup/forge.js'
-import { createQuiltSetup } from '../../core/setup/quilt.js'
-import { recommendedNeoForge } from '../../core/sources/forge.js'
+import { createLoaderInstall, loaderNeedsJava } from '../../core/setup/loader.js'
 import { resolveCurseforge } from '../../sources/curseforge.js'
 import { MODRINTH_API_MCIM, ModrinthSource } from '../../sources/modrinth.js'
 import type { CommandContext } from '../commands.js'
@@ -75,32 +69,6 @@ export function renderUpdate(r: UpdateCheckResult, gameDir: string): string {
   return lines.join('\n')
 }
 
-/** 把各 setup 的结果统一成 updateLoader 需要的形状。 */
-function asLoaderSetup<T extends { readonly versionId: string; readonly versionJsonPath?: string }>(
-  op: Operation<T>,
-  versionOf: (value: T) => string,
-): Operation<LoaderSetupOutcome> {
-  return {
-    id: op.id,
-    run: async function* (signal) {
-      for await (const ev of op.run(signal)) {
-        if (ev.type === 'result') {
-          const value = ev.value
-          yield Op.result({
-            versionId: value.versionId,
-            loaderVersion: versionOf(value),
-            ...(value.versionJsonPath === undefined
-              ? {}
-              : { versionJsonPath: value.versionJsonPath }),
-          })
-        } else {
-          yield ev
-        }
-      }
-    },
-  }
-}
-
 export async function runLoaderUpdate(ctx: CommandContext): Promise<number> {
   const layout = ctx.layout
   const asJson = ctx.has('--json')
@@ -114,83 +82,27 @@ export async function runLoaderUpdate(ctx: CommandContext): Promise<number> {
   }
 
   const { kind, version } = lock.target.loader
-  let setup: Operation<LoaderSetupOutcome>
-  if (kind === 'fabric') {
-    setup = asLoaderSetup(
-      createFabricSetup({
+  // 只有 installer 型加载器要 Java；Deploy 也要在下载原版前回答同一个问题
+  const needsJava = loaderNeedsJava(kind)
+  const javaPath = needsJava
+    ? await pickJavaOrReport(
+        lock.target.gameVersion,
         layout,
-        gameVersion: lock.target.gameVersion,
-        sources: ctx.sources,
-        mirror: ctx.china,
-      }),
-      (r) => r.loaderVersion,
-    )
-  } else if (kind === 'quilt') {
-    setup = asLoaderSetup(
-      createQuiltSetup({
-        layout,
-        gameVersion: lock.target.gameVersion,
-        sources: ctx.sources,
-      }),
-      (r) => r.loaderVersion,
-    )
-  } else if (kind === 'forge') {
-    const config = readConfig(layout.gameDir)
-    const javaPath = await pickJavaOrReport(
-      lock.target.gameVersion,
-      layout,
-      ctx.signal,
-      ctx.value('--java') ?? config.javaPath,
-    )
-    if (javaPath === undefined) return 1
-    setup = asLoaderSetup(
-      createForgeSetup({
-        layout,
-        gameVersion: lock.target.gameVersion,
-        kind: 'forge',
-        java: javaPath,
-        sources: ctx.sources,
-        ...(ctx.proxy === undefined ? {} : { proxy: ctx.proxy }),
-      }),
-      (r) => r.forgeVersion,
-    )
-  } else if (kind === 'neoforge') {
-    const probe = await recommendedNeoForge(lock.target.gameVersion, ctx.signal)
-    if (probe.status === 'unreachable') {
-      process.stderr.write(`${C.red}查 NeoForge 版本失败${C.reset}: ${probe.detail}\n`)
-      return 1
-    }
-    if (probe.status === 'absent') {
-      process.stderr.write(
-        `${C.red}NeoForge 没有 ${lock.target.gameVersion} 的构建${C.reset}\n` +
-          `${C.dim}用 neoforge ${lock.target.gameVersion} --loader <ver> 显式指定${C.reset}\n`,
+        ctx.signal,
+        ctx.value('--java') ?? readConfig(layout.gameDir).javaPath,
       )
-      return 1
-    }
-    const config = readConfig(layout.gameDir)
-    const javaPath = await pickJavaOrReport(
-      lock.target.gameVersion,
-      layout,
-      ctx.signal,
-      ctx.value('--java') ?? config.javaPath,
-    )
-    if (javaPath === undefined) return 1
-    setup = asLoaderSetup(
-      createForgeSetup({
-        layout,
-        gameVersion: lock.target.gameVersion,
-        kind: 'neoforge',
-        forgeVersion: probe.value,
-        java: javaPath,
-        sources: ctx.sources,
-        ...(ctx.proxy === undefined ? {} : { proxy: ctx.proxy }),
-      }),
-      (r) => r.forgeVersion,
-    )
-  } else {
-    process.stderr.write(`${C.red}未知加载器${C.reset}: ${kind}\n`)
-    return 1
-  }
+    : undefined
+  if (needsJava && javaPath === undefined) return 1
+
+  const setup = createLoaderInstall({
+    kind,
+    layout,
+    gameVersion: lock.target.gameVersion,
+    ...(javaPath === undefined ? {} : { java: javaPath }),
+    ...(ctx.proxy === undefined ? {} : { proxy: ctx.proxy }),
+    mirror: ctx.china,
+    sources: ctx.sources,
+  })
 
   say('\n')
   say(`  ${C.dim}加载器${C.reset}  ${kind} ${version}\n\n`)

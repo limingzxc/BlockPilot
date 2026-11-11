@@ -1,10 +1,11 @@
 import { runHint } from '../../core/hints.js'
 import { readConfig } from '../../core/instance/config.js'
-import { createForgeSetup } from '../../core/setup/forge.js'
+import { createLoaderInstall } from '../../core/setup/loader.js'
 import { createVanillaSetup } from '../../core/setup/vanilla.js'
 import type { CommandContext } from '../commands.js'
 import { defineCommand } from '../commands.js'
 import { CHINA, INSTANCE, ROOT } from '../common-flags.js'
+import { downloadRenderer } from '../render/download.js'
 import { pickJavaOrReport, positional } from '../shared.js'
 import { C, consume, say } from '../ui.js'
 
@@ -60,6 +61,11 @@ export async function runForge(ctx: CommandContext, kind: 'forge' | 'neoforge'):
   say(`  ${C.dim}游戏版本${C.reset}  ${gameVersion} + ${kind}\n\n`)
 
   // ---- 1. 原版：client jar / libraries / natives ----
+  const vanillaDownloads = downloadRenderer(
+    { ok: 'setup.ok', cached: 'setup.cached', failed: 'setup.failed' },
+    // 原版文件几百个，逐条成功会刷屏；失败要逐条说清楚
+    { label: '原版', quiet: true },
+  )
   const vanillaCode = await consume(
     createVanillaSetup({
       layout,
@@ -68,15 +74,8 @@ export async function runForge(ctx: CommandContext, kind: 'forge' | 'neoforge'):
       mirror: china,
     }),
     {
-      progress: (ev) => {
-        process.stderr.write(`\r${C.dim}原版 ${ev.done}/${ev.total}${C.reset}          `)
-        if (ev.done === ev.total) process.stderr.write('\r')
-      },
-      log: (ev) => {
-        if (ev.code === 'setup.failed') {
-          process.stderr.write(`\r${C.red}✗${C.reset} ${ev.data.file}  ${ev.data.error}\n`)
-        }
-      },
+      progress: vanillaDownloads.progress,
+      log: vanillaDownloads.log,
       // installer 是下一步；exit 留给它
       exitEvent: false,
       exitCode: (r) => (r.failed.length > 0 ? 2 : 0),
@@ -100,12 +99,12 @@ export async function runForge(ctx: CommandContext, kind: 'forge' | 'neoforge'):
   )
   if (javaPath === undefined) return 1
 
-  const op = createForgeSetup({
+  const op = createLoaderInstall({
+    kind,
     layout,
     gameVersion,
-    kind,
     java: javaPath,
-    ...(loader === undefined ? {} : { forgeVersion: loader }),
+    ...(loader === undefined ? {} : { loaderVersion: loader }),
     ...(ctx.proxy === undefined ? {} : { proxy: ctx.proxy }),
     sources: ctx.sources,
   })
@@ -121,11 +120,14 @@ export async function runForge(ctx: CommandContext, kind: 'forge' | 'neoforge'):
       },
       exitCode: () => 0,
       result: (r) => {
+        const via =
+          r.detail.kind === 'installer'
+            ? r.detail.installerRan
+              ? '已跑官方 installer'
+              : '复用已有安装'
+            : ''
         say('\n')
-        say(
-          `  ${C.green}完成${C.reset} ${kind} ${r.forgeVersion} · ` +
-            `${r.installerRan ? '已跑官方 installer' : '复用已有安装'}\n`,
-        )
+        say(`  ${C.green}完成${C.reset} ${kind} ${r.loaderVersion} · ${via}\n`)
         say(`  ${C.dim}版本 JSON${C.reset}  ${r.versionJsonPath}\n`)
         say(
           `\n  ${C.bold}启动${C.reset}  ${runHint(r.versionId, layout.root, layout.instanceId)}\n\n`,

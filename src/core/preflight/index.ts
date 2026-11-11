@@ -9,19 +9,17 @@ import { errMessage } from '../errors.js'
 import { Op } from '../events.js'
 import { NetworkError } from '../http.js'
 import { scanInstanceDir } from '../instance/scan.js'
-import type { HostProfile, LoaderKind } from '../instance.js'
+import type { HostProfile } from '../instance.js'
 import type { Operation } from '../operation.js'
 import { defineOperation } from '../operation.js'
 import type { ContentSource, DependencyResolver, ProjectNamer, VersionInfo } from '../sources.js'
 import { readJavaMajor } from '../version/java-major.js'
 import { findVersionJson } from './assets.js'
 import { cfDependencyFindings } from './cf-deps.js'
-import { checkInstance, checkJava } from './check.js'
 import type { CurseforgeManifest } from './curseforge.js'
 import type { PackFileRead } from './read-pack.js'
 import { readPackFile } from './read-pack.js'
-import type { ReportStats } from './report.js'
-import { assembleReport, preflightDir } from './report.js'
+import { preflightDir, preflightFrom } from './report.js'
 import type { Finding, PreflightReport } from './types.js'
 
 export interface PreflightOptions {
@@ -37,11 +35,6 @@ export interface PreflightOptions {
   readonly host?: HostProfile
   /** 版本 JSON 的 Java 需求；缺省按 gameVersion 查表 */
   readonly javaMajor?: number
-  /** 扫描目录时，目录内没有版本信息则用这个兜底 */
-  readonly fallback?: {
-    readonly gameVersion: string
-    readonly loader: { readonly kind: LoaderKind; readonly version: string }
-  }
 }
 
 export function createPreflight(opts: PreflightOptions): Operation<PreflightReport> {
@@ -61,10 +54,7 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
      * 两边不可能再给出不同结论。
      */
     if (isDir) {
-      const scan = scanInstanceDir(opts.target, {
-        fallbackGameVersion: opts.fallback?.gameVersion ?? 'unknown',
-        fallbackLoader: opts.fallback?.loader ?? { kind: 'vanilla', version: 'unknown' },
-      })
+      const scan = scanInstanceDir(opts.target)
       yield Op.log('info', 'instance.scanned', {
         dir: opts.target,
         gameVersion: scan.instance.gameVersion,
@@ -98,7 +88,7 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
     /**
      * ---- 整合包：包里没有 jar，只有清单 ----
      *
-     * 下面两个分支的区别只在「元数据从哪来」，装配是同一份。
+     * 下面两个分支的区别只在「元数据从哪来」，装配都由 `preflightFrom` 负责。
      */
     let pack: PackFileRead
     yield Op.log('info', 'modpack.reading', { path: opts.target })
@@ -146,13 +136,8 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
     }
 
     let plan: RepairPlan = EMPTY_PLAN
-    // 三条链路的缺省值相同：清单里的每一项都还没校验过
-    let stats: ReportStats = { mods: instance.mods.length, resolved: 0, unresolved: 0 }
-
-    // Java 与在线/离线无关。包里没有 jar，所以没有模组自己声明的 Java 范围可用
-    if (opts.host !== undefined) {
-      findings.push(...checkJava(instance, opts.host))
-    }
+    /** 解析到的版本元数据。undefined = 这一层没做成，报告里全部算没校验过 */
+    let versions: ReadonlyMap<string, VersionInfo> | undefined
 
     if (cfGated) {
       /**
@@ -190,10 +175,10 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
 
       if (signal.aborted) return
 
-      const versions = [...infos.values()].map(cfFileToVersionInfo)
-      if (versions.length === 0) {
+      const resolved = [...infos.values()].map(cfFileToVersionInfo)
+      if (resolved.length === 0) {
         // 一个都没解析出来（没 key 且镜像不可用、或清单为空）：保持原来的诚实说法。
-        // stats 保持缺省——全部 unresolved，verdict 落到 unknown
+        // versions 保持 undefined——全部算没校验过，verdict 落到 unknown
         findings.push({
           severity: 'warning',
           code: 'CF_NO_MOD_CHECK',
@@ -203,15 +188,8 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
             'BLOCKPILOT_CF_API_KEY 后重试。Java 与加载器版本仍然可参考',
         })
       } else {
-        const map = new Map(versions.map((v) => [v.versionId, v]))
-        findings.push(...checkInstance({ instance, versions: map }))
-        findings.push(...cfDependencyFindings(instance, versions))
-        // 没解析到的文件是「校验不了」，不是「有问题」——数字上要分开
-        stats = {
-          mods: instance.mods.length,
-          resolved: map.size,
-          unresolved: instance.mods.length - map.size,
-        }
+        findings.push(...cfDependencyFindings(instance, resolved))
+        versions = new Map(resolved.map((v) => [v.versionId, v]))
       }
     } else {
       // ---- 在线模式：有 projectId，可以查元数据和递归闭包 ----
@@ -221,9 +199,9 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
       const ids = [...new Set(withVersion)]
 
       yield Op.progress('metadata.fetch', 0, ids.length, '拉取模组元数据')
-      let versions: readonly VersionInfo[]
+      let rows: readonly VersionInfo[]
       try {
-        versions = ids.length === 0 ? [] : await opts.source.getVersions(ids, signal)
+        rows = ids.length === 0 ? [] : await opts.source.getVersions(ids, signal)
       } catch (err) {
         // 断网不是「这些模组没有元数据」。分开报，用户才知道该修网络还是修包。
         if (err instanceof NetworkError) {
@@ -240,10 +218,8 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
 
       if (signal.aborted) return
 
-      const map = new Map(versions.map((v) => [v.versionId, v]))
-      const knownVersions = [...map.values()]
-
-      findings.push(...checkInstance({ instance, versions: map }))
+      versions = new Map(rows.map((v) => [v.versionId, v]))
+      const knownVersions = [...rows]
 
       const resolveFn = opts.source.resolve
       let closure: ClosureResult | null = null
@@ -319,21 +295,16 @@ export function createPreflight(opts: PreflightOptions): Operation<PreflightRepo
               verified: false,
               ...(nameOf === undefined ? {} : { nameOf }),
             })
-      // map 里没有的，就是没查到的——本地文件和坏 id 都在里面，不要重复计。
-      stats = {
-        mods: instance.mods.length,
-        resolved: map.size,
-        unresolved: instance.mods.length - map.size,
-      }
     }
 
     if (signal.aborted) return
 
     yield Op.result(
-      assembleReport({
-        findings,
-        stats,
-        target: { gameVersion: instance.gameVersion, loader: instance.loader },
+      preflightFrom({
+        instance,
+        ...(opts.host === undefined ? {} : { host: opts.host }),
+        ...(versions === undefined ? {} : { versions }),
+        extraFindings: findings,
         plan,
       }),
     )

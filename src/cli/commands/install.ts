@@ -7,6 +7,7 @@ import { MODRINTH_API_MCIM, ModrinthSource } from '../../sources/modrinth.js'
 import type { CommandContext } from '../commands.js'
 import { defineCommand } from '../commands.js'
 import { CHINA } from '../common-flags.js'
+import { downloadRenderer } from '../render/download.js'
 import { renderHuman } from '../render/preflight.js'
 import { positional } from '../shared.js'
 import { C, consume, consumeValue, humanBytes, say } from '../ui.js'
@@ -97,28 +98,16 @@ export async function runInstall(ctx: CommandContext): Promise<number> {
     sources: ctx.sources,
   })
 
+  const downloads = downloadRenderer(
+    { ok: 'download.ok', cached: 'download.cached', failed: 'download.failed' },
+    { label: '下载' },
+  )
+
   const installCode = await consume(
     installer,
     {
-      progress: (ev) => {
-        process.stderr.write(`\r${C.dim}下载 ${ev.done}/${ev.total}  ${ev.label}${C.reset}      `)
-        if (ev.done === ev.total) process.stderr.write('\r')
-      },
-      log: (ev) => {
-        if (ev.code === 'download.ok') {
-          process.stderr.write(
-            `\r${C.green}↓${C.reset} ${ev.data.file}  ${C.dim}${humanBytes(ev.data.bytes)} · ${ev.data.source}${C.reset}\n`,
-          )
-        } else if (ev.code === 'download.cached') {
-          process.stderr.write(
-            `\r${C.cyan}=${C.reset} ${ev.data.file}  ${C.dim}已存在且校验通过${C.reset}\n`,
-          )
-        } else if (ev.code === 'download.failed') {
-          process.stderr.write(
-            `\r${C.red}✗${C.reset} ${ev.data.file}  ${C.dim}${ev.data.error}${C.reset}\n`,
-          )
-        }
-      },
+      progress: downloads.progress,
+      log: downloads.log,
       exitCode: (result) => (result.failed.length > 0 ? 2 : 0),
       result: (result) => {
         say('\n')

@@ -2,25 +2,19 @@
  * 安装 Quilt loader。
  *
  * 与 Fabric 的流程几乎一样（profile JSON + maven 库 + 可选原生库），差别只有
- * 元数据地址与 loader 版本选择。所以这里复用 `buildFabricTasks`——它只依赖
- * profile 的 `libraries` 形状，不关心是 Fabric 还是 Quilt。
+ * 元数据地址与 loader 版本选择。所以这里只做 Quilt 特有的三段探测，
+ * 安装流程交给 `profile.ts`——它同时服务 Fabric。
  */
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
-
-import { runDownloadBatch } from '../download/batch.js'
 import { defaultSources } from '../download/sources.js'
 import type { Mirror } from '../download/types.js'
 import { Op } from '../events.js'
-import { writeInstanceMarker } from '../instance/marker.js'
-import { detectEnv } from '../launch/env.js'
 import type { Layout } from '../layout.js'
 import type { Operation } from '../operation.js'
 import { defineOperation } from '../operation.js'
 import { fetchQuiltProfile, listQuiltLoaders, pickQuiltLoaderVersion } from '../sources/quilt.js'
-import type { FabricSetupResult } from './fabric.js'
-import { buildFabricTasks } from './fabric.js'
-import { extractNativeJars } from './vanilla.js'
+import type { LoaderInstallResult } from './loader.js'
+import type { ProfileEventCodes } from './profile.js'
+import { installProfileLoader } from './profile.js'
 
 export interface QuiltSetupOptions {
   readonly layout: Layout
@@ -31,10 +25,19 @@ export interface QuiltSetupOptions {
   readonly concurrency?: number
 }
 
-export type QuiltSetupResult = FabricSetupResult
+const QUILT_EVENT_CODES: ProfileEventCodes = {
+  noHash: 'quilt.no_hash',
+  versionJson: 'quilt.version_json',
+  marker: 'quilt.marker',
+  natives: 'quilt.natives',
+  ok: 'quilt.ok',
+  cached: 'quilt.cached',
+  failed: 'quilt.failed',
+  progressId: 'quilt',
+}
 
-export function createQuiltSetup(opts: QuiltSetupOptions): Operation<QuiltSetupResult> {
-  return defineOperation<QuiltSetupResult>('quilt-setup', async function* (signal) {
+export function createQuiltSetup(opts: QuiltSetupOptions): Operation<LoaderInstallResult> {
+  return defineOperation<LoaderInstallResult>('quilt-setup', async function* (signal) {
     let loaderVersion = opts.loaderVersion
     if (loaderVersion === undefined) {
       const probe = await listQuiltLoaders(opts.gameVersion, signal)
@@ -85,83 +88,22 @@ export function createQuiltSetup(opts: QuiltSetupOptions): Operation<QuiltSetupR
     const profile = profileProbe.value
     yield Op.log('info', 'quilt.profile', { id: profile.id, libraries: profile.libraries.length })
 
-    const sources = opts.sources ?? defaultSources()
-    const env = detectEnv()
-    const { tasks, noHash, unreachable, nativeJars } = await buildFabricTasks(
-      profile,
-      opts.layout,
-      signal,
-      sources,
-      env,
-    )
-    if (unreachable.length > 0) {
-      yield Op.failed(
-        'NETWORK_ERROR',
-        `取不到 ${unreachable.length} 个库的 sha1（第一个：${unreachable[0] ?? ''}）`,
-        '检查网络；国内可加 --china 走镜像，或用 --proxy 指定代理',
-      )
-      return
-    }
-    if (noHash.length > 0) {
-      yield Op.log('warn', 'quilt.no_hash', { count: noHash.length, libs: noHash.slice(0, 5) })
-    }
-
-    const jsonPath = opts.layout.versionJson(profile.id)
-    mkdirSync(dirname(jsonPath), { recursive: true })
-    writeFileSync(jsonPath, JSON.stringify(profile, null, 2))
-    yield Op.log('info', 'quilt.version_json', { path: jsonPath })
-
-    const markerPath = writeInstanceMarker(opts.layout.gameDir, {
-      gameVersion: opts.gameVersion,
-      loader: { kind: 'quilt', version: loaderVersion },
-    })
-    yield Op.log('info', 'quilt.marker', { path: markerPath })
-
-    const concurrency = opts.concurrency ?? 4
-    const {
-      downloaded,
-      skipped,
-      failed: batchFailed,
-    } = yield* runDownloadBatch({
-      tasks,
-      sources,
-      concurrency,
-      signal,
-      codes: {
-        ok: 'quilt.ok',
-        cached: 'quilt.cached',
-        failed: 'quilt.failed',
-        progressId: 'quilt',
+    const result = yield* installProfileLoader(
+      {
+        kind: 'quilt',
+        layout: opts.layout,
+        gameVersion: opts.gameVersion,
+        loaderVersion,
+        profile,
+        sources: opts.sources ?? defaultSources(),
+        concurrency: opts.concurrency ?? 4,
+        codes: QUILT_EVENT_CODES,
       },
-    })
+      signal,
+    )
+    if (result === undefined) return
 
-    const failed = [
-      ...batchFailed,
-      ...noHash.map((name) => ({
-        fileName: name,
-        error: '拿不到 sha1，按 ADR-0005 不下载（换网络或去掉 --china 重试）',
-      })),
-    ]
-
-    let nativesExtracted = 0
-    if (nativeJars.length > 0) {
-      nativesExtracted = extractNativeJars(nativeJars, opts.layout.nativesDir(opts.gameVersion), {
-        arch: env.arch,
-      })
-      yield Op.log('info', 'quilt.natives', { extracted: nativesExtracted })
-    }
-
-    yield Op.result({
-      versionId: profile.id,
-      loaderVersion,
-      libraries: profile.libraries.length,
-      nativesExtracted,
-      downloaded,
-      skipped,
-      failed,
-      noHash,
-      versionJsonPath: jsonPath,
-    })
+    yield Op.result(result)
     yield Op.done()
   })
 }

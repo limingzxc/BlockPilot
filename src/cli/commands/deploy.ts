@@ -5,16 +5,19 @@ import { downloadOne } from '../../core/download/downloader.js'
 import { runHint } from '../../core/hints.js'
 import { detectHost } from '../../core/host.js'
 import { readConfig } from '../../core/instance/config.js'
+import type { LoaderKind } from '../../core/instance.js'
 import type { Layout } from '../../core/layout.js'
 import type { PackFileRead } from '../../core/preflight/read-pack.js'
 import { readPackFile } from '../../core/preflight/read-pack.js'
 import { safeJoin } from '../../core/safe-path.js'
+import { loaderNeedsJava } from '../../core/setup/loader.js'
 import type { VersionInfo } from '../../core/sources.js'
 import { resolveCurseforge } from '../../sources/curseforge.js'
 import { MODRINTH_API_MCIM, ModrinthSource } from '../../sources/modrinth.js'
 import type { CommandContext } from '../commands.js'
 import { defineCommand } from '../commands.js'
 import { CHINA, INSTANCE, ROOT } from '../common-flags.js'
+import { downloadRenderer } from '../render/download.js'
 import { SEVERITY_MARK, VERDICT_TEXT } from '../render/preflight.js'
 import { pickJavaOrReport, positional } from '../shared.js'
 import { C, consume, say } from '../ui.js'
@@ -143,7 +146,7 @@ export async function runDeploy(ctx: CommandContext): Promise<number> {
   // 机器上只有 Java 8 时也会被当成可用，Forge installer 随后炸得莫名其妙。
   let pack: PackFileRead | undefined
   let packGameVersion: string | undefined
-  let packLoaderKind: string | undefined
+  let packLoaderKind: LoaderKind | undefined
   try {
     pack = readPackFile(packPath)
     packGameVersion = pack.instance.gameVersion
@@ -152,7 +155,7 @@ export async function runDeploy(ctx: CommandContext): Promise<number> {
     // 包本身读不出来由 createDeploy 报 BAD_MODPACK，这里不抢它的活
   }
   // 只有 Forge / NeoForge 要 java；对 Quilt 说「没找到可用的 Java」会让人以为装不了
-  const needsJava = packLoaderKind === 'forge' || packLoaderKind === 'neoforge'
+  const needsJava = packLoaderKind !== undefined && loaderNeedsJava(packLoaderKind)
   const config = readConfig(layout.gameDir)
   const javaPath = needsJava
     ? await pickJavaOrReport(
@@ -182,14 +185,21 @@ export async function runDeploy(ctx: CommandContext): Promise<number> {
     curseforge: resolveCurseforge(ctx.has('--no-cf-mirror') ? { allowMirror: false } : {}),
   })
 
+  const downloads = downloadRenderer({
+    ok: 'deploy.ok',
+    cached: 'deploy.cached',
+    failed: 'deploy.failed',
+  })
+
   return consume(
     op,
     {
-      progress: (ev) => {
-        process.stderr.write(`\r${C.dim}${ev.done}/${ev.total}  ${ev.label}${C.reset}          `)
-        if (ev.done === ev.total) process.stderr.write('\r')
-      },
+      progress: downloads.progress,
       log: (ev) => {
+        if (ev.code === 'deploy.ok' || ev.code === 'deploy.cached' || ev.code === 'deploy.failed') {
+          downloads.log(ev)
+          return
+        }
         if (ev.code === 'deploy.pack') {
           process.stderr.write(`${C.bold}${ev.data.name}${C.reset}\n`)
         } else if (ev.code === 'deploy.step') {
@@ -201,12 +211,6 @@ export async function runDeploy(ctx: CommandContext): Promise<number> {
             check: '部署后检查',
           }
           process.stderr.write(`${C.cyan}→${C.reset} ${label[ev.data.step]}\n`)
-        } else if (ev.code === 'deploy.ok') {
-          process.stderr.write(
-            `  ${C.green}↓${C.reset} ${ev.data.file}  ${C.dim}${ev.data.source}${C.reset}\n`,
-          )
-        } else if (ev.code === 'deploy.failed') {
-          process.stderr.write(`  ${C.red}✗${C.reset} ${ev.data.file}  ${ev.data.error}\n`)
         } else if (ev.code === 'deploy.cf_source') {
           process.stderr.write(`${C.dim}· CurseForge 解析源：${ev.data.source}${C.reset}\n`)
         } else if (ev.code === 'deploy.pack_changed') {
