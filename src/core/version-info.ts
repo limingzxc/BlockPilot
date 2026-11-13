@@ -8,4 +8,4 @@
  * 发版流程：`npm version <x.y.z>` 会改 `package.json` 与 lock，然后改这里的
  * `VERSION`（测试会提醒），再打 tag。
  */
-export const VERSION = '0.1.0'
+export const VERSION = '0.2.0'
