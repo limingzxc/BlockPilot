@@ -3,10 +3,12 @@ import { dirname, join } from 'node:path'
 import { findCrashArtifacts } from '../../core/diagnostics/artifacts.js'
 import type { DiagResult } from '../../core/diagnostics/index.js'
 import { createDiagnose } from '../../core/diagnostics/index.js'
-import type { CommandContext } from '../commands.js'
-import { defineCommand } from '../commands.js'
-import { INSTANCE, ROOT } from '../common-flags.js'
-import { C, consume, say } from '../ui.js'
+import { INSTANCE, ROOT } from '../command/common-flags.js'
+import type { CommandContext } from '../command/context.js'
+import { defineCommand } from '../command/define.js'
+import { consume } from '../consume/index.js'
+import { C } from '../output/ansi.js'
+import { say } from '../output/stream.js'
 
 export const cmdDiag = defineCommand({
   name: 'diag',

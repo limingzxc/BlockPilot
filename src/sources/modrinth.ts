@@ -1,4 +1,3 @@
-import { fetchJson, NetworkError } from '../core/http.js'
 import type {
   ContentSource,
   DependencyKind,
@@ -6,7 +5,8 @@ import type {
   DepFilter,
   ProjectNamer,
   VersionInfo,
-} from '../core/sources.js'
+} from '../core/content-source.js'
+import { fetchJson, NetworkError } from '../core/http.js'
 import { USER_AGENT } from '../core/user-agent.js'
 
 export const MODRINTH_API = 'https://api.modrinth.com/v2'

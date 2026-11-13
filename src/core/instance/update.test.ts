@@ -3,9 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-
-import { collect } from '../operation.js'
-import type { DependencyResolver, VersionInfo } from '../sources.js'
+import type { DependencyResolver, VersionInfo } from '../content-source.js'
+import { collect } from '../events/operation.js'
 import { buildLock, readLock, writeLock } from './lock.js'
 import { checkUpdates } from './update.js'
 

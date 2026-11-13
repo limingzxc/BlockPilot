@@ -7,7 +7,7 @@ import test from 'node:test'
 import { MARKER_FILE } from '../instance/identity.js'
 import { resolveLayout } from '../layout.js'
 import type { FabricProfile } from '../sources/fabric.js'
-import type { LoaderInstallResult } from './loader.js'
+import type { LoaderInstallResult } from './loader-types.js'
 import type { ProfileEventCodes } from './profile.js'
 import { buildProfileTasks, installProfileLoader } from './profile.js'
 

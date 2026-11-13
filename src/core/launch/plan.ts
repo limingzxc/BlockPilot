@@ -1,11 +1,11 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-
+import type { AssetsProbe } from '../assets/index.js'
+import { probeAssetObjects } from '../assets/index.js'
 import type { AuthAccount } from '../auth/types.js'
+import type { LaunchEnv } from '../launch-env.js'
 import type { Layout } from '../layout.js'
 import { redactSecrets } from '../redact.js'
-import type { AssetsProbe } from '../setup/assets.js'
-import { probeAssetObjects } from '../setup/assets.js'
 import type { VersionJson } from '../version/types.js'
 import { VERSION } from '../version-info.js'
 import {
@@ -15,7 +15,6 @@ import {
   substitute,
   usesOwnClasspath,
 } from './command.js'
-import type { LaunchEnv } from './env.js'
 import { offlineUuidHex } from './uuid.js'
 
 export interface LaunchPlanOptions {

@@ -12,12 +12,12 @@
  * - `preflightDir`：一个磁盘上的 Instance → 完整报告。preflight 与 deploy 自检共用。
  */
 
-import type { RepairPlan } from '../deps/plan.js'
+import type { VersionInfo } from '../content-source.js'
 import { EMPTY_PLAN } from '../deps/plan.js'
+import type { RepairPlan } from '../deps/types.js'
 import type { ScannedMod, ScanResult } from '../instance/scan.js'
 import type { HostProfile, Instance } from '../instance.js'
 import { depKey } from '../modmeta/types.js'
-import type { VersionInfo } from '../sources.js'
 import { checkAssets } from './assets.js'
 import type { JavaRequirement } from './check.js'
 import { checkInstance, checkJava, checkMemory } from './check.js'

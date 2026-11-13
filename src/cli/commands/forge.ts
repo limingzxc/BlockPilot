@@ -1,13 +1,17 @@
 import { runHint } from '../../core/hints.js'
-import { readConfig } from '../../core/instance/config.js'
-import { createLoaderInstall } from '../../core/setup/loader.js'
 import { createVanillaSetup } from '../../core/setup/vanilla.js'
-import type { CommandContext } from '../commands.js'
-import { defineCommand } from '../commands.js'
-import { CHINA, INSTANCE, ROOT } from '../common-flags.js'
+import { CHINA, INSTANCE, ROOT } from '../command/common-flags.js'
+import type { CommandContext } from '../command/context.js'
+import { defineCommand } from '../command/define.js'
+import { consume } from '../consume/index.js'
+import { C } from '../output/ansi.js'
+import { say } from '../output/stream.js'
 import { downloadRenderer } from '../render/download.js'
-import { pickJavaOrReport, positional } from '../shared.js'
-import { C, consume, say } from '../ui.js'
+import { renderJavaFailure } from '../render/java.js'
+import { positional } from '../shared/args.js'
+import { instanceConfig } from '../use-cases/instance.js'
+import { pickJava } from '../use-cases/java.js'
+import { installLoader } from '../use-cases/loader.js'
 
 export const cmdForge = defineCommand({
   name: 'forge',
@@ -90,23 +94,25 @@ export async function runForge(ctx: CommandContext, kind: 'forge' | 'neoforge'):
   if (vanillaCode !== 0) return vanillaCode
 
   // ---- 2. installer。它要一个能跑的 JVM，所以原版 JSON 落盘之后再选 Java ----
-  const config = readConfig(layout.gameDir)
-  const javaPath = await pickJavaOrReport(
+  const config = instanceConfig(ctx)
+  const java = await pickJava(
     gameVersion,
     layout,
     ctx.signal,
     ctx.value('--java') ?? config.javaPath,
   )
-  if (javaPath === undefined) return 1
+  if (!java.ok) {
+    renderJavaFailure(java)
+    return 1
+  }
+  const javaPath = java.path
 
-  const op = createLoaderInstall({
+  const op = installLoader(ctx, {
     kind,
-    layout,
     gameVersion,
     java: javaPath,
     ...(loader === undefined ? {} : { loaderVersion: loader }),
     ...(ctx.proxy === undefined ? {} : { proxy: ctx.proxy }),
-    sources: ctx.sources,
   })
 
   return consume(

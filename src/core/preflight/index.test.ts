@@ -5,10 +5,9 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { strToU8, zipSync } from 'fflate'
-
+import type { ContentSource, VersionInfo } from '../content-source.js'
+import { collect } from '../events/operation.js'
 import type { HostProfile } from '../instance.js'
-import { collect } from '../operation.js'
-import type { ContentSource, VersionInfo } from '../sources.js'
 import { createPreflight } from './index.js'
 
 const BASE_INDEX = {

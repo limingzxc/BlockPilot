@@ -7,14 +7,9 @@ import { after, test } from 'node:test'
 import { strToU8, zipSync } from 'fflate'
 import type { CfFileInfo } from '../../sources/curseforge.js'
 import { resolveLayout } from '../layout.js'
-import type { CurseforgeManifest } from '../preflight/curseforge.js'
-import type { MrpackIndex } from '../preflight/mrpack.js'
-import {
-  buildCurseforgeTasks,
-  buildPackTasks,
-  countOverridesMods,
-  extractOverrides,
-} from './pack.js'
+import type { CurseforgeManifest } from '../pack/curseforge.js'
+import type { MrpackIndex } from '../pack/mrpack.js'
+import { buildCurseforgeTasks, buildPackTasks, extractOverrides } from './pack.js'
 
 const dir = mkdtempSync(join(tmpdir(), 'bp-pack-'))
 after(() => rmSync(dir, { recursive: true, force: true }))
@@ -298,7 +293,7 @@ test('CF 包：同名文件不互相覆盖', () => {
   assert.notEqual(tasks[0]?.destPath, tasks[1]?.destPath)
 })
 
-test('overrides/mods 里的 jar 单独计数（issue #13）', async () => {
+test('overrides 解压只收 overrides 与 client-overrides（issue #13）', async () => {
   const zipPath = join(dir, 'overrides-count.zip')
   writeFileSync(
     zipPath,
@@ -312,7 +307,6 @@ test('overrides/mods 里的 jar 单独计数（issue #13）', async () => {
       'other/mods/ignored.jar': strToU8('x'),
     }),
   )
-  assert.equal(countOverridesMods(zipPath), 3)
 
   const layout = resolveLayout(join(dir, 'game-overrides'), 'default')
   const extracted = await extractOverrides(zipPath, layout.gameDir)

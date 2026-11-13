@@ -1,10 +1,13 @@
 import type { InstanceConfig } from '../../core/instance/config.js'
-import { configPath, readConfig, writeConfig } from '../../core/instance/config.js'
-import type { CommandContext } from '../commands.js'
-import { defineCommand } from '../commands.js'
-import { INSTANCE, ROOT } from '../common-flags.js'
-import { parseMemoryArg, UsageError } from '../shared.js'
-import { C, say } from '../ui.js'
+import { configPath, writeConfig } from '../../core/instance/config.js'
+import { INSTANCE, ROOT } from '../command/common-flags.js'
+import type { CommandContext } from '../command/context.js'
+import { defineCommand } from '../command/define.js'
+import { C } from '../output/ansi.js'
+import { say } from '../output/stream.js'
+import { parseMemoryArg } from '../shared/args.js'
+import { UsageError } from '../shared/errors.js'
+import { instanceConfig } from '../use-cases/instance.js'
 
 export const cmdConfig = defineCommand({
   name: 'config',
@@ -49,7 +52,7 @@ export function renderConfig(c: InstanceConfig, gameDir: string): string {
 export async function runConfig(ctx: CommandContext): Promise<number> {
   const layout = ctx.layout
   const asJson = ctx.has('--json')
-  const config = readConfig(layout.gameDir)
+  const config = instanceConfig(ctx)
 
   const memoryArg = ctx.value('--memory')
   const javaArg = ctx.value('--java')

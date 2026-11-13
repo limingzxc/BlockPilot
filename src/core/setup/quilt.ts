@@ -5,14 +5,14 @@
  * 元数据地址与 loader 版本选择。所以这里只做 Quilt 特有的三段探测，
  * 安装流程交给 `profile.ts`——它同时服务 Fabric。
  */
-import { defaultSources } from '../download/sources.js'
+import { defaultSources } from '../download/mirrors.js'
 import type { Mirror } from '../download/types.js'
-import { Op } from '../events.js'
+import { Op } from '../events/index.js'
+import type { Operation } from '../events/operation.js'
+import { defineOperation } from '../events/operation.js'
 import type { Layout } from '../layout.js'
-import type { Operation } from '../operation.js'
-import { defineOperation } from '../operation.js'
 import { fetchQuiltProfile, listQuiltLoaders, pickQuiltLoaderVersion } from '../sources/quilt.js'
-import type { LoaderInstallResult } from './loader.js'
+import type { LoaderInstallResult } from './loader-types.js'
 import type { ProfileEventCodes } from './profile.js'
 import { installProfileLoader } from './profile.js'
 

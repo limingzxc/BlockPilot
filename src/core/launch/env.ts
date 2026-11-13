@@ -1,16 +1,5 @@
+import type { LaunchEnv, OsArch, OsName } from '../launch-env.js'
 import type { Rule } from '../version/types.js'
-
-export type OsName = 'windows' | 'osx' | 'linux'
-export type OsArch = 'x86' | 'x86_64' | 'arm64'
-
-export interface LaunchEnv {
-  readonly os: OsName
-  readonly arch: OsArch
-  /** Windows 的版本号，如 "10.0"；rules 里可能用正则约束 */
-  readonly osVersion?: string
-  /** 给 rules.features 用的开关，默认全 false */
-  readonly features: Readonly<Record<string, boolean>>
-}
 
 export function detectEnv(platform: NodeJS.Platform = process.platform): LaunchEnv {
   const os: OsName = platform === 'win32' ? 'windows' : platform === 'darwin' ? 'osx' : 'linux'

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { collect } from '../operation.js'
+import { collect } from '../events/operation.js'
 import { parseCrashReport } from './crash-report.js'
 import { createDiagnose } from './index.js'
 

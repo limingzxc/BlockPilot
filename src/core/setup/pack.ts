@@ -3,17 +3,17 @@ import {
   createWriteStream,
   existsSync,
   mkdirSync,
-  readFileSync,
   renameSync,
   rmSync,
 } from 'node:fs'
 import { basename, dirname } from 'node:path'
-import { Unzip, UnzipInflate, unzipSync } from 'fflate'
+import { Unzip, UnzipInflate } from 'fflate'
 import type { CfFileInfo } from '../curseforge.js'
+import { isForgeCdnUrl } from '../curseforge.js'
 import type { DownloadTask } from '../download/types.js'
 import type { Layout } from '../layout.js'
-import type { CurseforgeManifest } from '../preflight/curseforge.js'
-import type { MrpackIndex } from '../preflight/mrpack.js'
+import type { CurseforgeManifest } from '../pack/curseforge.js'
+import type { MrpackIndex } from '../pack/mrpack.js'
 import { safeJoin } from '../safe-path.js'
 
 /**
@@ -154,24 +154,6 @@ function hostAllowed(host: string, allowed: ReadonlySet<string>): boolean {
 export interface CurseforgeTaskResult {
   readonly tasks: readonly DownloadTask[]
   readonly unresolved: readonly { readonly fileName: string; readonly error: string }[]
-}
-
-/**
- * CurseForge 官方下载域。
- *
- * 免 key 时 URL 与哈希都来自同一个第三方（MCIM 镜像），哈希不再独立于来源；
- * 这里至少限制「下载请求只能发到 Forge CDN」，不让镜像把用户机器指向任意地址。
- * 信任根写在 ADR-0036。
- */
-const CF_DOWNLOAD_HOST = 'forgecdn.net'
-
-export function isForgeCdnUrl(url: string): boolean {
-  try {
-    const host = new URL(url).hostname.toLowerCase()
-    return host === CF_DOWNLOAD_HOST || host.endsWith(`.${CF_DOWNLOAD_HOST}`)
-  } catch {
-    return false
-  }
 }
 
 export function buildCurseforgeTasks(
@@ -405,31 +387,4 @@ export async function extractOverrides(
   }
 
   return { files: count, mods, skipped }
-}
-
-/**
- * 只数 overrides 里的 jar，不落盘、不解压。
- *
- * 打包者常把不允许第三方分发的模组直接塞进 overrides/mods——这些文件
- * 不需要 API key 就能校验，但以前完全不计入统计，于是「preflight 说 271 个模组」
- * 和日志里的 `Loading 304 mods` 对不上（issue #13）。
- */
-export function countOverridesMods(zipPath: string, data?: Uint8Array): number {
-  let mods = 0
-  try {
-    unzipSync(data ?? readFileSync(zipPath), {
-      filter: (f) => {
-        if (f.name.endsWith('/')) return false
-        if (!f.name.startsWith('overrides/') && !f.name.startsWith('client-overrides/'))
-          return false
-        const rel = f.name.replace(/^client-overrides\//, '').replace(/^overrides\//, '')
-        if (rel.startsWith('mods/') && rel.toLowerCase().endsWith('.jar')) mods += 1
-        // 一律返回 false：只要文件名，不需要解压任何内容
-        return false
-      },
-    })
-  } catch {
-    return 0
-  }
-  return mods
 }

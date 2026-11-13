@@ -15,16 +15,14 @@ import {
   ListToolsRequestSchema,
   type Tool,
 } from '@modelcontextprotocol/sdk/types.js'
+import { createContentSources } from '../assembly.js'
 import type { DiagResult } from '../core/diagnostics/index.js'
-
 import { createDiagnose } from '../core/diagnostics/index.js'
-import { detectHost } from '../core/host.js'
+import { detectHost } from '../core/host/index.js'
 import { createPreflight } from '../core/preflight/index.js'
 import type { PreflightReport } from '../core/preflight/types.js'
 import { applyProxy } from '../core/proxy.js'
 import { VERSION } from '../core/version-info.js'
-import { resolveCurseforge } from '../sources/curseforge.js'
-import { ModrinthSource } from '../sources/modrinth.js'
 
 const PREFLIGHT_TOOL = 'preflight_modpack'
 const DIAG_TOOL = 'diagnose_crash'
@@ -263,11 +261,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra): Promise<
   // 缺省不检测：detectHost 要起若干次 JVM，只读查询不该默认付这个代价。
   const includeHost = request.params.arguments?.includeHost === true
   const host = includeHost ? await detectHost() : undefined
+  const content = createContentSources()
   const op = createPreflight({
     target,
-    source: new ModrinthSource(),
+    source: content.modrinth,
     ...(host === undefined ? {} : { host }),
-    curseforge: resolveCurseforge(),
+    curseforge: content.curseforge,
   })
 
   try {

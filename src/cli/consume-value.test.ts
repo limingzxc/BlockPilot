@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { Op } from '../core/events.js'
-import { defineOperation } from '../core/operation.js'
-import { consumeValue, setEventStream } from './ui.js'
+import { Op } from '../core/events/index.js'
+import { defineOperation } from '../core/events/operation.js'
+import { consumeValue } from './consume/index.js'
+import { setEventStream } from './output/stream.js'
 
 const valueOp = defineOperation<number>('test-value', async function* () {
   yield Op.result(42)

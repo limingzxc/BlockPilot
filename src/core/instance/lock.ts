@@ -24,10 +24,10 @@ import {
 import { dirname, join, relative, sep } from 'node:path'
 import type { DownloadTask } from '../download/types.js'
 import { BlockPilotError } from '../errors.js'
-import { Op } from '../events.js'
+import { Op } from '../events/index.js'
+import type { Operation } from '../events/operation.js'
+import { defineOperation } from '../events/operation.js'
 import type { LoaderRef } from '../instance.js'
-import type { Operation } from '../operation.js'
-import { defineOperation } from '../operation.js'
 import { safeJoin } from '../safe-path.js'
 
 const LOCK_VERSION = 1

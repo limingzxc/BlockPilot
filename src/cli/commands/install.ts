@@ -1,16 +1,17 @@
 import { resolve } from 'node:path'
+import { createContentSources } from '../../assembly.js'
 import { createInstaller } from '../../core/download/index.js'
-import { detectHost } from '../../core/host.js'
+import { detectHost } from '../../core/host/index.js'
 import { createPreflight } from '../../core/preflight/index.js'
-import { resolveCurseforge } from '../../sources/curseforge.js'
-import { MODRINTH_API_MCIM, ModrinthSource } from '../../sources/modrinth.js'
-import type { CommandContext } from '../commands.js'
-import { defineCommand } from '../commands.js'
-import { CHINA } from '../common-flags.js'
+import { CHINA } from '../command/common-flags.js'
+import type { CommandContext } from '../command/context.js'
+import { defineCommand } from '../command/define.js'
+import { consume, consumeValue } from '../consume/index.js'
+import { C, humanBytes } from '../output/ansi.js'
+import { say } from '../output/stream.js'
 import { downloadRenderer } from '../render/download.js'
 import { renderHuman } from '../render/preflight.js'
-import { positional } from '../shared.js'
-import { C, consume, consumeValue, humanBytes, say } from '../ui.js'
+import { positional } from '../shared/args.js'
 
 export const cmdInstall = defineCommand({
   name: 'install',
@@ -40,11 +41,12 @@ export async function runInstall(ctx: CommandContext): Promise<number> {
 
   process.stderr.write(`${C.dim}· preflight${C.reset}\n`)
   const host = ctx.has('--no-host') ? undefined : await detectHost({ root: ctx.root })
+  const content = createContentSources({ china: ctx.china })
   const preflight = createPreflight({
     target,
-    source: new ModrinthSource(ctx.china ? { apiBase: MODRINTH_API_MCIM } : {}),
+    source: content.modrinth,
     ...(host === undefined ? {} : { host }),
-    curseforge: resolveCurseforge(),
+    curseforge: content.curseforge,
   })
   // 还有安装步骤要跑；exit 留给整条命令结束时写
   const { code: preflightCode, value: report } = await consumeValue(

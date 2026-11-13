@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-
+import type { VersionInfo } from '../content-source.js'
 import type { Instance } from '../instance.js'
 import { requiredJavaMajor } from '../java/types.js'
-import type { VersionInfo } from '../sources.js'
 import { checkInstance, checkJava, checkMemory } from './check.js'
 
 function v(

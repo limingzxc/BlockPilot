@@ -1,13 +1,13 @@
-import { detectHost } from '../../core/host.js'
+import { createContentSources } from '../../assembly.js'
+import { detectHost } from '../../core/host/index.js'
 import { createPreflight } from '../../core/preflight/index.js'
-import { resolveCurseforge } from '../../sources/curseforge.js'
-import { MODRINTH_API_MCIM, ModrinthSource } from '../../sources/modrinth.js'
-import type { CommandContext } from '../commands.js'
-import { defineCommand } from '../commands.js'
-import { CHINA } from '../common-flags.js'
+import { CHINA } from '../command/common-flags.js'
+import type { CommandContext } from '../command/context.js'
+import { defineCommand } from '../command/define.js'
+import { consume } from '../consume/index.js'
+import { say } from '../output/stream.js'
 import { renderHuman, verdictExit } from '../render/preflight.js'
-import { positional } from '../shared.js'
-import { consume, say } from '../ui.js'
+import { positional } from '../shared/args.js'
 
 export const cmdPreflight = defineCommand({
   name: 'preflight',
@@ -31,12 +31,16 @@ export async function runPreflight(ctx: CommandContext): Promise<number> {
   }
   const asJson = ctx.has('--json')
   const host = ctx.has('--no-host') ? undefined : await detectHost({ root: ctx.root })
+  const content = createContentSources({
+    china: ctx.china,
+    allowCfMirror: !ctx.has('--no-cf-mirror'),
+  })
   const op = createPreflight({
     target,
-    source: new ModrinthSource(ctx.china ? { apiBase: MODRINTH_API_MCIM } : {}),
+    source: content.modrinth,
     ...(host === undefined ? {} : { host }),
     // core 只认契约，具体走官方还是镜像由消费者注入（ADR-0001 / ADR-0040）
-    curseforge: resolveCurseforge(ctx.has('--no-cf-mirror') ? { allowMirror: false } : {}),
+    curseforge: content.curseforge,
   })
 
   return consume(

@@ -10,8 +10,8 @@
  */
 
 import { errMessage } from '../errors.js'
-import type { LogCode, OpEvent } from '../events.js'
-import { Op } from '../events.js'
+import type { LogCode, OpEvent } from '../events/index.js'
+import { Op } from '../events/index.js'
 import { downloadOne } from './downloader.js'
 import { AsyncQueue, runPool } from './queue.js'
 import type { DownloadOutcome, DownloadTask, Mirror } from './types.js'

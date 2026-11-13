@@ -1,10 +1,10 @@
 import { basename, join } from 'node:path'
-import type { RepairPlan } from '../deps/plan.js'
-import { Op } from '../events.js'
-import type { Operation } from '../operation.js'
-import { defineOperation } from '../operation.js'
+import type { RepairPlan } from '../deps/types.js'
+import { Op } from '../events/index.js'
+import type { Operation } from '../events/operation.js'
+import { defineOperation } from '../events/operation.js'
 import { runDownloadBatch } from './batch.js'
-import { defaultSources } from './sources.js'
+import { defaultSources } from './mirrors.js'
 import type { DownloadTask, InstallResult, Mirror } from './types.js'
 
 export interface InstallOptions {

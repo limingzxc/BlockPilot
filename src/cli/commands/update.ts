@@ -1,16 +1,18 @@
-import { readConfig } from '../../core/instance/config.js'
+import { createContentSources } from '../../assembly.js'
 import { updateLoader } from '../../core/instance/loader-update.js'
 import { readLock } from '../../core/instance/lock.js'
 import type { UpdateCheckResult } from '../../core/instance/update.js'
 import { checkUpdates } from '../../core/instance/update.js'
-import { createLoaderInstall, loaderNeedsJava } from '../../core/setup/loader.js'
-import { resolveCurseforge } from '../../sources/curseforge.js'
-import { MODRINTH_API_MCIM, ModrinthSource } from '../../sources/modrinth.js'
-import type { CommandContext } from '../commands.js'
-import { defineCommand } from '../commands.js'
-import { CHINA, INSTANCE, ROOT } from '../common-flags.js'
-import { pickJavaOrReport } from '../shared.js'
-import { C, consume, say } from '../ui.js'
+import { CHINA, INSTANCE, ROOT } from '../command/common-flags.js'
+import type { CommandContext } from '../command/context.js'
+import { defineCommand } from '../command/define.js'
+import { consume } from '../consume/index.js'
+import { C } from '../output/ansi.js'
+import { say } from '../output/stream.js'
+import { renderJavaFailure } from '../render/java.js'
+import { instanceConfig } from '../use-cases/instance.js'
+import { pickJava } from '../use-cases/java.js'
+import { installLoader, loaderNeedsJava } from '../use-cases/loader.js'
 
 export const cmdUpdate = defineCommand({
   name: 'update',
@@ -84,24 +86,26 @@ export async function runLoaderUpdate(ctx: CommandContext): Promise<number> {
   const { kind, version } = lock.target.loader
   // 只有 installer 型加载器要 Java；Deploy 也要在下载原版前回答同一个问题
   const needsJava = loaderNeedsJava(kind)
-  const javaPath = needsJava
-    ? await pickJavaOrReport(
-        lock.target.gameVersion,
-        layout,
-        ctx.signal,
-        ctx.value('--java') ?? readConfig(layout.gameDir).javaPath,
-      )
-    : undefined
-  if (needsJava && javaPath === undefined) return 1
+  let javaPath: string | undefined
+  if (needsJava) {
+    const java = await pickJava(
+      lock.target.gameVersion,
+      layout,
+      ctx.signal,
+      ctx.value('--java') ?? instanceConfig(ctx).javaPath,
+    )
+    if (!java.ok) {
+      renderJavaFailure(java)
+      return 1
+    }
+    javaPath = java.path
+  }
 
-  const setup = createLoaderInstall({
+  const setup = installLoader(ctx, {
     kind,
-    layout,
     gameVersion: lock.target.gameVersion,
     ...(javaPath === undefined ? {} : { java: javaPath }),
     ...(ctx.proxy === undefined ? {} : { proxy: ctx.proxy }),
-    mirror: ctx.china,
-    sources: ctx.sources,
   })
 
   say('\n')
@@ -135,14 +139,18 @@ export async function runUpdate(ctx: CommandContext): Promise<number> {
   if (ctx.has('--loader')) return runLoaderUpdate(ctx)
   const layout = ctx.layout
   const asJson = ctx.has('--json')
-  const resolver = new ModrinthSource(ctx.china ? { apiBase: MODRINTH_API_MCIM } : {})
+  const content = createContentSources({
+    china: ctx.china,
+    allowCfMirror: !ctx.has('--no-cf-mirror'),
+  })
+  const resolver = content.modrinth
   // ADR-0029：key 只从环境变量 BLOCKPILOT_CF_API_KEY 读，不接受命令行参数（会进 shell history）
   return consume(
     checkUpdates({
       gameDir: layout.gameDir,
       resolver,
       versionSource: resolver,
-      cfResolver: resolveCurseforge(ctx.has('--no-cf-mirror') ? { allowMirror: false } : {}),
+      cfResolver: content.curseforge,
       ...(ctx.has('--apply') ? { apply: true } : {}),
       sources: ctx.sources,
     }),

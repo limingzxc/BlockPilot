@@ -1,8 +1,7 @@
 import { join } from 'node:path'
-
+import type { LaunchEnv } from '../launch-env.js'
 import { mavenCoordToPath } from '../version/maven.js'
 import type { ArgEntry, Library, VersionJson } from '../version/types.js'
-import type { LaunchEnv } from './env.js'
 import { rulesAllow } from './env.js'
 
 const SUBST = /\$\{([a-zA-Z0-9_]+)\}/g

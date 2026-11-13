@@ -9,10 +9,10 @@
  * 这个 module 只负责「跑 setup → 成功才写 lock」。
  */
 
-import type { OpEvent } from '../events.js'
-import { Op } from '../events.js'
-import type { Operation } from '../operation.js'
-import { defineOperation } from '../operation.js'
+import type { OpEvent } from '../events/index.js'
+import { Op } from '../events/index.js'
+import type { Operation } from '../events/operation.js'
+import { defineOperation } from '../events/operation.js'
 import type { LockFile } from './lock.js'
 import { readLock, writeLock } from './lock.js'
 

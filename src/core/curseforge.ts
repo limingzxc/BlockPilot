@@ -10,8 +10,8 @@
  * 由 CLI / MCP 注入。
  */
 
+import type { DependencyRef, VersionInfo } from './content-source.js'
 import { BlockPilotError } from './errors.js'
-import type { DependencyRef, VersionInfo } from './sources.js'
 
 export type CfDependencyRelation = 'required' | 'optional' | 'incompatible' | 'other'
 
@@ -82,6 +82,24 @@ export const unconfiguredCurseforge: CurseforgeLike = {
   configured: false,
   label: '未配置',
   getFiles: () => Promise.resolve(new Map<number, CfFileInfo>()),
+}
+
+/**
+ * CurseForge 官方下载域。
+ *
+ * 免 key 时 URL 与哈希都来自同一个第三方（MCIM 镜像），哈希不再独立于来源；
+ * 这里至少限制「下载请求只能发到 Forge CDN」，不让镜像把用户机器指向任意地址。
+ * 信任根写在 ADR-0036。
+ */
+const CF_DOWNLOAD_HOST = 'forgecdn.net'
+
+export function isForgeCdnUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase()
+    return host === CF_DOWNLOAD_HOST || host.endsWith(`.${CF_DOWNLOAD_HOST}`)
+  } catch {
+    return false
+  }
 }
 
 /** CF 的 gameVersions 把加载器和 MC 版本混在一个数组里，这里只认这几种写法。 */

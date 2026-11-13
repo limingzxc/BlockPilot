@@ -8,8 +8,9 @@
  * 这个 module 只认「成功 / 缓存 / 失败」三个码与一个前缀，命令声明差异，实现只有一份。
  */
 
-import type { OpEvent } from '../../core/events.js'
-import { C, humanBytes, writeProgress } from '../ui.js'
+import type { OpEvent } from '../../core/events/index.js'
+import { C, humanBytes } from '../output/ansi.js'
+import { writeProgress } from '../output/progress.js'
 
 export interface DownloadEventCodes {
   readonly ok: string

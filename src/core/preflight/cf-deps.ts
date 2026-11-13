@@ -1,5 +1,5 @@
+import type { VersionInfo } from '../content-source.js'
 import type { Instance } from '../instance.js'
-import type { VersionInfo } from '../sources.js'
 import type { Finding } from './types.js'
 
 /**

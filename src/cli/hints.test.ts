@@ -18,8 +18,8 @@ import {
   runHint,
   setupHint,
 } from '../core/hints.js'
-import { validateFlags } from './flags.js'
-import { COMMANDS } from './index.js'
+import { validateFlags } from './command/flags.js'
+import { COMMANDS } from './registry.js'
 
 /** 够用的 shell 切分：支持双引号包住含空格的参数。 */
 function splitArgs(command: string): string[] {

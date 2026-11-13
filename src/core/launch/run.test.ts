@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { collect } from '../operation.js'
+import { collect } from '../events/operation.js'
 import type { LaunchPlan } from './plan.js'
 import type { RunResult } from './run.js'
 import { createLauncher } from './run.js'

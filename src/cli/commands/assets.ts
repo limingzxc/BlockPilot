@@ -1,10 +1,12 @@
-import { createAssetsSetup } from '../../core/setup/assets.js'
-import type { CommandContext } from '../commands.js'
-import { defineCommand } from '../commands.js'
-import { CHINA, ROOT } from '../common-flags.js'
+import { createAssetsSetup } from '../../core/assets/index.js'
+import { CHINA, ROOT } from '../command/common-flags.js'
+import type { CommandContext } from '../command/context.js'
+import { defineCommand } from '../command/define.js'
+import { consume } from '../consume/index.js'
+import { C, humanBytes } from '../output/ansi.js'
+import { say } from '../output/stream.js'
 import { downloadRenderer } from '../render/download.js'
-import { parseConcurrencyArg, positional } from '../shared.js'
-import { C, consume, humanBytes, say } from '../ui.js'
+import { parseConcurrencyArg, positional } from '../shared/args.js'
 
 export const cmdAssets = defineCommand({
   name: 'assets',

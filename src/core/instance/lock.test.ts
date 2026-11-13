@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
 import type { DownloadTask } from '../download/types.js'
-import { collect } from '../operation.js'
+import { collect } from '../events/operation.js'
 import type { LockedFile, LockFile } from './lock.js'
 import { buildLock, createVerify, lockPath, readLock, toLockedFile, writeLock } from './lock.js'
 

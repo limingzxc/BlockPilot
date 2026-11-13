@@ -1,13 +1,16 @@
-import { gameVersionOf, probeAssets } from '../../core/preflight/assets.js'
+import { probeAssets } from '../../core/preflight/assets.js'
 import { createVanillaSetup } from '../../core/setup/vanilla.js'
+import { gameVersionOf } from '../../core/version/game-version.js'
 import { readAssetIndexId } from '../../core/version/java-major.js'
-import type { CommandContext } from '../commands.js'
-import { defineCommand } from '../commands.js'
-import { CHINA, INSTANCE, ROOT } from '../common-flags.js'
+import { CHINA, INSTANCE, ROOT } from '../command/common-flags.js'
+import type { CommandContext } from '../command/context.js'
+import { defineCommand } from '../command/define.js'
+import { consume } from '../consume/index.js'
+import { C, humanBytes } from '../output/ansi.js'
+import { say } from '../output/stream.js'
 import { assetsIncompleteHint } from '../render/assets.js'
 import { downloadRenderer } from '../render/download.js'
-import { positional } from '../shared.js'
-import { C, consume, humanBytes, say } from '../ui.js'
+import { positional } from '../shared/args.js'
 
 export const cmdSetup = defineCommand({
   name: 'setup',

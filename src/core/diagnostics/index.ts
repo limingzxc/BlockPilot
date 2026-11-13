@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs'
 
-import { Op } from '../events.js'
-import type { Operation } from '../operation.js'
-import { defineOperation } from '../operation.js'
+import { Op } from '../events/index.js'
+import type { Operation } from '../events/operation.js'
+import { defineOperation } from '../events/operation.js'
 import type { Culprit, ModIndex } from './attribution.js'
 import { attributeCulprits, buildModIndex, EMPTY_INDEX } from './attribution.js'
 import type { CrashKind, CrashSignal } from './crash.js'

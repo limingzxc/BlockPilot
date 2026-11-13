@@ -13,7 +13,7 @@ import test from 'node:test'
 
 import { strToU8, zipSync } from 'fflate'
 
-import { collect } from '../operation.js'
+import { collect } from '../events/operation.js'
 import { createDiagnose } from './index.js'
 
 const LOG = [

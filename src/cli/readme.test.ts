@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { COMMANDS } from './index.js'
+import { COMMANDS } from './registry.js'
 
 const README = fileURLToPath(new URL('../../README.md', import.meta.url))
 

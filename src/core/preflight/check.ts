@@ -1,8 +1,8 @@
+import type { VersionInfo } from '../content-source.js'
 import { javaInstallHint } from '../hints.js'
 import type { HostProfile, Instance, LoaderKind } from '../instance.js'
 import { requiredJavaMajor } from '../java/types.js'
 import { compareVersions, satisfiesRange } from '../semver.js'
-import type { VersionInfo } from '../sources.js'
 import type { Finding } from './types.js'
 
 export interface CheckInput {

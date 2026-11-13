@@ -1,11 +1,13 @@
 import { runHint } from '../../core/hints.js'
-import { createLoaderInstall } from '../../core/setup/loader.js'
-import type { CommandContext } from '../commands.js'
-import { defineCommand } from '../commands.js'
-import { CHINA, INSTANCE, ROOT } from '../common-flags.js'
+import { CHINA, INSTANCE, ROOT } from '../command/common-flags.js'
+import type { CommandContext } from '../command/context.js'
+import { defineCommand } from '../command/define.js'
+import { consume } from '../consume/index.js'
+import { C } from '../output/ansi.js'
+import { say } from '../output/stream.js'
 import { downloadRenderer } from '../render/download.js'
-import { positional } from '../shared.js'
-import { C, consume, say } from '../ui.js'
+import { positional } from '../shared/args.js'
+import { installLoader } from '../use-cases/loader.js'
 
 export const cmdQuilt = defineCommand({
   name: 'quilt',
@@ -34,12 +36,10 @@ export async function runQuilt(ctx: CommandContext): Promise<number> {
   say(`  ${C.dim}root${C.reset}  ${layout.root}\n`)
   say(`  ${C.dim}游戏版本${C.reset}  ${gameVersion}\n\n`)
 
-  const op = createLoaderInstall({
+  const op = installLoader(ctx, {
     kind: 'quilt',
-    layout,
     gameVersion,
     ...(loader === undefined ? {} : { loaderVersion: loader }),
-    sources: ctx.sources,
   })
 
   const downloads = downloadRenderer(

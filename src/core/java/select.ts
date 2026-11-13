@@ -12,7 +12,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 import type { Layout } from '../layout.js'
-import { gameVersionOf } from '../preflight/assets.js'
+import { gameVersionOf } from '../version/game-version.js'
 import { resolveVersion } from '../version/resolve.js'
 import { detectJava } from './detect.js'
 import type { JavaInstall, JavaScanResult } from './types.js'

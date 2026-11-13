@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { Op } from '../core/events.js'
-import { defineOperation } from '../core/operation.js'
-import { consume, emitExit, sanitizeEventValue, setEventStream } from './ui.js'
+import { Op } from '../core/events/index.js'
+import { defineOperation } from '../core/events/operation.js'
+import { consume } from './consume/index.js'
+import { emitExit, sanitizeEventValue, setEventStream } from './output/stream.js'
 
 test('login 的 result 里 accessToken / refreshToken 都被兜底脱敏', () => {
   const clean = sanitizeEventValue({

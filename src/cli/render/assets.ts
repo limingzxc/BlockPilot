@@ -1,7 +1,8 @@
+import type { AssetsProbe } from '../../core/assets/index.js'
 import { assetsHint } from '../../core/hints.js'
-import { assetsRequiredToBoot, gameVersionOf } from '../../core/preflight/assets.js'
-import type { AssetsProbe } from '../../core/setup/assets.js'
-import { C } from '../ui.js'
+import { assetsRequiredToBoot } from '../../core/preflight/assets.js'
+import { gameVersionOf } from '../../core/version/game-version.js'
+import { C } from '../output/ansi.js'
 
 /**
  * assets 没装全的提示。

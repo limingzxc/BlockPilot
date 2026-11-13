@@ -4,12 +4,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { Op } from '../events.js'
+import { Op } from '../events/index.js'
+import type { Operation } from '../events/operation.js'
+import { defineOperation } from '../events/operation.js'
 import { resolveLayout } from '../layout.js'
-import type { Operation } from '../operation.js'
-import { defineOperation } from '../operation.js'
-import type { LoaderInstallOptions, LoaderInstallResult } from './loader.js'
 import { createLoaderInstall, loaderNeedsJava, SUPPORTED_LOADERS } from './loader.js'
+import type { LoaderInstallOptions, LoaderInstallResult } from './loader-types.js'
 
 function fakeResult(kind: 'profile' | 'installer'): LoaderInstallResult {
   return {

@@ -1,8 +1,8 @@
 import { join } from 'node:path'
 
-import { Op } from '../events.js'
-import type { Operation } from '../operation.js'
-import { defineOperation } from '../operation.js'
+import { Op } from '../events/index.js'
+import type { Operation } from '../events/operation.js'
+import { defineOperation } from '../events/operation.js'
 import { detectJava } from './detect.js'
 import type { JavaScanResult } from './types.js'
 

@@ -1,9 +1,10 @@
 import { join } from 'node:path'
 import { listLogs } from '../../core/launch/logfile.js'
-import type { CommandContext } from '../commands.js'
-import { defineCommand } from '../commands.js'
-import { INSTANCE, ROOT } from '../common-flags.js'
-import { C, humanBytes, say } from '../ui.js'
+import { INSTANCE, ROOT } from '../command/common-flags.js'
+import type { CommandContext } from '../command/context.js'
+import { defineCommand } from '../command/define.js'
+import { C, humanBytes } from '../output/ansi.js'
+import { say } from '../output/stream.js'
 
 export const cmdLogs = defineCommand({
   name: 'logs',

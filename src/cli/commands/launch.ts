@@ -1,18 +1,18 @@
-import { readConfig } from '../../core/instance/config.js'
 import { createLaunchPlan } from '../../core/launch/index.js'
 import type { LaunchPlan } from '../../core/launch/plan.js'
 import { redactSecrets } from '../../core/redact.js'
-import type { CommandContext } from '../commands.js'
-import { defineCommand } from '../commands.js'
-import { CHINA, INSTANCE, ROOT } from '../common-flags.js'
-import {
-  parseMemoryArg,
-  pickJavaOrReport,
-  positional,
-  resolveAuth,
-  warnOfflineUsername,
-} from '../shared.js'
-import { C, consume, say } from '../ui.js'
+import { CHINA, INSTANCE, ROOT } from '../command/common-flags.js'
+import type { CommandContext } from '../command/context.js'
+import { defineCommand } from '../command/define.js'
+import { consume } from '../consume/index.js'
+import { C } from '../output/ansi.js'
+import { say } from '../output/stream.js'
+import { renderAuthFailure, renderAuthNotice, renderOfflineNameWarning } from '../render/auth.js'
+import { renderJavaFailure } from '../render/java.js'
+import { parseMemoryArg, positional } from '../shared/args.js'
+import { resolveAuth } from '../use-cases/auth.js'
+import { instanceConfig } from '../use-cases/instance.js'
+import { pickJava } from '../use-cases/java.js'
 
 export const cmdLaunch = defineCommand({
   name: 'launch',
@@ -44,26 +44,29 @@ export async function runLaunch(ctx: CommandContext): Promise<number> {
   }
   const layout = ctx.layout
   const raw = ctx.has('--raw')
-  const config = readConfig(layout.gameDir)
+  const config = instanceConfig(ctx)
 
   // 参数校验放在所有 I/O 之前：--memory 写错时不该先去探测 Java、解析版本，
   // 让用户等几秒才看到「其实是你参数写错了」
   const maxMemoryMiB = parseMemoryArg(ctx.value('--memory')) ?? config.memoryMiB
 
-  const javaPath = await pickJavaOrReport(
-    versionId,
-    layout,
-    ctx.signal,
-    ctx.value('--java') ?? config.javaPath,
-  )
-  if (javaPath === undefined) return 1
+  const java = await pickJava(versionId, layout, ctx.signal, ctx.value('--java') ?? config.javaPath)
+  if (!java.ok) {
+    renderJavaFailure(java)
+    return 1
+  }
+  const javaPath = java.path
 
   const auth = await resolveAuth(ctx)
-  if (!auth.ok) return 1
+  if (!auth.ok) {
+    renderAuthFailure(auth)
+    return 1
+  }
+  if (auth.notice !== undefined) renderAuthNotice(auth.notice)
 
   const offlineUsername = ctx.value('--user') ?? 'Player'
   // 有正版账号时名字来自账号，--user 不生效，别误报
-  if (auth.account === undefined) warnOfflineUsername(offlineUsername)
+  if (auth.account === undefined) renderOfflineNameWarning(offlineUsername)
   const op = createLaunchPlan({
     versionId,
     layout,

@@ -1,16 +1,11 @@
-import { join } from 'node:path'
-import { createCredentialStore } from '../../core/auth/credentials.js'
-import {
-  authStorePath,
-  createLogin,
-  DEVICE_AUTH_FALLBACK_URI,
-  resolveClientId,
-} from '../../core/auth/index.js'
-import type { CommandContext } from '../commands.js'
-import { defineCommand } from '../commands.js'
-import { ROOT } from '../common-flags.js'
-import { UsageError } from '../shared.js'
-import { C, consume, say } from '../ui.js'
+import { ROOT } from '../command/common-flags.js'
+import type { CommandContext } from '../command/context.js'
+import { defineCommand } from '../command/define.js'
+import { consume } from '../consume/index.js'
+import { C } from '../output/ansi.js'
+import { say } from '../output/stream.js'
+import { UsageError } from '../shared/errors.js'
+import { createLoginOperation, DEVICE_AUTH_FALLBACK_URI, loginClientId } from '../use-cases/auth.js'
 
 export const cmdLogin = defineCommand({
   name: 'login',
@@ -51,20 +46,15 @@ function parseTimeoutArg(arg: string | undefined): number | undefined {
 }
 
 export function runLogin(ctx: CommandContext): Promise<number> {
-  const clientId = resolveClientId({
-    flag: ctx.value('--client-id'),
-    env: process.env.BLOCKPILOT_CLIENT_ID,
-  })
+  const clientId = loginClientId(ctx)
   const timeoutMs = parseTimeoutArg(ctx.value('--timeout'))
 
   say('\n')
   say(`  ${C.bold}BlockPilot login${C.reset}  ${C.dim}微软账号 · 设备码${C.reset}\n\n`)
 
   return consume(
-    createLogin({
+    createLoginOperation(ctx, {
       clientId,
-      storePath: authStorePath(ctx.layout.root),
-      credentials: createCredentialStore(join(ctx.layout.root, 'auth')),
       ...(timeoutMs === undefined ? {} : { timeoutMs }),
     }),
     {

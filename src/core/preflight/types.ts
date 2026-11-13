@@ -1,6 +1,6 @@
 /** 预检的输出契约。见 ADR-0002。 */
 
-import type { RepairPlan } from '../deps/plan.js'
+import type { RepairPlan } from '../deps/types.js'
 import type { LoaderKind } from '../instance.js'
 
 export type Severity = 'blocker' | 'warning' | 'info'

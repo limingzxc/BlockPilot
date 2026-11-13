@@ -10,9 +10,10 @@
 
 export type { CredentialStore } from './core/auth/credentials.js'
 export { createCredentialStore } from './core/auth/credentials.js'
+export type { ContentSource, VersionInfo } from './core/content-source.js'
 export type { CfFileInfo, CurseforgeLike } from './core/curseforge.js'
-export type { DeployOptions, DeployResult } from './core/deploy.js'
-export { createDeploy } from './core/deploy.js'
+export type { DeployOptions, DeployResult } from './core/deploy/index.js'
+export { createDeploy } from './core/deploy/index.js'
 export type { DiagResult, DiagVerdict } from './core/diagnostics/index.js'
 export { createDiagnose } from './core/diagnostics/index.js'
 export { BlockPilotError, errMessage } from './core/errors.js'
@@ -22,8 +23,8 @@ export type {
   LogPayloads,
   OpEvent,
   ResultEvent,
-} from './core/events.js'
-export { Op } from './core/events.js'
+} from './core/events/index.js'
+export { Op } from './core/events/index.js'
 export { updateLoader } from './core/instance/loader-update.js'
 export type { LockedFile, LockFile, VerifyResult } from './core/instance/lock.js'
 export { createVerify, lockPath, readLock } from './core/instance/lock.js'
@@ -39,9 +40,8 @@ export type { PreflightOptions } from './core/preflight/index.js'
 export { createPreflight } from './core/preflight/index.js'
 export type { Finding, FindingCode, PreflightReport, Severity } from './core/preflight/types.js'
 export type { Probe } from './core/probe.js'
-export type { LoaderInstallOptions, LoaderInstallResult } from './core/setup/loader.js'
 export { createLoaderInstall, loaderNeedsJava, SUPPORTED_LOADERS } from './core/setup/loader.js'
-export type { ContentSource, VersionInfo } from './core/sources.js'
+export type { LoaderInstallOptions, LoaderInstallResult } from './core/setup/loader-types.js'
 export {
   CurseforgeSource,
   MirrorCurseforgeSource,

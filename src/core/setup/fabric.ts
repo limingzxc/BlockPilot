@@ -4,14 +4,14 @@
  * 这里只负责 Fabric 特有的事：探测该用官方还是 Legacy、选 loader 版本、取 profile、
  * 发 `fabric.*` 事件。安装流程本身由 `profile.ts` 与 Quilt 共用。
  */
-import { defaultSources } from '../download/sources.js'
+import { defaultSources } from '../download/mirrors.js'
 import type { Mirror } from '../download/types.js'
-import { Op } from '../events.js'
+import { Op } from '../events/index.js'
+import type { Operation } from '../events/operation.js'
+import { defineOperation } from '../events/operation.js'
 import type { Layout } from '../layout.js'
-import type { Operation } from '../operation.js'
-import { defineOperation } from '../operation.js'
 import { detectFabricFlavor, fetchProfile, pickLoaderVersion } from '../sources/fabric.js'
-import type { LoaderInstallResult } from './loader.js'
+import type { LoaderInstallResult } from './loader-types.js'
 import type { ProfileEventCodes } from './profile.js'
 import { installProfileLoader } from './profile.js'
 

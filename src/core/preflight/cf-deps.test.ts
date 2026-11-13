@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-
+import type { VersionInfo } from '../content-source.js'
 import type { Instance } from '../instance.js'
-import type { VersionInfo } from '../sources.js'
 import { cfDependencyFindings } from './cf-deps.js'
 
 function instance(projectIds: readonly string[]): Instance {

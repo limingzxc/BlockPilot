@@ -1,5 +1,5 @@
 import type { Finding, PreflightReport } from '../../core/preflight/types.js'
-import { C, humanBytes } from '../ui.js'
+import { C, humanBytes } from '../output/ansi.js'
 
 export const SEVERITY_MARK: Record<Finding['severity'], string> = {
   blocker: `${C.red}✗${C.reset}`,
